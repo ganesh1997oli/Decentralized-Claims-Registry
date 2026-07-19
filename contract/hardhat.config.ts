@@ -36,5 +36,10 @@ export default defineConfig({
       // accounts: [configVariable("SEPOLIA_PRIVATE_KEY")],
       accounts: ["0x302958f35b98d20470f7da846f2fc2b22c3493d9f5420bc0d309494c8ba6fa36"]
     },
+    localhost: {
+      type: "http",
+      chainType: "l1",
+      url: "http://127.0.0.1:8545"
+    }
   },
 });
