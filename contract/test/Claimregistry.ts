@@ -63,7 +63,7 @@ describe("ClaimsRegistry", async function() {
     });
 
     it("rejects an empty claim hash", async function() {
-        const registry = await viem.deployContract("ClaimRegistry");
+        const registry = await viem.deployContract("ClaimsRegistry");
         const zeroHash = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
 
         await viem.assertions.revertWithCustomError(

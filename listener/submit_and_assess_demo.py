@@ -21,7 +21,7 @@ import json
 import os
 from pathlib import Path
 
-from web import Web3
+from web3 import Web3
 
 RPC_URL = os.environ.get("RPC_URL", "http://127.0.0.1:8545")
 
@@ -43,7 +43,7 @@ STATUS_NAMES = ["Submitted", "UnderReview", "Approved", "Rejected", "Flagged"]
 FLAGGED = 4 # Status.Flagged
 
 def load_deployment(ignition_dir: Path, module_id: str):
-    address = json.loads((ignition_dir / "deployed_address.json").read_text())
+    address = json.loads((ignition_dir / "deployed_addresses.json").read_text())
     artifact = json.loads(
         (ignition_dir / "artifacts" / f"{module_id}.json").read_text()
     )
