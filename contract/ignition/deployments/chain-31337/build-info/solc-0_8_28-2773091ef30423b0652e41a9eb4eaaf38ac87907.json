@@ -1,0 +1,49 @@
+{
+  "_format": "hh3-sol-build-info-1",
+  "id": "solc-0_8_28-2773091ef30423b0652e41a9eb4eaaf38ac87907",
+  "solcVersion": "0.8.28",
+  "solcLongVersion": "0.8.28+commit.7893614a",
+  "compilerType": "solc",
+  "toolVersions": {
+    "hardhat": "3.9.1"
+  },
+  "userSourceNameMap": {
+    "contracts/ClaimsRegistry.sol": "project/contracts/ClaimsRegistry.sol"
+  },
+  "input": {
+    "language": "Solidity",
+    "settings": {
+      "evmVersion": "cancun",
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "outputSelection": {
+        "*": {
+          "": [
+            "ast"
+          ],
+          "*": [
+            "abi",
+            "evm.bytecode.linkReferences",
+            "evm.bytecode.object",
+            "evm.bytecode.opcodes",
+            "evm.bytecode.sourceMap",
+            "evm.deployedBytecode.immutableReferences",
+            "evm.deployedBytecode.linkReferences",
+            "evm.deployedBytecode.object",
+            "evm.deployedBytecode.opcodes",
+            "evm.deployedBytecode.sourceMap",
+            "evm.methodIdentifiers"
+          ]
+        }
+      },
+      "remappings": []
+    },
+    "sources": {
+      "project/contracts/ClaimsRegistry.sol": {
+        "content": "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.28;\n\n/// ClaimRegistry\n/// On-Chain registry that anchors insurance claims to an immutable,\n/// verifiable ledger while keeping the sensitive claim data OFF-chain.\n/// Only a cryptographic hash of the off-chain payload plus a small set\n/// of non-sensitive metadata are stored here. Authorized assessors\n/// (e.g. an insurer backend or a fraud-detection oracle) write\n/// assessment results back to a claim; downstream systems observe the whole\n/// lifecycle through the emitted events.\n///\n/// Access control here is intentionally minimal and self-contained so\n/// the contract here is intentionally minimal and selff-contained so\n/// prefer OpenZeppelin's audited `Ownable` / `AccessControl` over the\n/// hand-rolled owner+assessor logic below.\n\ncontract ClaimsRegistry {\n    //\n    // Types\n    //\n\n    enum Status {\n        Submitted, // 0 - recorded, awaiting review\n        UnderReview, // 1 - being assessed\n        Approved, // 2 - final: accepted\n        Rejected, // 3 - final: denied\n        Flagged // 4 - suspected fraud\n    }\n\n    struct Claim {\n        address claimant; // who submitted the claim\n        bytes32 claimHash; // keccak256 of the canonical off-chain payload\n        string dataPointer; // off-chain location (e.g. IPFS CID or URL)\n        Status status; // current lifecycle state\n        uint16 fraudScore; // model output in basis points (0.10000); 0 until assessed\n        uint64 submittedAt; // block timestamp at submission\n        uint64 updatedAt; // block timestamp of last status change\n        bool exists; // distinguishes a real claim from an unset slot\n    }\n\n    //\n    // Storage\n    //\n\n    address public owner;\n    uint256 public claimCount; // also the id of the next claim\n    mapping(uint256 => Claim) private _claims;\n    mapping(address => bool) public isAssessor;\n\n    //\n    // Events (indexed fields chosen so off-chain listeners can filter cheaply)\n    //\n\n    event ClaimSubmitted(\n        uint256 indexed claimId,\n        address indexed claimant,\n        bytes32 claimHash,\n        string dataPointer,\n        uint256 timestamp\n    );\n\n    event ClaimAssessed(\n        uint256 indexed claimId,\n        Status indexed newStatus,\n        address indexed assessor,\n        uint16 fraudScore,\n        uint256 timestamp\n    );\n\n    event AssessorUpdated(address indexed assessor, bool authorized);\n\n    event OwnershipTransferred(\n        address indexed previousOwner,\n        address indexed newOwner\n    );\n\n    //\n    // Errors\n    //\n\n    error NotOwner();\n    error NotAssessor();\n    error ZeroAddress();\n    error EmptyClaimHash();\n    error UnknownClaim(uint256 claimId);\n    error ClaimAlreadyFinalized(uint256 claimId);\n    error InvalidFraudScore(uint16 fraudScore);\n\n    //\n    // Modifiers\n    //\n\n    modifier onlyOwner() {\n        if (msg.sender != owner) revert NotOwner();\n        _;\n    }\n\n    modifier onlyAssessor() {\n        if (!isAssessor[msg.sender]) revert NotAssessor();\n        _;\n    }\n\n    //\n    // Constructor\n    //\n\n    constructor() {\n        owner = msg.sender;\n        emit OwnershipTransferred(address(0), msg.sender);\n    }\n\n    //\n    // Claim lifecycle\n    //\n\n    /// Record a new claim on-chain\n    /// claimHash keccak256 hash of the full off-chain claim payload.\n    /// dataPointer off-chain location of the payload (e.g. an IPFS CID).\n    /// claimId The id assigned to this claim.\n    function submitClaim(\n        bytes32 claimHash,\n        string calldata dataPointer\n    ) external returns (uint256 claimId) {\n        if (claimHash == bytes32(0)) revert EmptyClaimHash();\n\n        claimId = claimCount;\n        _claims[claimId] = Claim({\n            claimant: msg.sender,\n            claimHash: claimHash,\n            dataPointer: dataPointer,\n            status: Status.Submitted,\n            fraudScore: 0,\n            submittedAt: uint64(block.timestamp),\n            updatedAt: uint64(block.timestamp),\n            exists: true\n        });\n\n        unchecked {\n            claimCount = claimId + 1;\n        }\n\n        emit ClaimSubmitted(\n            claimId,\n            msg.sender,\n            claimHash,\n            dataPointer,\n            block.timestamp\n        );\n    }\n\n    /// Write an assessment result back to a claim. Intended for the\n    /// fraud-detection oracle / insurer backend.\n    /// claimId The claim to update.\n    /// newStatus New lifecycle status.\n    /// fraudScore Model score in basis points (0-10000).\n    function assessClaim(\n        uint256 claimId,\n        Status newStatus,\n        uint16 fraudScore\n    ) external onlyAssessor {\n        Claim storage claim = _claims[claimId];\n        if (!claim.exists) revert UnknownClaim(claimId);\n        if (\n            claim.status == Status.Approved || claim.status == Status.Rejected\n        ) {\n            revert ClaimAlreadyFinalized(claimId);\n        }\n        if (fraudScore > 10000) revert InvalidFraudScore(fraudScore);\n\n        claim.status = newStatus;\n        claim.fraudScore = fraudScore;\n        claim.updatedAt = uint64(block.timestamp);\n\n        emit ClaimAssessed(\n            claimId,\n            newStatus,\n            msg.sender,\n            fraudScore,\n            block.timestamp\n        );\n    }\n\n    //\n    // Views\n    //\n\n    /// Read a claim by id. Reverts if the claim does not exists.\n    function getClaim(\n        uint256 claimId\n    )\n        external\n        view\n        returns (\n            address claimant,\n            bytes32 claimHash,\n            string memory dataPointer,\n            Status status,\n            uint16 fraudScore,\n            uint64 submittedAt,\n            uint64 updatedAt\n        )\n    {\n        Claim storage claim = _claims[claimId];\n        if (!claim.exists) revert UnknownClaim(claimId);\n        return (\n            claim.claimant,\n            claim.claimHash,\n            claim.dataPointer,\n            claim.status,\n            claim.fraudScore,\n            claim.submittedAt,\n            claim.updatedAt\n        );\n    }\n\n    /// Confirm that an off-chain payload matches the stored hash.\n    /// The payload must be hashed the same way it was before submission\n    /// (keccak256 over the exact canonical bytes).\n    function verifyClaimData(\n        uint256 claimId,\n        bytes calldata payload\n    ) external view returns (bool) {\n        Claim storage claim = _claims[claimId];\n        if (!claim.exists) revert UnknownClaim(claimId);\n        return keccak256(payload) == claim.claimHash;\n    }\n\n    //\n    // Access control admin\n    //\n\n    /// Grant or revoke assessor rights rights (who may call `assessClaim).\n    function setAssessor(address assessor, bool authorized) external onlyOwner {\n        if (assessor == address(0)) revert ZeroAddress();\n        isAssessor[assessor] = authorized;\n        emit AssessorUpdated(assessor, authorized);\n    }\n\n    function transferOwnership(address newOwner) external onlyOwner {\n        if (newOwner == address(0)) revert ZeroAddress();\n        emit OwnershipTransferred(owner, newOwner);\n        owner = newOwner;\n    }\n}\n"
+      }
+    }
+  }
+}

@@ -35,12 +35,18 @@ RPC_URL = (
     or "https://ethereum-sepolia-rpc.publicnode.com"
 )
 
-IGNITION_DIR = Path(
-    os.environ.get("IGNITION_DIR", "ignition/deployments/chain-11155111")
+DEFAULT_IGNITION_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "contract"
+    / "ignition"
+    / "deployments"
+    / "chain-11155111"
 )
 
+IGNITION_DIR = Path(os.environ.get("IGNITION_DIR", DEFAULT_IGNITION_DIR))
+
 MODULE_ID = os.environ.get("MODULE_ID", "ClaimsRegistryModule#ClaimsRegistry")
-POLL_INTERVAL = float(os.environ.get("POOL_INTERVAN", "5"))
+POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 CONFIRMATION_BLOCKS = int(os.environ.get("CONFIRMATION_BLOCKS", "2"))
 
 # Mirrors the contract's `enum Status` declaration order.
@@ -49,7 +55,7 @@ STATUS_NAMES = ["Submitted", "UnderReview", "Approved", "Rejected", "Flagged"]
 
 def load_deployment(ignition_dir: Path, module_id: str):
     """Read the deployed address and ABI produced by Hardhat Ignition."""
-    addresses = json.loads((ignition_dir / "deployed_address.json").read_text())
+    addresses = json.loads((ignition_dir / "deployed_addresses.json").read_text())
     artifact = json.loads((ignition_dir / "artifacts" / f"{module_id}.json").read_text())
     return Web3.to_checksum_address(addresses[module_id]), artifact["abi"]
 

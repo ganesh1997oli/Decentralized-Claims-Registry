@@ -23,7 +23,7 @@ from pathlib import Path
 
 from web3 import Web3
 
-RPC_URL = os.environ.get("RPC_URL", "http://127.0.0.1:8545")
+RPC_URL = os.environ.get("SEPOLIA_RPC_URL", "http://127.0.0.1:8545")
 
 # Resolved relative to THIS FILE, so the script runs from any working directory.
 # chain-11155111 = Sepolia. For a local Hardhat node, point at chain-31337
@@ -56,7 +56,7 @@ if not w3.is_connected():
 CONTRACT_ADDRESS, ABI = load_deployment(IGNITION_DIR, MODULE_ID)
 contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=ABI)
 
-acct = w3.eth.account.from_key(os.environ["PRIVATE_KEY"])
+acct = w3.eth.account.from_key(os.environ["SEPOLIA_PRIVATE_KEY"])
 print(f"Using account {acct.address} against {CONTRACT_ADDRESS} via {RPC_URL}")
 
 def send(fn):
