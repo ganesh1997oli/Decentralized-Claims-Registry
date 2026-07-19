@@ -47,7 +47,7 @@ cd contract
 npx hardhat ignition deploy ignition/modules/Claimsregistry.ts --network localhost
 
 cd ../listener && source .venv/bin/activate
-RPC_URL=http://127.0.0.1:8545 \
+SEPOLIA_RPC_URL=http://127.0.0.1:8545 \
 IGNITION_DIR=../contract/ignition/deployments/chain-31337 \
 POLL_INTERVAL=1 CONFIRMATION_BLOCKS=0 \
 python claims_listener.py
@@ -56,13 +56,13 @@ python claims_listener.py
 Terminal C - submit a claim and write a fraud verdict back:
 ```bash
 cd listener && source .venv/bin/activate
-RPC_URL=http://127.0.0.1:8545 \
+SEPOLIA_RPC_URL=http://127.0.0.1:8545 \
 IGNITION_DIR=../contract/ignition/deployments/chain-31337 \
-PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+SEPOLIA_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
 python submit_and_assess_demo.py
 ```
 
-That PRIVATE_KEY is Hardhat's publicly known dev account #0 - safe on a local
+That SEPOLIA_PRIVATE_KEY is Hardhat's publicly known dev account #0 - safe on a local
 node, never usable on a real network. Terminal B should print a
 `[ClaimSubmitted]` line followed by `[ClaimAssessed]`.
 
