@@ -1,5 +1,4 @@
-"""
-Listener for ClaimRegistry events - watches BOTH halves of the loop:
+"""Listen for ClaimRegistry events and verify IPFS-backed claim payloads.
 
 ClaimSubmitted (claimant -> chain) a new claim was anchored on-chain
 ClaimAssessed (assessor -> chain) the fraud verdict was written back
@@ -12,6 +11,7 @@ Targets web3.py v7.x. On v6.x, change `from_block` / `to_block` to `fromBlock` /
 Configuration (env vars):
 RPC_URL JSON_RPC endpoint (also honors SEPOLIA_RPC_URL)
 IGNITION_DIR Hardhat Ignition deployment directory (default: ./contract/ignition)
+IPFS_GATEWAY HTTP gateway base (default: https://gateway.pinata.cloud/ipfs)
 POLL_INTERVAL seconds between polls (default 5)
 CONFIRMATION_BLOCKS reorg-safety confirmations (default 2)
 
@@ -26,6 +26,9 @@ import time
 from pathlib import Path
 
 from web3 import Web3
+
+from ipfs_client import IPFSClient, IPFSError
+
 # If you hit an "extraData" validation error on Sepolia, uncomment these:
 # from web3.middleware import ExtraDataToPOAMiddleware
 
@@ -73,20 +76,41 @@ if not w3.is_connected():
     raise SystemExit(f"Could not connect to the RPC endpoint: {RPC_URL}")
 
 contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=ABI)
+ipfs = IPFSClient.from_env()
+
+
+def verify_ipfs_payload(claim_id: int, pointer: str, expected_hash) -> bool:
+    """Fetch a claim payload from IPFS and compare it with its on-chain hash."""
+    try:
+        payload = ipfs.download_pointer(pointer)
+    except IPFSError as exc:
+        print(f"[IPFSError] claimId={claim_id} pointer={pointer} error={exc}")
+        return False
+
+    actual_hash = Web3.keccak(payload)
+    if actual_hash != expected_hash:
+        print(
+            f"[IPFSVerificationFailed] claimId={claim_id} "
+            f"expected={hx(expected_hash)} actual={hx(actual_hash)}"
+        )
+        return False
+
+    print(
+        f"[IPFSVerified] claimId={claim_id} pointer={pointer} "
+        f"bytes={len(payload)} hash={hx(actual_hash)}"
+    )
+    return True
+
 
 def on_claim_submitted(e):
     a = e["args"]
     print(
-        f"[ClaimSubmitted] claimId={a['claimId']} claimant={a['claimant']}"
+        f"[ClaimSubmitted] claimId={a['claimId']} claimant={a['claimant']} "
         f"claimHash={hx(a['claimHash'])} dataPointer={a['dataPointer']} "
         f"block={e['blockNumber']} tx={hx(e['transactionHash'])}"
     )
+    verify_ipfs_payload(a["claimId"], a["dataPointer"], a["claimHash"])
 
-    # Pipeline hook
-    # 1. Fetch the payload from a['dataPointer].
-    # 2. Verify keccak(payload) == a['claimHash] (or call verifyClaimData).
-    # 3. Score it with the fraud model.
-    # 4. Write the verdict back with assessClaim (see submit_and_assess_demp.py).
 
 def on_claim_assessed(e):
     a = e["args"]
@@ -107,6 +131,7 @@ HANDLERS = {
     "ClaimAssessed": on_claim_assessed,
 }
 
+
 def poll_range(from_block: int, to_block: int) -> None:
     """Fetch logs for every watched event and dispatch them in chain order."""
     entries = []
@@ -116,6 +141,7 @@ def poll_range(from_block: int, to_block: int) -> None:
     entries.sort(key=lambda e: (e["blockNumber"], e["logIndex"]))
     for e in entries:
         HANDLERS[e["event"]](e)
+
 
 def main():
     print(
@@ -132,7 +158,7 @@ def main():
         except Exception as exc:
             print(f"Polling error (will retry): {exc}")
         time.sleep(POLL_INTERVAL)
- 
- 
+
+
 if __name__ == "__main__":
     main()
