@@ -1,4 +1,4 @@
-"""Sepolia adapter for the deployed ClaimsRegistry contract."""
+"""Read from and write to the ClaimsRegistry contract on Sepolia."""
 
 from __future__ import annotations
 
@@ -32,6 +32,26 @@ class ChainSubmission:
     block_number: int
 
 
+@dataclass(frozen=True)
+class ChainAssessment:
+    transaction_hash: str
+    block_number: int
+    status: int
+    fraud_score: int
+
+
+@dataclass(frozen=True)
+class ChainClaim:
+    claim_id: int
+    claimant: str
+    claim_hash: str
+    data_pointer: str
+    status: int
+    fraud_score: int
+    submitted_at: int
+    updated_at: int
+
+
 def _hex(value: object) -> str:
     encoded = value.hex()  # type: ignore[union-attr]
     return encoded if encoded.startswith("0x") else f"0x{encoded}"
@@ -56,7 +76,7 @@ def load_deployment(
 
 
 class SepoliaClaimsRegistry:
-    """Sign and submit claims using one Sepolia-only demonstration wallet."""
+    """Use the demonstration wallet to call the Sepolia contract."""
 
     def __init__(
         self,
@@ -68,6 +88,9 @@ class SepoliaClaimsRegistry:
         receipt_timeout: int = 180,
     ) -> None:
         self.w3 = Web3(Web3.HTTPProvider(rpc_url))
+
+        # Stop early if the RPC is offline or points to the wrong network. This
+        # prevents a claim from being sent somewhere unexpected.
         if not self.w3.is_connected():
             raise BlockchainSubmissionError(
                 "Could not connect to the configured Ethereum RPC endpoint"
@@ -86,6 +109,8 @@ class SepoliaClaimsRegistry:
                 "SEPOLIA_PRIVATE_KEY is not a valid Ethereum private key"
             ) from exc
         self.receipt_timeout = receipt_timeout
+        # One wallet must use each nonce once. The lock keeps two API requests
+        # from trying to send transactions with the same nonce.
         self._submission_lock = threading.Lock()
         self._next_nonce: int | None = None
 
@@ -117,10 +142,9 @@ class SepoliaClaimsRegistry:
         )
 
     def submit_claim(self, claim_hash: bytes, data_pointer: str) -> ChainSubmission:
-        """Submit a claim and recover its assigned ID from the emitted event."""
+        """Submit a claim and read its new ID from the contract event."""
 
         try:
-            # Serializing wallet use prevents two API threads allocating one nonce.
             with self._submission_lock:
                 if self._next_nonce is None:
                     self._next_nonce = self.w3.eth.get_transaction_count(
@@ -144,6 +168,8 @@ class SepoliaClaimsRegistry:
                             signed.raw_transaction
                         )
                     except Web3RPCError as exc:
+                        # A public RPC can briefly report an old nonce. If it tells
+                        # us the newer one, retry once instead of failing the claim.
                         match = re.search(
                             r"next nonce\s+(\d+)", str(exc), re.IGNORECASE
                         )
@@ -165,6 +191,8 @@ class SepoliaClaimsRegistry:
                     f"Sepolia transaction reverted: {_hex(transaction_hash)}"
                 )
 
+            # The event is the contract's confirmation of the claim ID assigned
+            # to this transaction.
             events = self.contract.events.ClaimSubmitted().process_receipt(receipt)
             if len(events) != 1:
                 raise BlockchainSubmissionError(
@@ -180,4 +208,130 @@ class SepoliaClaimsRegistry:
             raise
         except Exception as exc:
             self._next_nonce = None
-            raise BlockchainSubmissionError(f"Sepolia submission failed: {exc}") from exc
+            raise BlockchainSubmissionError(
+                f"Sepolia submission failed: {exc}"
+            ) from exc
+
+    def assess_claim(
+        self, claim_id: int, status: int, fraud_score: int
+    ) -> ChainAssessment:
+        """Write the model result and confirm the contract recorded it."""
+
+        if status not in range(5):
+            raise BlockchainSubmissionError(f"Invalid claim status: {status}")
+        if fraud_score not in range(10_001):
+            raise BlockchainSubmissionError(
+                f"Fraud score must be between 0 and 10000, got {fraud_score}"
+            )
+
+        try:
+            with self._submission_lock:
+                if self._next_nonce is None:
+                    self._next_nonce = self.w3.eth.get_transaction_count(
+                        self.account.address, "pending"
+                    )
+
+                for attempt in range(2):
+                    nonce = self._next_nonce
+                    transaction = self.contract.functions.assessClaim(
+                        claim_id, status, fraud_score
+                    ).build_transaction(
+                        {
+                            "from": self.account.address,
+                            "nonce": nonce,
+                            "chainId": SEPOLIA_CHAIN_ID,
+                        }
+                    )
+                    signed = self.account.sign_transaction(transaction)
+                    try:
+                        transaction_hash = self.w3.eth.send_raw_transaction(
+                            signed.raw_transaction
+                        )
+                    except Web3RPCError as exc:
+                        # Use the same one-time stale nonce recovery as submission.
+                        match = re.search(
+                            r"next nonce\s+(\d+)", str(exc), re.IGNORECASE
+                        )
+                        if attempt == 0 and match and int(match.group(1)) > nonce:
+                            self._next_nonce = int(match.group(1))
+                            continue
+                        self._next_nonce = None
+                        raise
+
+                    self._next_nonce = nonce + 1
+                    break
+
+                receipt = self.w3.eth.wait_for_transaction_receipt(
+                    transaction_hash, timeout=self.receipt_timeout
+                )
+
+            if receipt["status"] != 1:
+                raise BlockchainSubmissionError(
+                    f"Sepolia assessment reverted: {_hex(transaction_hash)}"
+                )
+
+            events = self.contract.events.ClaimAssessed().process_receipt(receipt)
+            if len(events) != 1:
+                raise BlockchainSubmissionError(
+                    "Transaction did not emit exactly one ClaimAssessed event"
+                )
+            # Do not trust only the transaction status. Check that the event data
+            # contains the claim, status, and score we asked the contract to save.
+            event = events[0]["args"]
+            if (
+                event["claimId"] != claim_id
+                or event["newStatus"] != status
+                or event["fraudScore"] != fraud_score
+            ):
+                raise BlockchainSubmissionError(
+                    "ClaimAssessed event did not match the requested assessment"
+                )
+
+            return ChainAssessment(
+                transaction_hash=_hex(transaction_hash),
+                block_number=receipt["blockNumber"],
+                status=status,
+                fraud_score=fraud_score,
+            )
+        except BlockchainSubmissionError:
+            raise
+        except Exception as exc:
+            self._next_nonce = None
+            raise BlockchainSubmissionError(
+                f"Sepolia assessment failed: {exc}"
+            ) from exc
+
+    def list_claims(
+        self, *, page: int, page_size: int
+    ) -> tuple[list[ChainClaim], int]:
+        """Read only the requested page, starting with the newest claim."""
+
+        try:
+            claim_count = self.contract.functions.claimCount().call()
+            claims: list[ChainClaim] = []
+            # Claim IDs grow from zero. Working backwards makes the newest claim
+            # appear first without loading every older claim.
+            first_claim_id = claim_count - 1 - ((page - 1) * page_size)
+            if first_claim_id < 0:
+                return claims, claim_count
+
+            final_claim_id = max(first_claim_id - page_size + 1, 0)
+            for claim_id in range(first_claim_id, final_claim_id - 1, -1):
+                claim = self.contract.functions.getClaim(claim_id).call()
+                claims.append(
+                    ChainClaim(
+                        claim_id=claim_id,
+                        claimant=Web3.to_checksum_address(claim[0]),
+                        claim_hash=_hex(claim[1]),
+                        data_pointer=claim[2],
+                        status=claim[3],
+                        fraud_score=claim[4],
+                        submitted_at=claim[5],
+                        updated_at=claim[6],
+                    )
+                )
+            return claims, claim_count
+        except Exception as exc:
+            raise BlockchainSubmissionError(
+                f"Could not read claims from Sepolia: {exc}"
+            ) from exc

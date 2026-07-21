@@ -1,7 +1,12 @@
 from fastapi.testclient import TestClient
 
 from backend.app.main import app, get_claim_submission_service
-from backend.app.models import ClaimSubmissionResponse
+from backend.app.models import (
+    ClaimAssessmentResponse,
+    ClaimListItemResponse,
+    ClaimPageResponse,
+    ClaimSubmissionResponse,
+)
 from backend.app.service import ClaimSubmissionServiceError
 
 
@@ -25,6 +30,39 @@ class SuccessfulService:
             block_number=123,
             data_pointer="ipfs://bafy-test",
             claim_hash="0xhash",
+            assessment=ClaimAssessmentResponse(
+                status="Flagged",
+                fraud_score=8500,
+                probability=0.85,
+                threshold=0.3,
+                model_version="test-model-v1",
+                reasons=[],
+                on_chain=True,
+                transaction_hash="0xassessment",
+                block_number=124,
+            ),
+        )
+
+    def list_claims(self, *, page, page_size):
+        assert page == 2
+        assert page_size == 5
+        return ClaimPageResponse(
+            items=[
+                ClaimListItemResponse(
+                    claim_id=7,
+                    claimant="0x0000000000000000000000000000000000000001",
+                    claim_hash="0xhash",
+                    data_pointer="ipfs://bafy-test",
+                    status="Flagged",
+                    fraud_score=8500,
+                    submitted_at=1_750_000_000,
+                    updated_at=1_750_000_010,
+                )
+            ],
+            page=2,
+            page_size=5,
+            total_items=7,
+            total_pages=2,
         )
 
 
@@ -76,7 +114,57 @@ def test_submit_claim_returns_created_receipt():
         "block_number": 123,
         "data_pointer": "ipfs://bafy-test",
         "claim_hash": "0xhash",
+        "assessment": {
+            "status": "Flagged",
+            "fraud_score": 8500,
+            "probability": 0.85,
+            "threshold": 0.3,
+            "model_version": "test-model-v1",
+            "reasons": [],
+            "on_chain": True,
+            "transaction_hash": "0xassessment",
+            "block_number": 124,
+            "error": None,
+        },
     }
+
+
+def test_list_claims_returns_current_on_chain_state():
+    app.dependency_overrides[get_claim_submission_service] = SuccessfulService
+    try:
+        response = TestClient(app).get("/claims?page=2&page_size=5")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "claim_id": 7,
+                "claimant": "0x0000000000000000000000000000000000000001",
+                "claim_hash": "0xhash",
+                "data_pointer": "ipfs://bafy-test",
+                "status": "Flagged",
+                "fraud_score": 8500,
+                "submitted_at": 1_750_000_000,
+                "updated_at": 1_750_000_010,
+            }
+        ],
+        "page": 2,
+        "page_size": 5,
+        "total_items": 7,
+        "total_pages": 2,
+    }
+
+
+def test_list_claims_validates_pagination_parameters():
+    app.dependency_overrides[get_claim_submission_service] = SuccessfulService
+    try:
+        response = TestClient(app).get("/claims?page=0&page_size=100")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
 
 
 def test_submit_claim_rejects_invalid_amount_before_external_calls():

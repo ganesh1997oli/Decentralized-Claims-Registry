@@ -1,4 +1,4 @@
-"""FastAPI entry point for proposal Week 3."""
+"""HTTP routes used by the claims web application."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ import os
 from functools import lru_cache
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.models import (
+    ClaimPageResponse,
     ClaimSubmission,
     ClaimSubmissionResponse,
     HealthResponse,
@@ -46,7 +47,7 @@ app.add_middleware(
 
 @lru_cache
 def get_claim_submission_service() -> ClaimSubmissionService:
-    """Construct the external adapters once, on the first submission request."""
+    """Create the external clients once and reuse them for later requests."""
 
     return ClaimSubmissionService.from_env()
 
@@ -61,6 +62,22 @@ def health() -> HealthResponse:
     return HealthResponse(status="ok")
 
 
+@app.get("/claims", response_model=ClaimPageResponse, tags=["claims"])
+def list_claims(
+    service: ClaimServiceDependency,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> ClaimPageResponse:
+    # FastAPI checks the page values before this function is called.
+    try:
+        return service.list_claims(page=page, page_size=page_size)
+    except ClaimSubmissionServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+
 @app.post(
     "/claims",
     response_model=ClaimSubmissionResponse,
@@ -70,6 +87,8 @@ def health() -> HealthResponse:
 def submit_claim(
     claim: ClaimSubmission, service: ClaimServiceDependency
 ) -> ClaimSubmissionResponse:
+    # The service owns the workflow; this route only translates failures into
+    # an HTTP response the frontend can understand.
     try:
         return service.submit(claim)
     except ClaimSubmissionServiceError as exc:

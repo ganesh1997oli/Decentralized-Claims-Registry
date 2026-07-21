@@ -31,9 +31,8 @@ from ipfs_client import IPFSClient, IPFSError
 
 RPC_URL = os.environ.get("SEPOLIA_RPC_URL", "http://127.0.0.1:8545")
 
-# Resolved relative to THIS FILE, so the script runs from any working directory.
-# chain-11155111 = Sepolia. For a local Hardhat node, point at chain-31337
-# (or just set the IGNITION_DIR env var).
+# Build this path from the script location, so the command works from any folder.
+# Chain 11155111 is Sepolia; a local Hardhat deployment normally uses 31337.
 DEFAULT_IGNITION_DIR = (
     Path(__file__).resolve().parents[1]
     / "contract"
@@ -83,12 +82,11 @@ next_nonce: int | None = None
 
 
 def send(fn):
-    """Build, sign, send a contract call; return the receipt."""
+    """Sign one contract call, send it, and wait for its receipt."""
     global next_nonce
 
-    # Hosted RPC endpoints can briefly return a stale transaction count after
-    # a transaction is mined. Read the pending count once, then allocate
-    # sequential nonces locally for the rest of this process.
+    # Public RPC services can briefly return an old transaction count. Read the
+    # pending nonce once, then keep track of the next value in this script.
     if next_nonce is None:
         next_nonce = w3.eth.get_transaction_count(acct.address, "pending")
 
@@ -122,7 +120,7 @@ def send(fn):
         raise SystemExit(f"Transaction reverted: {tx_hash.hex()}")
     return receipt
 
-# --- 1. Upload and submit a new claim, or resume one whose assessment failed ---
+# Step 1: upload and submit a new claim, or continue an existing claim.
 if args.assess_existing is None:
     claim_id = contract.functions.claimCount().call()  # next id == current count
     claim_document = {
@@ -165,7 +163,7 @@ if args.assess_existing is None:
     r1 = send(contract.functions.submitClaim(claim_hash, data_pointer))
     print(f" mined in block {r1['blockNumber']}")
 
-    # Confirm the exact IPFS bytes match the on-chain commitment.
+    # Ask the contract to confirm that these exact bytes produce its saved hash.
     ok = contract.functions.verifyClaimData(claim_id, payload).call()
     print(f"verifyClaimData(#{claim_id}) -> {ok}")
     assert ok, "IPFS payload hash does not match the on-chain claim hash"
@@ -185,13 +183,13 @@ else:
         "without uploading or submitting another claim"
     )
 
-# --- 2. Write a fixed demo verdict back (assessor/oracle role) ---
+# Step 2: write a fixed demonstration assessment to the contract.
 fraud_score = 8500  # basis points = 85.00%
 print(f"Assessing claim #{claim_id} as Flagged with score {fraud_score} ...")
 r2 = send(contract.functions.assessClaim(claim_id, FLAGGED, fraud_score))
 print(f" mined in block {r2['blockNumber']}")
 
-# --- 3. Read back the final on-chain state ---
+# Step 3: read the claim again to show its final saved state.
 claim = contract.functions.getClaim(claim_id).call()
 print(
     f"Final state: status={STATUS_NAMES[claim[3]]} "

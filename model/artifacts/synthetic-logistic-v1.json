@@ -1,0 +1,28 @@
+{
+  "artifactSchema": 1,
+  "coefficients": {
+    "amount_ratio": 1.19314721,
+    "high_risk_type": 1.54614248,
+    "incident_age_ratio": 0.63227349,
+    "no_evidence": 0.84783184,
+    "short_description": 0.31086134,
+    "suspicious_language": 1.11798963
+  },
+  "features": [
+    "amount_ratio",
+    "high_risk_type",
+    "incident_age_ratio",
+    "no_evidence",
+    "short_description",
+    "suspicious_language"
+  ],
+  "intercept": -2.89704864,
+  "modelType": "logistic_regression",
+  "seed": 20260721,
+  "threshold": 0.3,
+  "trainingData": "deterministic synthetic rows only",
+  "trainingRows": 3200,
+  "validationF1": 0.542763,
+  "validationRows": 800,
+  "version": "synthetic-logistic-v1"
+}

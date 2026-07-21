@@ -1,7 +1,12 @@
 # React claim-submission form (proposal Week 4)
 
-This Vite/React/Tailwind application calls the Week 3 FastAPI backend. It does
-not access a wallet, Pinata token, or private key in the browser.
+This Vite/React/Tailwind application calls the FastAPI backend. It does not
+access a wallet, Pinata token, model artifact, or private key in the browser.
+The receipt shows the Week 5 synthetic fraud score, contributing indicators,
+and the separate Sepolia assessment transaction. The paginated claims dashboard
+calls `GET /claims?page=...&page_size=...` on startup and after each successful
+submission to display on-chain claim status and fraud score, newest first. The
+interface offers 5, 10, 25, or 50 claims per page.
 
 ## Install and verify
 
