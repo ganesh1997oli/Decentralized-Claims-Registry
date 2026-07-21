@@ -7,6 +7,7 @@ writes verdicts back on-chain.
 ```
 contract/   Solidity contract, Ignition deploy modules, tests (TS + Solidity)
 listener/   Python: event listener + submit/assess demo (the oracle side)
+backend/    FastAPI: validate, upload and submit synthetic claims (Week 3)
 ```
 
 ## Prerequisites
@@ -119,3 +120,12 @@ with the on-chain hash.
 This milestone deliberately uses synthetic data and does not encrypt it. Never
 upload real names, addresses, photographs, policy documents, or other personal
 data to public IPFS.
+
+## 6. Week 3 FastAPI backend
+
+The `backend/` service turns the existing IPFS and Sepolia submission demo into
+an HTTP API suitable for the proposal's later React form. It exposes
+`POST /claims` and returns the assigned claim ID and transaction hash.
+
+See [`backend/README.md`](backend/README.md) for installation, tests, environment
+configuration and a complete example request.
