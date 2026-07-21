@@ -3,8 +3,8 @@
 ClaimSubmitted (claimant -> chain) a new claim was anchored on-chain
 ClaimAssessed (assessor -> chain) the fraud verdict was written back
 
-Approach: pool `get_logs` over explicit block ranges, tracking the last block processed.
-More reliable on hosted RPC providers than eth_newFilter-based subscriptions, and it resumes cleanly after restarts.
+Approach: ask for logs in small block ranges and remember the last block read.
+This works reliably with hosted RPC services and resumes cleanly after restarts.
 
 Targets web3.py v7.x. On v6.x, change `from_block` / `to_block` to `fromBlock` / `toBlock` in the get_logs call.
 
@@ -52,7 +52,7 @@ MODULE_ID = os.environ.get("MODULE_ID", "ClaimsRegistryModule#ClaimsRegistry")
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 CONFIRMATION_BLOCKS = int(os.environ.get("CONFIRMATION_BLOCKS", "2"))
 
-# Mirrors the contract's `enum Status` declaration order.
+# Keep this order the same as the Status enum in the Solidity contract.
 STATUS_NAMES = ["Submitted", "UnderReview", "Approved", "Rejected", "Flagged"]
 
 
@@ -80,13 +80,15 @@ ipfs = IPFSClient.from_env()
 
 
 def verify_ipfs_payload(claim_id: int, pointer: str, expected_hash) -> bool:
-    """Fetch a claim payload from IPFS and compare it with its on-chain hash."""
+    """Download the IPFS bytes and check that they match the on-chain hash."""
     try:
         payload = ipfs.download_pointer(pointer)
     except IPFSError as exc:
         print(f"[IPFSError] claimId={claim_id} pointer={pointer} error={exc}")
         return False
 
+    # Hash the bytes exactly as received. Even a one-character change produces
+    # a different hash and fails this check.
     actual_hash = Web3.keccak(payload)
     if actual_hash != expected_hash:
         print(
@@ -103,6 +105,7 @@ def verify_ipfs_payload(claim_id: int, pointer: str, expected_hash) -> bool:
 
 
 def on_claim_submitted(e):
+    # The event already contains everything needed to find and verify the file.
     a = e["args"]
     print(
         f"[ClaimSubmitted] claimId={a['claimId']} claimant={a['claimant']} "
@@ -123,8 +126,7 @@ def on_claim_assessed(e):
         f"assessor={a['assessor']} "
         f"block={e['blockNumber']} tx={hx(e['transactionHash'])}"
     )
-    # Pipeline hook: mark the claim as resolved in your off-chain store,
-    # notify downstream systems, close the loop.
+    # A future production worker could update PostgreSQL or notify a reviewer here.
 
 HANDLERS = {
     "ClaimSubmitted": on_claim_submitted,
@@ -133,7 +135,7 @@ HANDLERS = {
 
 
 def poll_range(from_block: int, to_block: int) -> None:
-    """Fetch logs for every watched event and dispatch them in chain order."""
+    """Read watched events and handle them in the order they happened."""
     entries = []
     for name in HANDLERS:
         ev = getattr(contract.events, name)()
@@ -151,11 +153,14 @@ def main():
     while True:
         try:
             latest = w3.eth.block_number
+            # Wait for a few newer blocks before processing an event. This lowers
+            # the chance of acting on a block that Sepolia later replaces.
             safe_block = latest - CONFIRMATION_BLOCKS
             if safe_block > last_processed:
                 poll_range(last_processed + 1, safe_block)
                 last_processed = safe_block
         except Exception as exc:
+            # A temporary RPC error should not stop the long-running listener.
             print(f"Polling error (will retry): {exc}")
         time.sleep(POLL_INTERVAL)
 

@@ -9,6 +9,7 @@ contract/   Solidity contract, Ignition deploy modules, tests (TS + Solidity)
 listener/   Python: event listener + submit/assess demo (the oracle side)
 backend/    FastAPI: validate, upload and submit synthetic claims (Week 3)
 frontend/   React + Tailwind: browser claim-submission form (Week 4 / M1)
+model/      Versioned synthetic logistic model + inference reasons (Week 5)
 ```
 
 ## Prerequisites
@@ -139,3 +140,29 @@ explicitly allows the local Vite origins through CORS; secrets remain in the
 backend environment and are never included in the browser bundle.
 
 See [`frontend/README.md`](frontend/README.md) for installation and run commands.
+
+## 8. Week 5 fraud-scoring integration
+
+After a claim is anchored, FastAPI scores the submitted synthetic fields with a
+versioned logistic-regression artifact. Claims above the validation-tuned
+threshold are written back as `Flagged`; all others remain `UnderReview` so the
+model never automatically approves or rejects a claim. The response includes
+the model version, probability, compact contributing indicators, and the second
+Sepolia transaction receipt.
+
+```bash
+python -m model.train
+pytest model/tests backend/tests -q
+```
+
+The tracked artifact is trained only on deterministic synthetic rows. Its
+metrics and explanations must not be represented as evidence of performance on
+real insurance data. See [`model/README.md`](model/README.md).
+
+The same frontend includes a paginated claims dashboard backed by
+`GET /claims?page=1&page_size=10`. It reads only the requested newest-first
+slice of claim IDs from Sepolia and displays status, fraud score, claimant,
+IPFS pointer, and timestamps. Page sizes of 5, 10, 25, or 50 are available in
+the interface. This is intentionally a small-testnet implementation;
+searchable production history belongs in an indexer such as The Graph or
+PostgreSQL.

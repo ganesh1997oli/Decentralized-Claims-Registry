@@ -1,4 +1,4 @@
-"""Small Pinata/IPFS client used by the claim submission and listener demos."""
+"""Upload claim bytes to Pinata and read them back through an IPFS gateway."""
 
 from __future__ import annotations
 
@@ -50,12 +50,13 @@ class IPFSClient:
         filename: str,
         content_type: str = "application/octet-stream",
     ) -> str:
-        """Upload bytes to public IPFS through Pinata and return the CID."""
+        """Upload public bytes through Pinata and return their IPFS CID."""
         if not self.pinata_jwt:
             raise IPFSError("PINATA_JWT is required for IPFS uploads")
         if not payload:
             raise IPFSError("Refusing to upload an empty IPFS payload")
 
+        # Keep only the file name. A caller cannot use ../ to create a path.
         safe_filename = Path(filename).name
         try:
             response = self.session.post(
@@ -76,7 +77,7 @@ class IPFSClient:
 
     @staticmethod
     def target_from_pointer(pointer: str) -> str:
-        """Return the CID, including any subpath, from an ipfs:// pointer."""
+        """Take the CID and optional subpath from a safe ipfs:// pointer."""
         parsed = urlsplit(pointer)
         if parsed.scheme != "ipfs":
             raise IPFSError(f"Unsupported data pointer: {pointer!r}")
@@ -91,12 +92,14 @@ class IPFSClient:
         return f"{self.gateway}/{quote(target, safe='/')}"
 
     def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes:
-        """Download an ipfs:// pointer through the configured HTTP gateway."""
+        """Download an IPFS file through the configured web gateway."""
         if attempts < 1:
             raise ValueError("attempts must be at least 1")
 
         url = self.gateway_url(pointer)
         last_error: Exception | None = None
+        # A new CID can take a moment to appear at the gateway. Retry with a
+        # short increasing delay instead of failing immediately.
         for attempt in range(attempts):
             try:
                 response = self.session.get(url, timeout=30)
