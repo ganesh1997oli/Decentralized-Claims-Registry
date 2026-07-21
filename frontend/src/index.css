@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #142833;
+  --color-slate: #5d6d73;
+  --color-sand: #f5f0e6;
+  --color-mint: #e4f3ef;
+  --color-teal: #0e746d;
+  --color-coral: #f48262;
+  --color-coral-dark: #c75339;
+  --color-coral-pale: #fff1eb;
+  --font-sans: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+:root {
+  color: var(--color-ink);
+  background: var(--color-sand);
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background-color: var(--color-sand);
+  background-image:
+    linear-gradient(rgba(20, 40, 51, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(20, 40, 51, 0.025) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--color-coral) 45%, white);
+}
+
+@layer components {
+  .field-group {
+    @apply block space-y-2;
+  }
+
+  .field-label {
+    @apply block text-sm font-bold text-ink;
+  }
+
+  .field-help {
+    @apply block text-xs leading-5 text-slate;
+  }
+
+  .field-control {
+    @apply w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm text-ink shadow-sm outline-none transition placeholder:text-slate/50 hover:border-ink/30 focus:border-teal focus:ring-4 focus:ring-teal/10;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

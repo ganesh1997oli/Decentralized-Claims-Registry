@@ -45,6 +45,23 @@ def test_health_does_not_require_external_services():
     assert response.json() == {"status": "ok"}
 
 
+def test_cors_preflight_allows_the_local_react_app():
+    response = TestClient(app).options(
+        "/claims",
+        headers={
+            "Origin": "http://127.0.0.1:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == (
+        "http://127.0.0.1:5173"
+    )
+    assert "POST" in response.headers["access-control-allow-methods"]
+
+
 def test_submit_claim_returns_created_receipt():
     app.dependency_overrides[get_claim_submission_service] = SuccessfulService
     try:
