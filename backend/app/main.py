@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.models import (
     ClaimSubmission,
@@ -22,6 +24,23 @@ app = FastAPI(
         "Synthetic-data demonstration API: validate a claim, upload it to public "
         "IPFS, and anchor its hash and CID on Sepolia."
     ),
+)
+
+frontend_origins = [
+    origin.strip()
+    for origin in os.environ.get(
+        "FRONTEND_ORIGINS",
+        "http://127.0.0.1:5173,http://localhost:5173",
+    ).split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=frontend_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 

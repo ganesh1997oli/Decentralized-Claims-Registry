@@ -8,6 +8,7 @@ writes verdicts back on-chain.
 contract/   Solidity contract, Ignition deploy modules, tests (TS + Solidity)
 listener/   Python: event listener + submit/assess demo (the oracle side)
 backend/    FastAPI: validate, upload and submit synthetic claims (Week 3)
+frontend/   React + Tailwind: browser claim-submission form (Week 4 / M1)
 ```
 
 ## Prerequisites
@@ -129,3 +130,12 @@ an HTTP API suitable for the proposal's later React form. It exposes
 
 See [`backend/README.md`](backend/README.md) for installation, tests, environment
 configuration and a complete example request.
+
+## 7. Week 4 React form (M1)
+
+The `frontend/` application collects a synthetic claim, calls `POST /claims`,
+and displays the confirmed Sepolia transaction and IPFS pointer. The backend
+explicitly allows the local Vite origins through CORS; secrets remain in the
+backend environment and are never included in the browser bundle.
+
+See [`frontend/README.md`](frontend/README.md) for installation and run commands.
