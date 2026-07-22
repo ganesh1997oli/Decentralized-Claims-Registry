@@ -31,14 +31,25 @@ from pathlib import Path
 
 from web3 import Web3
 
-from block_cursor import BlockCursor
-from ipfs_client import IPFSClient, IPFSError
-from kafka_events import (
-    ClaimEventPublisher,
-    ClaimSubmittedEvent,
-    KafkaSettings,
-    create_publisher,
-)
+if __package__:
+    from .block_cursor import BlockCursor
+    from .ipfs_client import IPFSClient, IPFSError
+    from .kafka import (
+        ClaimEventPublisher,
+        ClaimSubmittedEvent,
+        KafkaSettings,
+        create_publisher,
+    )
+else:
+    # Keep the simple `cd listener && python claims_listener.py` command.
+    from block_cursor import BlockCursor
+    from ipfs_client import IPFSClient, IPFSError
+    from kafka import (
+        ClaimEventPublisher,
+        ClaimSubmittedEvent,
+        KafkaSettings,
+        create_publisher,
+    )
 
 # If you hit an "extraData" validation error on Sepolia, uncomment these:
 # from web3.middleware import ExtraDataToPOAMiddleware

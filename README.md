@@ -7,7 +7,6 @@ writes verdicts back on-chain.
 ```
 contract/   Solidity contract, Ignition deploy modules, tests (TS + Solidity)
 listener/   Python: event listener + submit/assess demo (the oracle side)
-infra/      Local supporting services, including the Kafka broker
 backend/    FastAPI: validate, upload and submit synthetic claims (Week 3)
 frontend/   React + Tailwind: browser claim-submission form (Week 4 / M1)
 model/      Versioned synthetic logistic model + inference reasons (Week 5)
@@ -201,9 +200,9 @@ pip install -r listener/requirements.txt
 Start the single-node development broker and create the topic:
 
 ```bash
-docker compose -f infra/kafka/compose.yml up -d
-docker compose -f infra/kafka/compose.yml ps
-docker compose -f infra/kafka/compose.yml exec kafka \
+docker compose -f listener/kafka/compose.yml up -d
+docker compose -f listener/kafka/compose.yml ps
+docker compose -f listener/kafka/compose.yml exec kafka \
   /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
   --describe --topic claims.submitted.v1
@@ -226,10 +225,10 @@ Then run these alongside the existing backend and frontend:
 
 ```bash
 # Terminal 1: consume and independently verify Kafka events
-python listener/claim_event_consumer.py
+python -m listener.kafka.consumer
 
 # Terminal 2: read confirmed Sepolia logs and publish them
-python listener/claims_listener.py
+cd listener && python claims_listener.py
 ```
 
 Submit a new synthetic claim through the React form or `POST /claims`. The
@@ -243,11 +242,11 @@ Run the listener tests with:
 
 ```bash
 cd listener
-../backend/.venv/bin/python -m pytest test_*.py -q
+../backend/.venv/bin/python -m pytest test_*.py kafka/tests -q
 
 # Optional real-broker producer/consumer smoke test
 KAFKA_INTEGRATION_TEST=true \
-  ../backend/.venv/bin/python -m pytest test_kafka_integration.py -q
+  ../backend/.venv/bin/python -m pytest kafka/tests/test_integration.py -q
 ```
 
 The Docker broker is intentionally a one-node, plaintext development service.
@@ -255,3 +254,6 @@ A real deployment should use a multi-broker or managed cluster with TLS/SASL,
 secret-managed credentials, replication, monitoring and alerting. The client
 already accepts `SASL_SSL` settings, but those credentials must never be
 committed to Git.
+
+The Kafka implementation and its local infrastructure are grouped under
+[`listener/kafka/`](listener/kafka/README.md).
