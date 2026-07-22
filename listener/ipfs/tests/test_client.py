@@ -1,6 +1,6 @@
 import unittest
 
-from ipfs_client import IPFSClient, IPFSError, PINATA_UPLOAD_URL
+from ipfs import IPFSClient, IPFSError, PINATA_UPLOAD_URL
 
 
 class FakeResponse:

@@ -26,7 +26,11 @@ from pathlib import Path
 from web3 import Web3
 from web3.exceptions import Web3RPCError
 
-from ipfs_client import IPFSClient, IPFSError
+if __package__:
+    from .ipfs import IPFSClient, IPFSError
+else:
+    # Keep the simple `cd listener && python submit_and_assess_demo.py` command.
+    from ipfs import IPFSClient, IPFSError
 
 
 RPC_URL = os.environ.get("SEPOLIA_RPC_URL", "http://127.0.0.1:8545")

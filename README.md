@@ -6,7 +6,7 @@ writes verdicts back on-chain.
 
 ```
 contract/   Solidity contract, Ignition deploy modules, tests (TS + Solidity)
-listener/   Python: event listener + submit/assess demo (the oracle side)
+listener/   Python listener, demo, and the shared IPFS/Kafka modules
 backend/    FastAPI: validate, upload and submit synthetic claims (Week 3)
 frontend/   React + Tailwind: browser claim-submission form (Week 4 / M1)
 model/      Versioned synthetic logistic model + inference reasons (Week 5)
@@ -122,6 +122,10 @@ with the on-chain hash.
 This milestone deliberately uses synthetic data and does not encrypt it. Never
 upload real names, addresses, photographs, policy documents, or other personal
 data to public IPFS.
+
+The Pinata upload, gateway download and pointer-validation implementation is
+grouped under [`listener/ipfs/`](listener/ipfs/README.md). Both FastAPI and the
+blockchain listener import the same small storage interface.
 
 ## 6. Week 3 FastAPI backend
 

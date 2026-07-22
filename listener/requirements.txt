@@ -1,5 +1,5 @@
 # Pinned to the v7 line: the scripts use v7 APIs (snake_case get_logs kwargs,
 # signed.raw_transaction). v6 renamed both - see comments in the scripts.
 -r kafka/requirements.txt
+-r ipfs/requirements.txt
 web3>=7.0,<8.0
-requests>=2.31,<3.0

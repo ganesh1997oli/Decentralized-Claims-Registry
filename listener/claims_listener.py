@@ -33,7 +33,7 @@ from web3 import Web3
 
 if __package__:
     from .block_cursor import BlockCursor
-    from .ipfs_client import IPFSClient, IPFSError
+    from .ipfs import IPFSClient, IPFSError
     from .kafka import (
         ClaimEventPublisher,
         ClaimSubmittedEvent,
@@ -43,7 +43,7 @@ if __package__:
 else:
     # Keep the simple `cd listener && python claims_listener.py` command.
     from block_cursor import BlockCursor
-    from ipfs_client import IPFSClient, IPFSError
+    from ipfs import IPFSClient, IPFSError
     from kafka import (
         ClaimEventPublisher,
         ClaimSubmittedEvent,

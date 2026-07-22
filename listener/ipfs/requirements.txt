@@ -1,0 +1,2 @@
+# HTTP client used for Pinata uploads and IPFS gateway downloads.
+requests>=2.31,<3.0
