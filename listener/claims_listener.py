@@ -26,6 +26,7 @@ Run AFTER deploying, from the contract/directory:
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -33,23 +34,21 @@ from web3 import Web3
 
 if __package__:
     from .block_cursor import BlockCursor
-    from .ipfs import IPFSClient, IPFSError
-    from .kafka import (
-        ClaimEventPublisher,
-        ClaimSubmittedEvent,
-        KafkaSettings,
-        create_publisher,
-    )
 else:
-    # Keep the simple `cd listener && python claims_listener.py` command.
+    # A directly executed script sees only this folder. Add the repository root
+    # so it can reach the shared integrations without requiring installation.
+    repository_root = str(Path(__file__).resolve().parents[1])
+    if repository_root not in sys.path:
+        sys.path.insert(0, repository_root)
     from block_cursor import BlockCursor
-    from ipfs import IPFSClient, IPFSError
-    from kafka import (
-        ClaimEventPublisher,
-        ClaimSubmittedEvent,
-        KafkaSettings,
-        create_publisher,
-    )
+
+from integrations.ipfs import IPFSClient, IPFSError
+from integrations.kafka import (
+    ClaimEventPublisher,
+    ClaimSubmittedEvent,
+    KafkaSettings,
+    create_publisher,
+)
 
 # If you hit an "extraData" validation error on Sepolia, uncomment these:
 # from web3.middleware import ExtraDataToPOAMiddleware

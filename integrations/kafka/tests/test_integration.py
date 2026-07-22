@@ -5,7 +5,7 @@ import time
 import unittest
 import uuid
 
-from kafka import (
+from integrations.kafka import (
     ClaimSubmittedEvent,
     KafkaClaimEventConsumer,
     KafkaClaimEventPublisher,

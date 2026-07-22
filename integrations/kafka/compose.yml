@@ -1,4 +1,4 @@
-# Local Kafka broker used by the claims event bridge.
+# Local Kafka broker used by the claims event integration.
 services:
   kafka:
     image: apache/kafka:4.2.0

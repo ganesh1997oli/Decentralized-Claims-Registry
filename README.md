@@ -6,7 +6,8 @@ writes verdicts back on-chain.
 
 ```
 contract/   Solidity contract, Ignition deploy modules, tests (TS + Solidity)
-listener/   Python listener, demo, and the shared IPFS/Kafka modules
+integrations/ Shared IPFS storage and Kafka event modules
+listener/   Python blockchain listener and claim demonstration script
 backend/    FastAPI: validate, upload and submit synthetic claims (Week 3)
 frontend/   React + Tailwind: browser claim-submission form (Week 4 / M1)
 model/      Versioned synthetic logistic model + inference reasons (Week 5)
@@ -124,8 +125,8 @@ upload real names, addresses, photographs, policy documents, or other personal
 data to public IPFS.
 
 The Pinata upload, gateway download and pointer-validation implementation is
-grouped under [`listener/ipfs/`](listener/ipfs/README.md). Both FastAPI and the
-blockchain listener import the same small storage interface.
+grouped under [`integrations/ipfs/`](integrations/ipfs/README.md). FastAPI, the
+blockchain listener and the Kafka consumer import the same small interface.
 
 ## 6. Week 3 FastAPI backend
 
@@ -204,9 +205,9 @@ pip install -r listener/requirements.txt
 Start the single-node development broker and create the topic:
 
 ```bash
-docker compose -f listener/kafka/compose.yml up -d
-docker compose -f listener/kafka/compose.yml ps
-docker compose -f listener/kafka/compose.yml exec kafka \
+docker compose -f integrations/kafka/compose.yml up -d
+docker compose -f integrations/kafka/compose.yml ps
+docker compose -f integrations/kafka/compose.yml exec kafka \
   /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
   --describe --topic claims.submitted.v1
@@ -229,7 +230,7 @@ Then run these alongside the existing backend and frontend:
 
 ```bash
 # Terminal 1: consume and independently verify Kafka events
-python -m listener.kafka.consumer
+python -m integrations.kafka.consumer
 
 # Terminal 2: read confirmed Sepolia logs and publish them
 cd listener && python claims_listener.py
@@ -245,12 +246,13 @@ the listener, remove its matching file under `listener/.state/`, and set
 Run the listener tests with:
 
 ```bash
-cd listener
-../backend/.venv/bin/python -m pytest test_*.py kafka/tests -q
+backend/.venv/bin/python -m pytest \
+  listener/test_*.py integrations/ipfs/tests integrations/kafka/tests -q
 
 # Optional real-broker producer/consumer smoke test
 KAFKA_INTEGRATION_TEST=true \
-  ../backend/.venv/bin/python -m pytest kafka/tests/test_integration.py -q
+  backend/.venv/bin/python -m pytest \
+  integrations/kafka/tests/test_integration.py -q
 ```
 
 The Docker broker is intentionally a one-node, plaintext development service.
@@ -260,4 +262,4 @@ already accepts `SASL_SSL` settings, but those credentials must never be
 committed to Git.
 
 The Kafka implementation and its local infrastructure are grouped under
-[`listener/kafka/`](listener/kafka/README.md).
+[`integrations/kafka/`](integrations/kafka/README.md).

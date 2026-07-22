@@ -8,11 +8,7 @@ from __future__ import annotations
 
 from web3 import Web3
 
-if __package__ == "listener.kafka":
-    from ..ipfs import IPFSClient
-else:
-    # This branch keeps `cd listener && python -m kafka.consumer` convenient.
-    from ipfs import IPFSClient
+from integrations.ipfs import IPFSClient
 
 from .events import (
     ClaimSubmittedEvent,

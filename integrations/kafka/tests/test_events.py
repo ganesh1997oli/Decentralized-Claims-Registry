@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from kafka import (
+from integrations.kafka import (
     ClaimEventDecodeError,
     ClaimSubmittedEvent,
     KafkaClaimEventConsumer,

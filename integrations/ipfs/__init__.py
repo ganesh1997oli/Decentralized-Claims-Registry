@@ -1,4 +1,4 @@
-"""Small interface for IPFS-backed claim storage."""
+"""Small interface for the IPFS-backed claim-storage integration."""
 
 from .client import (
     DEFAULT_IPFS_GATEWAY,

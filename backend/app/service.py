@@ -22,7 +22,7 @@ from backend.app.models import (
     ClaimSubmission,
     ClaimSubmissionResponse,
 )
-from listener.ipfs import IPFSClient, IPFSError
+from integrations.ipfs import IPFSClient, IPFSError
 from model.scorer import FraudScore, SyntheticFraudScorer
 
 

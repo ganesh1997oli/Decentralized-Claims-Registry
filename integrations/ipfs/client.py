@@ -1,4 +1,4 @@
-"""Upload claim bytes to Pinata and read them back through an IPFS gateway."""
+"""Upload claim bytes to Pinata and read them through an IPFS gateway."""
 
 from __future__ import annotations
 

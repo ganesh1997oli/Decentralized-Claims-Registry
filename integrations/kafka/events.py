@@ -342,7 +342,7 @@ class KafkaClaimEventPublisher:
                 from confluent_kafka import Producer
             except ImportError as exc:
                 raise KafkaConfigurationError(
-                    "Install listener/requirements.txt to enable Kafka"
+                    "Install integrations/kafka/requirements.txt to enable Kafka"
                 ) from exc
             producer = Producer(settings.producer_config())
         self._producer = producer
@@ -409,7 +409,7 @@ class KafkaClaimEventConsumer:
                 from confluent_kafka import Consumer
             except ImportError as exc:
                 raise KafkaConfigurationError(
-                    "Install listener/requirements.txt to enable Kafka"
+                    "Install integrations/kafka/requirements.txt to enable Kafka"
                 ) from exc
             consumer = Consumer(settings.consumer_config())
         self._consumer = consumer

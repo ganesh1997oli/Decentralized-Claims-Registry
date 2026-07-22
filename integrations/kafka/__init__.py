@@ -1,4 +1,4 @@
-"""Small interface for the claims Kafka module.
+"""Small interface for the claims Kafka integration.
 
 Callers import from this file so the message encoding and client setup can
 change without spreading Kafka details through the listener.

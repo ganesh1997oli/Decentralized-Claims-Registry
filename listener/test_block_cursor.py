@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from block_cursor import BlockCursor, BlockCursorError
+from listener.block_cursor import BlockCursor, BlockCursorError
 
 
 class BlockCursorTests(unittest.TestCase):

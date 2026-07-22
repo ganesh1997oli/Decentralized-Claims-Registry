@@ -1,9 +1,10 @@
-# IPFS claim storage
+# IPFS claim-storage integration
 
-Everything specific to IPFS and Pinata lives in this folder:
+Everything specific to IPFS and Pinata lives in this module:
 
 - `client.py` uploads claim bytes and downloads `ipfs://` pointers.
-- `__init__.py` is the small interface used by the backend and listener.
+- `__init__.py` is the small interface used by the backend, blockchain listener,
+  and Kafka consumer.
 - `requirements.txt` owns the HTTP client dependency.
 - `tests/` verifies uploads, downloads and pointer validation without a network.
 
