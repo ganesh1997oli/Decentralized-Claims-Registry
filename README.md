@@ -7,6 +7,7 @@ writes verdicts back on-chain.
 ```
 contract/   Solidity contract, Ignition deploy modules, tests (TS + Solidity)
 listener/   Python: event listener + submit/assess demo (the oracle side)
+infra/      Local supporting services, including the Kafka broker
 backend/    FastAPI: validate, upload and submit synthetic claims (Week 3)
 frontend/   React + Tailwind: browser claim-submission form (Week 4 / M1)
 model/      Versioned synthetic logistic model + inference reasons (Week 5)
@@ -166,3 +167,91 @@ IPFS pointer, and timestamps. Page sizes of 5, 10, 25, or 50 are available in
 the interface. This is intentionally a small-testnet implementation;
 searchable production history belongs in an indexer such as The Graph or
 PostgreSQL.
+
+## 9. Kafka event bridge
+
+The listener can now publish every verified `ClaimSubmitted` log to the
+versioned `claims.submitted.v1` topic. The message contains the on-chain claim
+ID, IPFS pointer and hash, plus the block and transaction identity. It does not
+copy the claim document into Kafka.
+
+The flow is:
+
+```text
+Sepolia log -> listener -> verify IPFS bytes -> Kafka -> verifier consumer
+                         -> save block cursor      -> commit Kafka offset
+```
+
+The listener saves its block cursor only after Kafka acknowledges all events in
+the block range. The consumer commits its Kafka offset only after it downloads
+the IPFS document and verifies its hash. Delivery is therefore at-least-once:
+the deterministic `event_id` must be a unique key when the next-stage
+PostgreSQL processor is added.
+
+### Run Kafka locally
+
+Install the new Python client in the same virtual environment used for the
+listener:
+
+```bash
+source backend/.venv/bin/activate
+pip install -r listener/requirements.txt
+```
+
+Start the single-node development broker and create the topic:
+
+```bash
+docker compose -f infra/kafka/compose.yml up -d
+docker compose -f infra/kafka/compose.yml ps
+docker compose -f infra/kafka/compose.yml exec kafka \
+  /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 \
+  --describe --topic claims.submitted.v1
+```
+
+In `listener/.env.local`, copy the Kafka variables from `.env.example` and set:
+
+```dotenv
+KAFKA_ENABLED="true"
+KAFKA_BOOTSTRAP_SERVERS="127.0.0.1:9092"
+```
+
+Load that file in each new terminal:
+
+```bash
+set -a; source listener/.env.local; set +a
+```
+
+Then run these alongside the existing backend and frontend:
+
+```bash
+# Terminal 1: consume and independently verify Kafka events
+python listener/claim_event_consumer.py
+
+# Terminal 2: read confirmed Sepolia logs and publish them
+python listener/claims_listener.py
+```
+
+Submit a new synthetic claim through the React form or `POST /claims`. The
+listener should print `[KafkaPublished]` and the consumer should print
+`[KafkaProcessed]`. On its first run the listener starts at the latest confirmed
+block, so submit the test claim after it starts. To backfill deliberately, stop
+the listener, remove its matching file under `listener/.state/`, and set
+`LISTENER_START_BLOCK` to the first block you want to read.
+
+Run the listener tests with:
+
+```bash
+cd listener
+../backend/.venv/bin/python -m pytest test_*.py -q
+
+# Optional real-broker producer/consumer smoke test
+KAFKA_INTEGRATION_TEST=true \
+  ../backend/.venv/bin/python -m pytest test_kafka_integration.py -q
+```
+
+The Docker broker is intentionally a one-node, plaintext development service.
+A real deployment should use a multi-broker or managed cluster with TLS/SASL,
+secret-managed credentials, replication, monitoring and alerting. The client
+already accepts `SASL_SSL` settings, but those credentials must never be
+committed to Git.
