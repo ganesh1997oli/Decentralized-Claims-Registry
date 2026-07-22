@@ -21,12 +21,20 @@ import argparse
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 from web3 import Web3
 from web3.exceptions import Web3RPCError
 
-from ipfs_client import IPFSClient, IPFSError
+if not __package__:
+    # Keep direct execution working while the shared IPFS module lives at the
+    # repository root.
+    repository_root = str(Path(__file__).resolve().parents[1])
+    if repository_root not in sys.path:
+        sys.path.insert(0, repository_root)
+
+from integrations.ipfs import IPFSClient, IPFSError
 
 
 RPC_URL = os.environ.get("SEPOLIA_RPC_URL", "http://127.0.0.1:8545")

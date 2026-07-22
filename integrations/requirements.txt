@@ -1,0 +1,3 @@
+# Install both external-system adapters used by the blockchain listener.
+-r ipfs/requirements.txt
+-r kafka/requirements.txt

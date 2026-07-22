@@ -1,16 +1,31 @@
-# FastAPI claim-submission backend (proposal Week 3)
+# FastAPI backend
 
-This service validates a synthetic claim, serializes it deterministically,
-uploads the exact JSON bytes to public IPFS through Pinata, verifies the IPFS
-round trip, and submits the resulting Keccak-256 hash and `ipfs://` pointer to
-the deployed Sepolia `ClaimsRegistry` contract. Week 5 then runs the versioned
-synthetic logistic model and records either `UnderReview` or `Flagged` in a
-second Sepolia transaction.
+The backend coordinates the complete claim-submission workflow. It validates the
+request, scores the synthetic claim, stores its canonical JSON on IPFS, verifies
+the uploaded bytes, anchors the hash and pointer on Sepolia, and writes the model
+result back to the contract.
 
-It is a dissertation prototype. Public IPFS is not appropriate for personal or
-confidential claim data, so submit synthetic data only.
+It also provides the paginated claims data used by the React dashboard.
 
-## Install and test
+> Submit synthetic data only. The current IPFS storage is public and
+> unencrypted.
+
+## Workflow
+
+For `POST /claims`, the backend performs these steps in order:
+
+1. Validate the request with Pydantic.
+2. Create deterministic JSON bytes.
+3. Calculate a probability with the local synthetic model.
+4. Upload the bytes to Pinata and read them back through the IPFS gateway.
+5. Calculate the Keccak-256 hash and call `submitClaim` on Sepolia.
+6. Call `assessClaim` with `UnderReview` or `Flagged` and the score in basis
+   points.
+7. Return the submission and assessment receipts to the browser.
+
+The browser never receives the Pinata JWT or Sepolia private key.
+
+## Install
 
 Run from the repository root:
 
@@ -18,24 +33,72 @@ Run from the repository root:
 python3 -m venv backend/.venv
 source backend/.venv/bin/activate
 pip install -r backend/requirements.txt
-pytest backend/tests -q
 ```
 
-## Configure and run
+## Configure
 
 ```bash
 cp backend/.env.example backend/.env.local
-# Fill in the Sepolia RPC URL, Sepolia-only private key, and Pinata JWT.
-set -a; source backend/.env.local; set +a
+cp integrations/ipfs/.env.example integrations/ipfs/.env.local
+```
+
+Add the blockchain settings to the backend file and the Pinata settings to the
+IPFS file. Load both before running FastAPI:
+
+```bash
+set -a
+source backend/.env.local
+source integrations/ipfs/.env.local
+set +a
+```
+
+Backend settings:
+
+| Variable | Required | Purpose |
+| --- | :---: | --- |
+| `SEPOLIA_RPC_URL` | Yes | RPC endpoint for Ethereum Sepolia |
+| `SEPOLIA_PRIVATE_KEY` | Yes | Fresh Sepolia-only signer authorized as an assessor |
+| `MODULE_ID` | No | Ignition artifact ID; defaults to `ClaimsRegistryModule#ClaimsRegistry` |
+| `IGNITION_DIR` | No | Alternative Ignition deployment directory |
+| `RECEIPT_TIMEOUT` | No | Seconds to wait for a transaction receipt |
+| `FRAUD_MODEL_PATH` | No | Alternative compatible model artifact |
+| `FRONTEND_ORIGINS` | No | Comma-separated browser origins allowed by CORS |
+
+IPFS settings:
+
+| Variable | Required | Purpose |
+| --- | :---: | --- |
+| `PINATA_JWT` | Yes | Server-side Pinata upload credential |
+| `IPFS_GATEWAY` | No | Gateway used for the upload round-trip check |
+
+Never commit either `.env.local` file. The signer must contain test ETH and must
+have assessor permission in the deployed contract.
+
+## Run
+
+```bash
+source backend/.venv/bin/activate
+set -a
+source backend/.env.local
+source integrations/ipfs/.env.local
+set +a
 uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Open <http://127.0.0.1:8000/docs> for the interactive API documentation.
+Useful local URLs:
 
-The service reads the contract address and ABI from
-`contract/ignition/deployments/chain-11155111` by default.
+- Health check: <http://127.0.0.1:8000/health>
+- Interactive API documentation: <http://127.0.0.1:8000/docs>
 
-## Submit a synthetic claim
+## Endpoints
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/health` | Confirms that the process is running; does not call Sepolia or Pinata |
+| `GET` | `/claims?page=1&page_size=10` | Returns current claims newest first; page size is limited to 50 |
+| `POST` | `/claims` | Validates, scores, stores and anchors a synthetic claim |
+
+### Example submission
 
 ```bash
 curl -X POST http://127.0.0.1:8000/claims \
@@ -51,43 +114,36 @@ curl -X POST http://127.0.0.1:8000/claims \
   }'
 ```
 
-A successful request returns HTTP `201` with the claim ID, transaction hash,
-block number, IPFS pointer, on-chain claim hash, model output, compact reasons,
-and assessment transaction. Run
-`listener/claims_listener.py` in another terminal to observe and independently
-verify both `ClaimSubmitted` and `ClaimAssessed`.
+A successful response has HTTP status `201` and includes:
 
-If claim anchoring succeeds but the assessment transaction fails, the API still
-returns HTTP `201` with `assessment.on_chain=false`. This avoids a browser retry
-creating a duplicate claim. Record that claim ID for an operational assessment
-retry rather than submitting it again.
+- the claim ID, block number and submission transaction;
+- the `ipfs://` pointer and on-chain hash;
+- the model version, probability, threshold and contributing reasons;
+- the assessment status, fraud score and assessment transaction.
 
-## API endpoints
+If anchoring succeeds but the assessment transaction fails, the response still
+returns the successful claim receipt with `assessment.on_chain` set to `false`.
+This prevents a browser retry from creating a duplicate claim.
 
-- `GET /health` - process liveness; does not call Pinata or Sepolia.
-- `GET /claims?page=1&page_size=10` - read a newest-first page of current claim
-  status and fraud scores from Sepolia. `page_size` must be between 1 and 50.
-- `POST /claims` - validate, upload, verify, and submit a synthetic claim.
+## Test
 
-The paginated response contains `items`, `page`, `page_size`, `total_items`,
-and `total_pages`. The endpoint calls `claimCount()` and then `getClaim(id)`
-only for the requested IDs. This direct read is appropriate for the small
-testnet demonstration. Use an indexed store or The Graph before operating at
-production scale.
-
-## Week 5 model boundary
-
-The default artifact lives at
-`model/artifacts/synthetic-logistic-v1.json`. Override it with
-`FRAUD_MODEL_PATH` when testing another compatible artifact. Regenerate the
-tracked baseline from the repository root with:
+The tests use in-memory adapters and do not spend test ETH or contact Pinata:
 
 ```bash
-python -m model.train
+source backend/.venv/bin/activate
+python -m pytest backend/tests -q
 ```
 
-The local reasons are logistic feature contributions, not SHAP values. The
-artifact is intentionally synthetic and demonstrates integration only.
+## Current limitations
 
-For production, replace direct private-key signing with a managed relayer and
-encrypt sensitive claim data before storing it off-chain.
+- The claims list reads contract state directly and is suitable only for this
+  small testnet demonstration.
+- One process-level wallet submits and assesses every claim.
+- IPFS content is public and unencrypted.
+- The model is trained on deterministic synthetic data, not real insurance
+  records.
+- Authentication, authorization, audit storage and rate limiting are not yet
+  implemented.
+
+See the [root project guide](../README.md) for the complete application run and
+the [model guide](../model/README.md) for how the fraud score is produced.
