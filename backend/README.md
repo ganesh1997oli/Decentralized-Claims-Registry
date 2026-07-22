@@ -39,34 +39,49 @@ pip install -r backend/requirements.txt
 
 ```bash
 cp backend/.env.example backend/.env.local
+cp integrations/ipfs/.env.example integrations/ipfs/.env.local
 ```
 
-Edit `.env.local`, then load it into each terminal that runs the backend:
+Add the blockchain settings to the backend file and the Pinata settings to the
+IPFS file. Load both before running FastAPI:
 
 ```bash
-set -a; source backend/.env.local; set +a
+set -a
+source backend/.env.local
+source integrations/ipfs/.env.local
+set +a
 ```
+
+Backend settings:
 
 | Variable | Required | Purpose |
 | --- | :---: | --- |
 | `SEPOLIA_RPC_URL` | Yes | RPC endpoint for Ethereum Sepolia |
 | `SEPOLIA_PRIVATE_KEY` | Yes | Fresh Sepolia-only signer authorized as an assessor |
-| `PINATA_JWT` | Yes | Server-side Pinata upload credential |
-| `IPFS_GATEWAY` | No | Gateway used for the upload round-trip check |
 | `MODULE_ID` | No | Ignition artifact ID; defaults to `ClaimsRegistryModule#ClaimsRegistry` |
 | `IGNITION_DIR` | No | Alternative Ignition deployment directory |
 | `RECEIPT_TIMEOUT` | No | Seconds to wait for a transaction receipt |
 | `FRAUD_MODEL_PATH` | No | Alternative compatible model artifact |
 | `FRONTEND_ORIGINS` | No | Comma-separated browser origins allowed by CORS |
 
-Never commit `.env.local`. The signer must contain test ETH and must have
-assessor permission in the deployed contract.
+IPFS settings:
+
+| Variable | Required | Purpose |
+| --- | :---: | --- |
+| `PINATA_JWT` | Yes | Server-side Pinata upload credential |
+| `IPFS_GATEWAY` | No | Gateway used for the upload round-trip check |
+
+Never commit either `.env.local` file. The signer must contain test ETH and must
+have assessor permission in the deployed contract.
 
 ## Run
 
 ```bash
 source backend/.venv/bin/activate
-set -a; source backend/.env.local; set +a
+set -a
+source backend/.env.local
+source integrations/ipfs/.env.local
+set +a
 uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 

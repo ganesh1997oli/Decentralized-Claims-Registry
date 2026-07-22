@@ -55,28 +55,33 @@ pip install -r listener/requirements.txt
 
 ```bash
 cp listener/.env.example listener/.env.local
+cp integrations/ipfs/.env.example integrations/ipfs/.env.local
 ```
 
-Load it before starting the listener:
+The listener owns blockchain polling settings; the IPFS module owns the gateway.
+Load both before starting the listener:
 
 ```bash
-set -a; source listener/.env.local; set +a
+set -a
+source listener/.env.local
+source integrations/ipfs/.env.local
+set +a
 ```
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SEPOLIA_RPC_URL` | Public Sepolia endpoint in the script | Ethereum RPC endpoint |
-| `IPFS_GATEWAY` | Pinata public gateway | Downloads and verifies the claim document |
+| `SEPOLIA_PRIVATE_KEY` | Empty | Used only by the command-line submission demo |
 | `IGNITION_DIR` | Sepolia Ignition deployment | Address and ABI location |
 | `MODULE_ID` | `ClaimsRegistryModule#ClaimsRegistry` | Ignition artifact ID |
 | `POLL_INTERVAL` | `5` | Seconds between polling attempts |
 | `CONFIRMATION_BLOCKS` | `2` | Blocks held back for basic reorganization safety |
 | `LISTENER_STATE_FILE` | File under `listener/.state/` | Durable block checkpoint |
 | `LISTENER_START_BLOCK` | Latest confirmed block | First block for a deliberate initial backfill |
-| `KAFKA_ENABLED` | `false` | Publishes verified submissions when enabled |
 
-Kafka connection and security variables are listed in `.env.example` and
-explained in the [Kafka guide](../integrations/kafka/README.md).
+IPFS variables are documented in the
+[IPFS guide](../integrations/ipfs/README.md). Kafka variables are documented in
+the [Kafka guide](../integrations/kafka/README.md).
 
 The listener only downloads IPFS data, so it does not require `PINATA_JWT`.
 `SEPOLIA_PRIVATE_KEY` is needed only by `submit_and_assess_demo.py`.
@@ -87,7 +92,10 @@ From the repository root:
 
 ```bash
 source backend/.venv/bin/activate
-set -a; source listener/.env.local; set +a
+set -a
+source listener/.env.local
+source integrations/ipfs/.env.local
+set +a
 python listener/claims_listener.py
 ```
 
@@ -130,6 +138,10 @@ The backend is the recommended submission path. For a smaller terminal-only
 demonstration, load a Pinata JWT and a funded assessor key, then run:
 
 ```bash
+set -a
+source listener/.env.local
+source integrations/ipfs/.env.local
+set +a
 python listener/submit_and_assess_demo.py
 ```
 

@@ -78,6 +78,20 @@ the Python source.
 Never use a wallet that holds real assets. Keep the private key and Pinata JWT in
 ignored `.env.local` files and never expose them to the browser.
 
+Environment settings are kept beside the module that owns them:
+
+| File | Settings |
+| --- | --- |
+| `backend/.env.local` | Sepolia signing, model and browser access |
+| `listener/.env.local` | Sepolia polling and checkpoint behaviour |
+| `integrations/ipfs/.env.local` | Pinata upload and IPFS gateway |
+| `integrations/kafka/.env.local` | Kafka connection, delivery and security |
+| `frontend/.env.local` | Public browser configuration only |
+
+If you used the older combined files, manually move `PINATA_*` and `IPFS_*`
+values into the IPFS file and `KAFKA_*` values into the Kafka file. Do not copy
+secret values into any tracked `.env.example` file.
+
 ## Quick start on Sepolia
 
 The contract is already deployed, so the normal application run needs the
@@ -91,9 +105,13 @@ python3 -m venv backend/.venv
 source backend/.venv/bin/activate
 pip install -r backend/requirements.txt
 
-cp backend/.env.example backend/.env.local
-# Add SEPOLIA_RPC_URL, SEPOLIA_PRIVATE_KEY and PINATA_JWT.
-set -a; source backend/.env.local; set +a
+cp backend/.env.example backend/.env.local                 # first run only
+cp integrations/ipfs/.env.example integrations/ipfs/.env.local  # first run only
+# Add the Sepolia values to the backend file and PINATA_JWT to the IPFS file.
+set -a
+source backend/.env.local
+source integrations/ipfs/.env.local
+set +a
 
 uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
@@ -120,9 +138,12 @@ and fraud score.
 source backend/.venv/bin/activate
 pip install -r listener/requirements.txt
 
-cp listener/.env.example listener/.env.local
-# Add SEPOLIA_RPC_URL and optionally your Pinata gateway.
-set -a; source listener/.env.local; set +a
+cp listener/.env.example listener/.env.local  # first run only
+# Add SEPOLIA_RPC_URL to the listener file.
+set -a
+source listener/.env.local
+source integrations/ipfs/.env.local
+set +a
 
 python listener/claims_listener.py
 ```
@@ -135,13 +156,22 @@ For a successful submission, the listener prints `ClaimSubmitted`,
 ```bash
 docker compose -f integrations/kafka/compose.yml up -d
 
-set -a; source listener/.env.local; set +a
-export KAFKA_ENABLED=true
+cp integrations/kafka/.env.example integrations/kafka/.env.local  # first run only
+# Set KAFKA_ENABLED="true" in integrations/kafka/.env.local.
 
 # Terminal A
+set -a
+source integrations/ipfs/.env.local
+source integrations/kafka/.env.local
+set +a
 python -m integrations.kafka.consumer
 
 # Terminal B
+set -a
+source listener/.env.local
+source integrations/ipfs/.env.local
+source integrations/kafka/.env.local
+set +a
 python listener/claims_listener.py
 ```
 

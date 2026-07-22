@@ -68,15 +68,15 @@ docker compose -f integrations/kafka/compose.yml exec kafka \
   --describe --topic claims.submitted.v1
 ```
 
-## Configure the listener and consumer
+## Configure Kafka
 
-Copy the listener environment example if you have not already done so:
+Create the ignored Kafka environment file from the tracked template:
 
 ```bash
-cp listener/.env.example listener/.env.local
+cp integrations/kafka/.env.example integrations/kafka/.env.local
 ```
 
-For the local broker, use:
+For the local broker, set the following values in `.env.local`:
 
 ```dotenv
 KAFKA_ENABLED="true"
@@ -85,16 +85,19 @@ KAFKA_CLAIM_SUBMITTED_TOPIC="claims.submitted.v1"
 KAFKA_SECURITY_PROTOCOL="PLAINTEXT"
 ```
 
-The same environment file also needs the Sepolia RPC and IPFS gateway settings
-used by the listener. Load it in every terminal:
+The Kafka consumer also verifies IPFS content, so it loads both integration
+environment files:
 
 ```bash
-set -a; source listener/.env.local; set +a
+set -a
+source integrations/ipfs/.env.local
+source integrations/kafka/.env.local
+set +a
 ```
 
 Additional variables support the client ID, consumer group, delivery timeout,
 poll interval, and TLS/SASL credentials. Their names and safe local defaults are
-documented in `listener/.env.example`.
+documented in `integrations/kafka/.env.example`.
 
 ## Run the event flow
 
@@ -104,7 +107,10 @@ Terminal A:
 
 ```bash
 source backend/.venv/bin/activate
-set -a; source listener/.env.local; set +a
+set -a
+source integrations/ipfs/.env.local
+source integrations/kafka/.env.local
+set +a
 python -m integrations.kafka.consumer
 ```
 
@@ -112,7 +118,11 @@ Terminal B:
 
 ```bash
 source backend/.venv/bin/activate
-set -a; source listener/.env.local; set +a
+set -a
+source listener/.env.local
+source integrations/ipfs/.env.local
+source integrations/kafka/.env.local
+set +a
 python listener/claims_listener.py
 ```
 
