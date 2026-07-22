@@ -9,7 +9,8 @@ IPFS references needed by a downstream worker.
 - `events.py`: versioned event schema, configuration, producer, and consumer
 - `consumer.py`: demonstration worker that downloads the IPFS bytes and checks
   their Keccak-256 hash
-- `compose.yml`: one-node Kafka environment for local development
+- `compose.yml`: one-node Kafka environment and browser dashboard for local
+  development
 - `tests/`: isolated adapter tests and an optional live-broker smoke test
 
 The listener imports the public interface from `integrations.kafka`, keeping
@@ -57,6 +58,25 @@ From the repository root:
 docker compose -f integrations/kafka/compose.yml up -d
 docker compose -f integrations/kafka/compose.yml ps
 ```
+
+## View Kafka in the browser
+
+Open `http://127.0.0.1:8081` after the Compose services have started. The
+dashboard connects to the local cluster as `claims-local`.
+
+To inspect claim events:
+
+1. Open **Topics**.
+2. Select `claims.submitted.v1`.
+3. Open the **Messages** tab.
+4. Select all partitions and load the messages.
+
+The dashboard also shows partitions, offsets, consumer groups, and consumer
+lag. A lag of zero for `claims-registry-verifier-v1` means that the Python
+consumer has processed every available event.
+
+Kafka stores the events in the `claims-kafka-data` Docker volume. The dashboard
+only reads and displays those events; it does not create a second copy.
 
 The initialization container creates `claims.submitted.v1` with three partitions
 and seven-day retention. Confirm that it exists:

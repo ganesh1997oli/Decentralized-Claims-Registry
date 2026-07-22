@@ -54,5 +54,19 @@ services:
           --config cleanup.policy=delete \
           --config retention.ms=604800000
 
+  # This local dashboard makes Kafka topics and messages easier to inspect.
+  # It connects through Kafka's internal Docker listener, not the host port.
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:latest
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8081:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: "claims-local"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka:19092"
+
 volumes:
   claims-kafka-data:
