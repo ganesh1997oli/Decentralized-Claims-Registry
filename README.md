@@ -3,7 +3,8 @@
 A dissertation prototype that records verifiable insurance-claim references on
 Ethereum while keeping the claim document off-chain. The application combines a
 Solidity registry, public IPFS storage, a FastAPI backend, a React interface, a
-transparent synthetic fraud model, and an optional Kafka event stream.
+transparent demonstration scorer, a research XGBoost/SHAP workflow, and an
+optional Kafka event stream.
 
 > **Research prototype:** the current workflow uses synthetic claim data,
 > unencrypted public IPFS, a Sepolia test wallet, and a demonstration model. Do
@@ -50,7 +51,7 @@ FastAPI ──► synthetic fraud model
 | `contract/` | Solidity contract, tests and Ignition deployments | [Contract guide](contract/README.md) |
 | `backend/` | FastAPI validation, scoring, IPFS and Sepolia workflow | [Backend guide](backend/README.md) |
 | `frontend/` | React claim form, receipt and claims dashboard | [Frontend guide](frontend/README.md) |
-| `model/` | Deterministic synthetic model training and inference | [Model guide](model/README.md) |
+| `model/` | Demonstration scoring plus XGBoost/SHAP research evaluation | [Model guide](model/README.md) |
 | `listener/` | Blockchain event polling, verification and checkpoints | [Listener guide](listener/README.md) |
 | `integrations/ipfs/` | Shared Pinata and IPFS adapter | [IPFS guide](integrations/ipfs/README.md) |
 | `integrations/kafka/` | Kafka messages, producer, consumer and local broker | [Kafka guide](integrations/kafka/README.md) |
@@ -186,6 +187,7 @@ Install the backend and listener requirements first, then run the project checks
 # Python: backend, model, listener and integrations
 source backend/.venv/bin/activate
 pip install -r listener/requirements.txt
+pip install -r model/requirements.txt
 python -m pytest \
   listener/test_*.py integrations/ipfs/tests integrations/kafka/tests \
   backend/tests model/tests -q
