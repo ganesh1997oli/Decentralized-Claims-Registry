@@ -128,6 +128,18 @@ can be reproduced with the command above.
 
 See [RESULTS.md](RESULTS.md) for the first complete run on the pinned dataset.
 
+### Explore in Jupyter or Colab
+
+The same workflow is available as two lightweight notebooks:
+
+- [Dataset exploration](notebooks/01_dataset_exploration.ipynb)
+- [XGBoost and SHAP](notebooks/02_xgboost_and_shap.ipynb)
+
+They can be opened directly in Google Colab or run locally from the repository.
+The notebooks reuse the functions in `research_pipeline.py`, so experiments and
+the command-line workflow follow the same preprocessing and evaluation rules.
+See the [notebook guide](notebooks/README.md) for local setup.
+
 ## Research boundaries
 
 The synthetic artifact proves the integration only. Meaningful evaluation would
