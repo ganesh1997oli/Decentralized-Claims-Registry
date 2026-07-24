@@ -128,6 +128,36 @@ can be reproduced with the command above.
 
 See [RESULTS.md](RESULTS.md) for the first complete run on the pinned dataset.
 
+### Use the artifact in the application
+
+Training now saves an artifact schema containing:
+
+- the preprocessing and XGBoost pipeline;
+- the model SHA-256 digest;
+- the validation threshold and model version;
+- country-level synthetic claim-frequency reference values;
+- test metrics and global SHAP importance.
+
+`XGBoostFraudScorer` verifies the checksum before loading the trusted joblib
+file. It loads the pipeline and SHAP explainer once, enriches each claim with
+the reviewed country reference value, and returns the existing `FraudScore`
+interface with three claim-specific SHAP reasons.
+
+Copy the environment template after training:
+
+```bash
+cp model/.env.example model/.env.local
+```
+
+The asynchronous Kafka worker is the intended application seam:
+
+```bash
+python -m integrations.kafka.scoring_worker
+```
+
+Do not load joblib files received from users or untrusted storage. Joblib uses
+Python object deserialization and must be restricted to reviewed artifacts.
+
 ### Explore in Jupyter or Colab
 
 The same workflow is available as two lightweight notebooks:

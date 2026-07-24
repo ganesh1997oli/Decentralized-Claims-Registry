@@ -7,6 +7,7 @@ import {
   type FormEvent,
 } from 'react'
 import {
+  getClaimAssessment,
   listClaims,
   submitClaim,
   type ClaimPayload,
@@ -18,18 +19,32 @@ import {
 type FormValues = {
   claimReference: string
   policyReference: string
-  claimType: string
+  claimType: ClaimPayload['claimType']
   incidentDate: string
-  amountPounds: string
+  claimAmountUsd: string
+  policyPremiumUsd: string
+  vehicleAge: string
+  vehicleType: string
+  country: string
+  regionType: ClaimPayload['regionType']
+  thirdPartyInjuryFlag: boolean
+  totalLossFlag: boolean
   description: string
 }
 
 const initialForm = (): FormValues => ({
   claimReference: `synthetic-web-${Date.now().toString().slice(-6)}`,
   policyReference: 'synthetic-policy-42',
-  claimType: 'vehicle_damage',
+  claimType: 'collision',
   incidentDate: new Date().toISOString().slice(0, 10),
-  amountPounds: '2500.00',
+  claimAmountUsd: '2500.00',
+  policyPremiumUsd: '480.00',
+  vehicleAge: '6',
+  vehicleType: 'sedan',
+  country: 'Nigeria',
+  regionType: 'urban',
+  thirdPartyInjuryFlag: false,
+  totalLossFlag: false,
   description: 'Synthetic bumper damage submitted through the React form',
 })
 
@@ -70,11 +85,15 @@ function CopyButton({ label, value }: { label: string; value: string }) {
 function ReceiptCard({ receipt }: { receipt: ClaimReceipt }) {
   const transactionUrl = `https://sepolia.etherscan.io/tx/${receipt.transaction_hash}`
   const assessment = receipt.assessment
-  const assessmentUrl = assessment.transaction_hash
+  const assessmentUrl = assessment?.transaction_hash
     ? `https://sepolia.etherscan.io/tx/${assessment.transaction_hash}`
     : null
-  const probabilityPercent = (assessment.probability * 100).toFixed(1)
-  const thresholdPercent = (assessment.threshold * 100).toFixed(0)
+  const probabilityPercent = assessment
+    ? (assessment.probability * 100).toFixed(1)
+    : null
+  const thresholdPercent = assessment
+    ? (assessment.threshold * 100).toFixed(0)
+    : null
 
   return (
     <section
@@ -151,7 +170,8 @@ function ReceiptCard({ receipt }: { receipt: ClaimReceipt }) {
         </div>
       </dl>
 
-      <section className="border-t border-ink/8 bg-sand/55 px-6 py-6 sm:px-8">
+      {assessment ? (
+        <section className="border-t border-ink/8 bg-sand/55 px-6 py-6 sm:px-8">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <p className="text-xs font-bold tracking-[0.14em] text-teal uppercase">
@@ -216,15 +236,29 @@ function ReceiptCard({ receipt }: { receipt: ClaimReceipt }) {
         </div>
 
         <p className="mt-5 border-t border-ink/8 pt-4 text-xs leading-5 text-slate">
-          This is a synthetic logistic-regression demonstration. It supports the
-          integration test and must not be used to decide a real insurance claim.
+          This synthetic research score supports the integration test and must
+          not be used to decide a real insurance claim.
         </p>
-      </section>
+        </section>
+      ) : (
+        <section className="border-t border-ink/8 bg-sand/55 px-6 py-6 sm:px-8">
+          <p className="text-xs font-bold tracking-[0.14em] text-teal uppercase">
+            XGBoost screening queued
+          </p>
+          <h3 className="mt-1 text-xl font-bold text-ink">
+            Waiting for the verified claim event
+          </h3>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate">
+            Kafka will pass this claim to the XGBoost worker. This page checks
+            PostgreSQL for the score and claim-specific SHAP reasons.
+          </p>
+        </section>
+      )}
 
       <div className="flex items-center justify-between bg-sand/70 px-6 py-4 text-sm sm:px-8">
         <span className="font-medium text-slate">Block {receipt.block_number}</span>
         <span className="font-semibold text-teal">
-          {assessment.on_chain ? 'Lifecycle recorded' : 'Claim anchored'}
+          {assessment?.on_chain ? 'Lifecycle recorded' : 'Claim anchored'}
         </span>
       </div>
     </section>
@@ -455,6 +489,10 @@ function App() {
   const [claimsTotalPages, setClaimsTotalPages] = useState(1)
   const [isLoadingClaims, setIsLoadingClaims] = useState(true)
   const [claimsError, setClaimsError] = useState<string | null>(null)
+  const pendingAssessmentClaimId =
+    receipt && !receipt.assessment?.on_chain && !receipt.assessment?.error
+      ? receipt.claim_id
+      : null
 
   const loadClaims = useCallback(
     async (page: number, pageSize: number, signal?: AbortSignal) => {
@@ -491,16 +529,72 @@ function App() {
     return () => controller.abort()
   }, [claimsPage, claimsPageSize, loadClaims])
 
-  const amountPence = useMemo(() => {
-    const amount = Number(form.amountPounds)
-    return Number.isFinite(amount) ? Math.round(amount * 100) : 0
-  }, [form.amountPounds])
+  useEffect(() => {
+    if (pendingAssessmentClaimId === null) return
+
+    const claimId = pendingAssessmentClaimId
+    const controller = new AbortController()
+    let timer: number | undefined
+    let attempts = 0
+
+    async function pollAssessment() {
+      try {
+        const assessment = await getClaimAssessment(
+          claimId,
+          controller.signal,
+        )
+        if (assessment) {
+          setReceipt((current) =>
+            current?.claim_id === claimId
+              ? { ...current, assessment }
+              : current,
+          )
+          if (assessment.on_chain || assessment.error) {
+            void loadClaims(1, claimsPageSize)
+            return
+          }
+        }
+      } catch (pollingError) {
+        if (
+          pollingError instanceof DOMException &&
+          pollingError.name === 'AbortError'
+        ) {
+          return
+        }
+      }
+
+      attempts += 1
+      if (attempts < 30 && !controller.signal.aborted) {
+        timer = window.setTimeout(pollAssessment, 2_000)
+      }
+    }
+
+    void pollAssessment()
+    return () => {
+      controller.abort()
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [pendingAssessmentClaimId, claimsPageSize, loadClaims])
+
+  const claimAmountUsd = useMemo(
+    () => Number(form.claimAmountUsd),
+    [form.claimAmountUsd],
+  )
+  const policyPremiumUsd = useMemo(
+    () => Number(form.policyPremiumUsd),
+    [form.policyPremiumUsd],
+  )
+  const vehicleAge = useMemo(() => Number(form.vehicleAge), [form.vehicleAge])
 
   function update(
     event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>,
   ) {
     const { name, value } = event.target
-    setForm((current) => ({ ...current, [name]: value }))
+    const nextValue =
+      event.target instanceof HTMLInputElement && event.target.type === 'checkbox'
+        ? event.target.checked
+        : value
+    setForm((current) => ({ ...current, [name]: nextValue }))
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -508,8 +602,16 @@ function App() {
     setError(null)
     setReceipt(null)
 
-    if (amountPence < 1) {
-      setError('Enter a claim amount greater than £0.00.')
+    if (!Number.isFinite(claimAmountUsd) || claimAmountUsd <= 0) {
+      setError('Enter a claim amount greater than $0.00.')
+      return
+    }
+    if (!Number.isFinite(policyPremiumUsd) || policyPremiumUsd <= 0) {
+      setError('Enter a policy premium greater than $0.00.')
+      return
+    }
+    if (!Number.isInteger(vehicleAge) || vehicleAge < 1 || vehicleAge > 30) {
+      setError('Enter a vehicle age between 1 and 30 years.')
       return
     }
 
@@ -518,7 +620,14 @@ function App() {
       policyReference: form.policyReference.trim(),
       claimType: form.claimType,
       incidentDate: form.incidentDate,
-      amountPence,
+      claimAmountUsd,
+      policyPremiumUsd,
+      vehicleAge,
+      vehicleType: form.vehicleType,
+      country: form.country,
+      regionType: form.regionType,
+      thirdPartyInjuryFlag: form.thirdPartyInjuryFlag,
+      totalLossFlag: form.totalLossFlag,
       description: form.description.trim(),
       evidence: [],
     }
@@ -672,11 +781,10 @@ function App() {
                     value={form.claimType}
                     onChange={update}
                   >
-                    <option value="vehicle_damage">Vehicle damage</option>
-                    <option value="vehicle_theft">Vehicle theft</option>
                     <option value="collision">Collision</option>
-                    <option value="windscreen">Windscreen damage</option>
-                    <option value="other_motor">Other motor claim</option>
+                    <option value="theft">Theft</option>
+                    <option value="fire">Fire</option>
+                    <option value="flood">Flood</option>
                   </select>
                 </label>
 
@@ -694,17 +802,30 @@ function App() {
                 </label>
               </div>
 
-              <label className="field-group max-w-sm">
-                <span className="field-label">Claim amount</span>
-                <span className="relative block">
-                  <span className="pointer-events-none absolute inset-y-0 left-4 flex items-center font-bold text-slate">
-                    £
-                  </span>
+              <div className="grid gap-5 sm:grid-cols-2">
+                <label className="field-group">
+                  <span className="field-label">Claim amount (USD)</span>
                   <input
-                    className="field-control pl-8"
+                    className="field-control"
                     type="number"
-                    name="amountPounds"
-                    value={form.amountPounds}
+                    name="claimAmountUsd"
+                    value={form.claimAmountUsd}
+                    onChange={update}
+                    required
+                    min="0.01"
+                    max="100000000"
+                    step="0.01"
+                    inputMode="decimal"
+                  />
+                </label>
+
+                <label className="field-group">
+                  <span className="field-label">Annual policy premium (USD)</span>
+                  <input
+                    className="field-control"
+                    type="number"
+                    name="policyPremiumUsd"
+                    value={form.policyPremiumUsd}
                     onChange={update}
                     required
                     min="0.01"
@@ -712,9 +833,115 @@ function App() {
                     step="0.01"
                     inputMode="decimal"
                   />
-                </span>
-                <span className="field-help">Sent as {amountPence.toLocaleString()} pence</span>
-              </label>
+                </label>
+
+                <label className="field-group">
+                  <span className="field-label">Vehicle age</span>
+                  <input
+                    className="field-control"
+                    type="number"
+                    name="vehicleAge"
+                    value={form.vehicleAge}
+                    onChange={update}
+                    required
+                    min="1"
+                    max="30"
+                    step="1"
+                  />
+                </label>
+
+                <label className="field-group">
+                  <span className="field-label">Vehicle type</span>
+                  <select
+                    className="field-control"
+                    name="vehicleType"
+                    value={form.vehicleType}
+                    onChange={update}
+                  >
+                    {[
+                      'sedan',
+                      'suv',
+                      'pickup',
+                      'minibus',
+                      'truck',
+                      'motorcycle',
+                      'bus',
+                      'hatchback',
+                      'van',
+                      'other',
+                    ].map((vehicleType) => (
+                      <option key={vehicleType} value={vehicleType}>
+                        {vehicleType}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="field-group">
+                  <span className="field-label">Country</span>
+                  <select
+                    className="field-control"
+                    name="country"
+                    value={form.country}
+                    onChange={update}
+                  >
+                    {[
+                      'South Africa',
+                      'Nigeria',
+                      'Kenya',
+                      'Ghana',
+                      'Tanzania',
+                      'Uganda',
+                      'Rwanda',
+                      'Ethiopia',
+                      'Senegal',
+                      "Cote d'Ivoire",
+                      'Zambia',
+                      'Mozambique',
+                    ].map((country) => (
+                      <option key={country} value={country}>
+                        {country}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="field-group">
+                  <span className="field-label">Region type</span>
+                  <select
+                    className="field-control"
+                    name="regionType"
+                    value={form.regionType}
+                    onChange={update}
+                  >
+                    <option value="urban">Urban</option>
+                    <option value="rural">Rural</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="flex items-center gap-3 rounded-2xl border border-ink/10 bg-sand/45 px-4 py-3 text-sm font-semibold text-ink">
+                  <input
+                    type="checkbox"
+                    name="thirdPartyInjuryFlag"
+                    checked={form.thirdPartyInjuryFlag}
+                    onChange={update}
+                    className="size-4 accent-teal"
+                  />
+                  Third-party injury involved
+                </label>
+                <label className="flex items-center gap-3 rounded-2xl border border-ink/10 bg-sand/45 px-4 py-3 text-sm font-semibold text-ink">
+                  <input
+                    type="checkbox"
+                    name="totalLossFlag"
+                    checked={form.totalLossFlag}
+                    onChange={update}
+                    className="size-4 accent-teal"
+                  />
+                  Vehicle is a total loss
+                </label>
+              </div>
 
               <label className="field-group">
                 <span className="field-label">Incident description</span>
@@ -838,7 +1065,7 @@ function App() {
       <footer className="border-t border-ink/8 bg-white/60">
         <div className="mx-auto flex max-w-7xl flex-col gap-2 px-5 py-6 text-xs text-slate sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-12">
           <span>Decentralized Claims Registry · Research prototype</span>
-          <span>React → FastAPI → IPFS → Sepolia</span>
+          <span>React → FastAPI → Sepolia → Kafka → XGBoost</span>
         </div>
       </footer>
     </div>

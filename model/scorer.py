@@ -34,7 +34,7 @@ FEATURE_LABELS = {
 
 
 class ScorableClaim(Protocol):
-    amount_pence: int
+    claim_amount_usd: float
     claim_type: str
     incident_date: date
     description: str
@@ -78,9 +78,9 @@ def claim_features(
     # Each value is kept between 0 and 1. This stops one large input, such as
     # the claim amount, from overpowering all the other inputs.
     return {
-        "amount_ratio": min(claim.amount_pence / 1_000_000, 1.0),
+        "amount_ratio": min(claim.claim_amount_usd / 10_000, 1.0),
         "high_risk_type": float(
-            claim.claim_type in {"vehicle_theft", "collision", "other_motor"}
+            claim.claim_type in {"theft", "collision", "fire"}
         ),
         "incident_age_ratio": min(incident_age_days / 365, 1.0),
         "no_evidence": float(not claim.evidence),

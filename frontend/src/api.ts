@@ -1,9 +1,16 @@
 export type ClaimPayload = {
   claimReference: string
   policyReference: string
-  claimType: string
+  claimType: 'collision' | 'theft' | 'fire' | 'flood'
   incidentDate: string
-  amountPence: number
+  claimAmountUsd: number
+  policyPremiumUsd: number
+  vehicleAge: number
+  vehicleType: string
+  country: string
+  regionType: 'urban' | 'rural'
+  thirdPartyInjuryFlag: boolean
+  totalLossFlag: boolean
   description: string
   evidence: string[]
 }
@@ -59,7 +66,7 @@ export type ClaimReceipt = {
   block_number: number
   data_pointer: string
   claim_hash: string
-  assessment: ClaimAssessment
+  assessment: ClaimAssessment | null
 }
 
 const API_BASE_URL = (
@@ -79,7 +86,7 @@ function isClaimReceipt(value: unknown): value is ClaimReceipt {
     typeof value.block_number === 'number' &&
     typeof value.data_pointer === 'string' &&
     typeof value.claim_hash === 'string' &&
-    isClaimAssessment(value.assessment)
+    (value.assessment === null || isClaimAssessment(value.assessment))
   )
 }
 
@@ -191,6 +198,35 @@ export async function submitClaim(
     throw new Error('The claims API returned an unexpected response shape')
   }
 
+  return body
+}
+
+export async function getClaimAssessment(
+  claimId: number,
+  signal?: AbortSignal,
+): Promise<ClaimAssessment | null> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/claims/${claimId}/assessment`, {
+      signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error('Could not check the pending model assessment.')
+  }
+
+  if (response.status === 404) return null
+
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    throw new Error(`The claims API returned HTTP ${response.status} without JSON`)
+  }
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isClaimAssessment(body)) {
+    throw new Error('The claims API returned an unexpected assessment shape')
+  }
   return body
 }
 

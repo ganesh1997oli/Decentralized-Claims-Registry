@@ -1,9 +1,9 @@
 # FastAPI backend
 
-The backend coordinates the complete claim-submission workflow. It validates the
-request, scores the synthetic claim, stores its canonical JSON on IPFS, verifies
-the uploaded bytes, anchors the hash and pointer on Sepolia, and writes the model
-result back to the contract.
+The backend validates schema-version-2 motor claims, stores their canonical JSON
+on IPFS, verifies the uploaded bytes, and anchors the hash and pointer on
+Sepolia. In the recommended asynchronous mode, Kafka performs XGBoost scoring
+after anchoring and PostgreSQL supplies the completed assessment to the browser.
 
 It also provides the paginated claims data used by the React dashboard.
 
@@ -12,16 +12,18 @@ It also provides the paginated claims data used by the React dashboard.
 
 ## Workflow
 
-For `POST /claims`, the backend performs these steps in order:
+For `POST /claims` with `CLAIM_SCORING_MODE="async_xgboost"`:
 
 1. Validate the request with Pydantic.
 2. Create deterministic JSON bytes.
-3. Calculate a probability with the local synthetic model.
-4. Upload the bytes to Pinata and read them back through the IPFS gateway.
-5. Calculate the Keccak-256 hash and call `submitClaim` on Sepolia.
-6. Call `assessClaim` with `UnderReview` or `Flagged` and the score in basis
-   points.
-7. Return the submission and assessment receipts to the browser.
+3. Upload the bytes to Pinata and read them back through the IPFS gateway.
+4. Calculate the Keccak-256 hash and call `submitClaim` on Sepolia.
+5. Return the anchor receipt with `assessment: null`.
+
+The browser polls `GET /claims/{claim_id}/assessment`. The Kafka scoring worker
+stores that response and performs the assessment transaction. The original
+inline demonstration remains available through
+`CLAIM_SCORING_MODE="inline_demo"`.
 
 The browser never receives the Pinata JWT or Sepolia private key.
 
@@ -40,6 +42,7 @@ pip install -r backend/requirements.txt
 ```bash
 cp backend/.env.example backend/.env.local
 cp integrations/ipfs/.env.example integrations/ipfs/.env.local
+cp integrations/postgres/.env.example integrations/postgres/.env.local
 ```
 
 Add the blockchain settings to the backend file and the Pinata settings to the
@@ -49,6 +52,7 @@ IPFS file. Load both before running FastAPI:
 set -a
 source backend/.env.local
 source integrations/ipfs/.env.local
+source integrations/postgres/.env.local
 set +a
 ```
 
@@ -62,7 +66,9 @@ Backend settings:
 | `IGNITION_DIR` | No | Alternative Ignition deployment directory |
 | `RECEIPT_TIMEOUT` | No | Seconds to wait for a transaction receipt |
 | `FRAUD_MODEL_PATH` | No | Alternative compatible model artifact |
+| `CLAIM_SCORING_MODE` | No | `inline_demo` or recommended `async_xgboost` |
 | `FRONTEND_ORIGINS` | No | Comma-separated browser origins allowed by CORS |
+| `DATABASE_URL` | Async | PostgreSQL assessment store used by the polling endpoint |
 
 IPFS settings:
 
@@ -71,8 +77,8 @@ IPFS settings:
 | `PINATA_JWT` | Yes | Server-side Pinata upload credential |
 | `IPFS_GATEWAY` | No | Gateway used for the upload round-trip check |
 
-Never commit either `.env.local` file. The signer must contain test ETH and must
-have assessor permission in the deployed contract.
+Never commit any `.env.local` file. The signer must contain test ETH. The worker
+signer must also have assessor permission in the deployed contract.
 
 ## Run
 
@@ -81,6 +87,7 @@ source backend/.venv/bin/activate
 set -a
 source backend/.env.local
 source integrations/ipfs/.env.local
+source integrations/postgres/.env.local
 set +a
 uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
@@ -96,7 +103,8 @@ Useful local URLs:
 | --- | --- | --- |
 | `GET` | `/health` | Confirms that the process is running; does not call Sepolia or Pinata |
 | `GET` | `/claims?page=1&page_size=10` | Returns current claims newest first; page size is limited to 50 |
-| `POST` | `/claims` | Validates, scores, stores and anchors a synthetic claim |
+| `GET` | `/claims/{claim_id}/assessment` | Returns the stored XGBoost/SHAP result, or 404 while pending |
+| `POST` | `/claims` | Validates, stores and anchors a synthetic motor claim |
 
 ### Example submission
 
@@ -106,24 +114,30 @@ curl -X POST http://127.0.0.1:8000/claims \
   -d '{
     "claimReference": "synthetic-api-1",
     "policyReference": "synthetic-policy-42",
-    "claimType": "vehicle_damage",
+    "claimType": "collision",
     "incidentDate": "2026-07-13",
-    "amountPence": 250000,
+    "claimAmountUsd": 2500,
+    "policyPremiumUsd": 480,
+    "vehicleAge": 6,
+    "vehicleType": "sedan",
+    "country": "Nigeria",
+    "regionType": "urban",
+    "thirdPartyInjuryFlag": false,
+    "totalLossFlag": false,
     "description": "Synthetic bumper damage for API testing",
     "evidence": []
   }'
 ```
 
-A successful response has HTTP status `201` and includes:
+A successful asynchronous response has HTTP status `201` and includes:
 
 - the claim ID, block number and submission transaction;
 - the `ipfs://` pointer and on-chain hash;
-- the model version, probability, threshold and contributing reasons;
-- the assessment status, fraud score and assessment transaction.
+- `assessment: null` while Kafka processing is pending.
 
-If anchoring succeeds but the assessment transaction fails, the response still
-returns the successful claim receipt with `assessment.on_chain` set to `false`.
-This prevents a browser retry from creating a duplicate claim.
+Once the worker stores a result, the assessment endpoint returns the model
+version, probability, threshold, SHAP reasons, processing error if any, and
+assessment transaction.
 
 ## Test
 
@@ -140,10 +154,8 @@ python -m pytest backend/tests -q
   small testnet demonstration.
 - One process-level wallet submits and assesses every claim.
 - IPFS content is public and unencrypted.
-- The model is trained on deterministic synthetic data, not real insurance
-  records.
-- Authentication, authorization, audit storage and rate limiting are not yet
-  implemented.
+- The XGBoost model is trained on synthetic data, not real insurance records.
+- Authentication, authorization and rate limiting are not yet implemented.
 
 See the [root project guide](../README.md) for the complete application run and
 the [model guide](../model/README.md) for how the fraud score is produced.

@@ -335,3 +335,23 @@ class SepoliaClaimsRegistry:
             raise BlockchainSubmissionError(
                 f"Could not read claims from Sepolia: {exc}"
             ) from exc
+
+    def get_claim(self, claim_id: int) -> ChainClaim:
+        """Read one claim so an at-least-once worker can avoid a second write."""
+
+        try:
+            claim = self.contract.functions.getClaim(claim_id).call()
+            return ChainClaim(
+                claim_id=claim_id,
+                claimant=Web3.to_checksum_address(claim[0]),
+                claim_hash=_hex(claim[1]),
+                data_pointer=claim[2],
+                status=claim[3],
+                fraud_score=claim[4],
+                submitted_at=claim[5],
+                updated_at=claim[6],
+            )
+        except Exception as exc:
+            raise BlockchainSubmissionError(
+                f"Could not read claim {claim_id} from Sepolia: {exc}"
+            ) from exc

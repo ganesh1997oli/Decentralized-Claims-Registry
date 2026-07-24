@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -357,14 +358,26 @@ def save_training_run(
     metadata_path = output_dir / "metadata.json"
 
     joblib.dump(run.xgboost, model_path)
+    model_digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
     top_features = create_shap_summary(run.xgboost, run.split.test, shap_path)
+    claim_frequency = (
+        run.split.train.groupby("country")[
+            "claim_frequency_per_1000_policies"
+        ]
+        .median()
+        .sort_index()
+        .round(6)
+        .to_dict()
+    )
     metadata = {
-        "artifact_schema": 1,
+        "artifact_schema": 2,
         "created_at": datetime.now(UTC).isoformat(),
         "dataset_reference": dataset_reference,
         "dataset_sha256": dataset_sha256,
+        "model_sha256": model_digest,
         "features": list(FEATURE_COLUMNS),
         "excluded_leakage_fields": list(LEAKAGE_COLUMNS),
+        "market_claim_frequency_by_country": claim_frequency,
         "report": run.report,
         "shap_top_features": top_features,
     }

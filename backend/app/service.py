@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Protocol
 
 from web3 import Web3
@@ -49,6 +50,8 @@ class ClaimsRegistry(Protocol):
         self, *, page: int, page_size: int
     ) -> tuple[list[ChainClaim], int]: ...
 
+    def get_claim(self, claim_id: int) -> ChainClaim: ...
+
 
 class FraudScoring(Protocol):
     def score(self, claim: ClaimSubmission) -> FraudScore: ...
@@ -72,18 +75,33 @@ class ClaimSubmissionService:
         ipfs: IPFSStore,
         registry: ClaimsRegistry,
         scorer: FraudScoring | None = None,
+        assess_inline: bool = True,
     ) -> None:
         self.ipfs = ipfs
         self.registry = registry
-        self.scorer = scorer or SyntheticFraudScorer.from_env()
+        self.scorer = (
+            (scorer or SyntheticFraudScorer.from_env())
+            if assess_inline
+            else None
+        )
 
     @classmethod
     def from_env(cls) -> "ClaimSubmissionService":
+        scoring_mode = os.environ.get("CLAIM_SCORING_MODE", "inline_demo")
+        if scoring_mode not in {"inline_demo", "async_xgboost"}:
+            raise ClaimSubmissionServiceError(
+                "CLAIM_SCORING_MODE must be inline_demo or async_xgboost"
+            )
         try:
             return cls(
                 ipfs=IPFSClient.from_env(require_upload=True),
                 registry=SepoliaClaimsRegistry.from_env(),
-                scorer=SyntheticFraudScorer.from_env(),
+                scorer=(
+                    SyntheticFraudScorer.from_env()
+                    if scoring_mode == "inline_demo"
+                    else None
+                ),
+                assess_inline=scoring_mode == "inline_demo",
             )
         except (IPFSError, BlockchainSubmissionError, ValueError) as exc:
             raise ClaimSubmissionServiceError(str(exc)) from exc
@@ -92,8 +110,9 @@ class ClaimSubmissionService:
         # These exact bytes are uploaded to IPFS and hashed for the contract.
         payload = canonical_claim_bytes(claim)
         try:
-            # Scoring happens locally; no claim data is sent to another model API.
-            model_result = self.scorer.score(claim)
+            # Inline scoring remains available for the original demonstration.
+            # In async mode, Kafka owns scoring after the claim is anchored.
+            model_result = self.scorer.score(claim) if self.scorer else None
             cid = self.ipfs.upload_bytes(
                 payload,
                 filename=f"{claim.claim_reference}.json",
@@ -120,6 +139,16 @@ class ClaimSubmissionService:
             raise ClaimSubmissionServiceError(
                 f"Claim submission failed: {exc}"
             ) from exc
+
+        if model_result is None:
+            return ClaimSubmissionResponse(
+                claim_id=chain_result.claim_id,
+                transaction_hash=chain_result.transaction_hash,
+                block_number=chain_result.block_number,
+                data_pointer=data_pointer,
+                claim_hash=claim_hash.hex(),
+                assessment=None,
+            )
 
         # These numbers match the Status enum in the Solidity contract:
         # 1 = UnderReview and 4 = Flagged.

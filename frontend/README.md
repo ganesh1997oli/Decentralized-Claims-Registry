@@ -9,7 +9,8 @@ operation; it does not connect directly to a wallet, Pinata, Kafka, or the model
 - A synthetic claim-submission form
 - The confirmed Sepolia transaction and block
 - The IPFS pointer and claim hash
-- The demonstration fraud probability and contributing indicators
+- A pending state while Kafka processes the anchored claim
+- The XGBoost probability and claim-specific SHAP indicators from PostgreSQL
 - The on-chain assessment status and transaction
 - A newest-first, paginated list of submitted claims and fraud scores
 
@@ -51,8 +52,9 @@ npm run dev -- --host 127.0.0.1
 Open <http://127.0.0.1:5173>.
 
 The form begins with clearly labelled synthetic values. After a successful
-submission, the receipt links to Etherscan and the configured IPFS gateway, and
-the claims list refreshes automatically.
+submission, the receipt links to Etherscan and the configured IPFS gateway. In
+asynchronous mode it polls FastAPI for up to one minute while Kafka scores the
+claim, then displays the stored assessment and refreshes the contract state.
 
 ## Verify the frontend
 
@@ -72,8 +74,8 @@ npm run build
 - Enter synthetic information only.
 - Evidence uploads are intentionally absent while storage is public and
   unencrypted.
-- The displayed score comes from a demonstration model and must not be used to
-  decide a real claim.
+- The displayed XGBoost score comes from synthetic training data and must not be
+  used to decide a real claim.
 - The dashboard reads current Sepolia state through FastAPI; it is not a
   production search or reporting system.
 

@@ -11,9 +11,11 @@ from model.research_pipeline import (
     LEAKAGE_COLUMNS,
     create_shap_summary,
     prepare_claims,
+    save_training_run,
     temporal_split,
     train_research_models,
 )
+from model.xgboost_scorer import XGBoostFraudScorer
 
 
 def claims_frame(rows: int = 180) -> pd.DataFrame:
@@ -111,3 +113,53 @@ def test_shap_summary_is_created_for_the_trained_xgboost_model(tmp_path: Path):
     assert output.stat().st_size > 0
     assert features
     assert features[0]["mean_absolute_shap"] >= 0
+
+
+def test_saved_artifact_scores_one_claim_with_local_shap(tmp_path: Path):
+    run = train_research_models(claims_frame(), xgboost_estimators=20)
+    metadata = save_training_run(
+        run,
+        tmp_path,
+        dataset_reference="test-dataset@revision",
+        dataset_sha256="test-dataset-sha",
+    )
+    scorer = XGBoostFraudScorer.from_directory(tmp_path)
+    claim = type(
+        "Claim",
+        (),
+        {
+            "vehicle_age": 8,
+            "claim_amount_usd": 3_500.0,
+            "policy_premium_usd": 500.0,
+            "third_party_injury_flag": False,
+            "total_loss_flag": False,
+            "country": "Ghana",
+            "vehicle_type": "sedan",
+            "claim_type": "collision",
+            "region_type": "urban",
+        },
+    )()
+
+    result = scorer.score(claim)
+
+    assert metadata["artifact_schema"] == 2
+    assert metadata["model_sha256"]
+    assert metadata["market_claim_frequency_by_country"]["Ghana"] == 35
+    assert 0 <= result.probability <= 1
+    assert result.model_version == "african-motor-xgboost-v1"
+    assert len(result.reasons) == 3
+
+
+def test_scorer_refuses_a_model_that_changed_after_review(tmp_path: Path):
+    run = train_research_models(claims_frame(), xgboost_estimators=10)
+    save_training_run(
+        run,
+        tmp_path,
+        dataset_reference="test-dataset@revision",
+        dataset_sha256="test-dataset-sha",
+    )
+    with (tmp_path / "model.joblib").open("ab") as stream:
+        stream.write(b"changed")
+
+    with pytest.raises(ValueError, match="checksum"):
+        XGBoostFraudScorer.from_directory(tmp_path)

@@ -18,9 +18,16 @@ def claim_model() -> ClaimSubmission:
         {
             "claimReference": "synthetic-claim-api-1",
             "policyReference": "synthetic-policy-42",
-            "claimType": "vehicle_damage",
+            "claimType": "collision",
             "incidentDate": "2026-07-13",
-            "amountPence": 250000,
+            "claimAmountUsd": 2500,
+            "policyPremiumUsd": 480,
+            "vehicleAge": 6,
+            "vehicleType": "sedan",
+            "country": "Nigeria",
+            "regionType": "urban",
+            "thirdPartyInjuryFlag": False,
+            "totalLossFlag": False,
             "description": "Synthetic bumper damage for API testing",
             "evidence": [],
         }
@@ -108,10 +115,12 @@ def test_canonical_serialization_is_stable():
     payload = canonical_claim_bytes(claim_model())
 
     assert payload == (
-        b'{"amountPence":250000,"claimReference":"synthetic-claim-api-1",'
-        b'"claimType":"vehicle_damage","description":"Synthetic bumper damage '
-        b'for API testing","evidence":[],"incidentDate":"2026-07-13",'
-        b'"policyReference":"synthetic-policy-42","schemaVersion":1}'
+        b'{"claimAmountUsd":2500.0,"claimReference":"synthetic-claim-api-1",'
+        b'"claimType":"collision","country":"Nigeria","description":"Synthetic '
+        b'bumper damage for API testing","evidence":[],"incidentDate":"2026-07-13",'
+        b'"policyPremiumUsd":480.0,"policyReference":"synthetic-policy-42",'
+        b'"regionType":"urban","schemaVersion":2,"thirdPartyInjuryFlag":false,'
+        b'"totalLossFlag":false,"vehicleAge":6,"vehicleType":"sedan"}'
     )
 
 
@@ -168,6 +177,22 @@ def test_service_returns_anchor_when_assessment_transaction_is_pending():
     assert result.assessment.status == "UnderReview"
     assert result.assessment.on_chain is False
     assert "pending" in result.assessment.error
+
+
+def test_async_service_anchors_without_running_inline_assessment():
+    registry = FakeRegistry()
+    service = ClaimSubmissionService(
+        ipfs=FakeIPFS(),
+        registry=registry,
+        scorer=FakeScorer(),
+        assess_inline=False,
+    )
+
+    result = service.submit(claim_model())
+
+    assert result.claim_id == 3
+    assert result.assessment is None
+    assert registry.assessment is None
 
 
 def test_service_lists_current_claim_state():

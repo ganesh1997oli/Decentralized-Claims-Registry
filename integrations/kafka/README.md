@@ -9,8 +9,8 @@ IPFS references needed by a downstream worker.
 - `events.py`: versioned event schema, configuration, producer, and consumer
 - `consumer.py`: demonstration worker that downloads the IPFS bytes and checks
   their Keccak-256 hash
-- `compose.yml`: one-node Kafka environment and browser dashboard for local
-  development
+- `scoring_worker.py`: idempotent XGBoost, SHAP, PostgreSQL and Sepolia workflow
+- `compose.yml`: Kafka, PostgreSQL and a Kafka dashboard for local development
 - `tests/`: isolated adapter tests and an optional live-broker smoke test
 
 The listener imports the public interface from `integrations.kafka`, keeping
@@ -28,16 +28,25 @@ blockchain listener
 claims.submitted.v1
         │
         ▼
-Kafka consumer
-        │ verify the CID and hash again
+XGBoost scoring worker
+        │ verify CID and parse schema v2
+        ▼
+XGBoost probability + local SHAP
+        │
+        ▼
+PostgreSQL assessment
+        │
+        ▼
+Sepolia assessClaim
         ▼
 commit Kafka offset
 ```
 
 The listener advances its block checkpoint only after Kafka acknowledges every
-event in the processed range. The consumer commits its offset only after its
-handler succeeds. This gives at-least-once delivery: a downstream database must
-treat the deterministic `event_id` as a unique idempotency key.
+event. The worker commits its offset only after PostgreSQL and Sepolia agree.
+PostgreSQL treats the deterministic `event_id` as a unique idempotency key. A
+chain read also makes a replay safe if the process stopped after the transaction
+but before updating PostgreSQL.
 
 ## Install
 
@@ -45,10 +54,11 @@ Use the same Python environment as the listener:
 
 ```bash
 source backend/.venv/bin/activate
-pip install -r listener/requirements.txt
+pip install -r listener/requirements.txt -r model/requirements.txt \
+  -r backend/requirements.txt
 ```
 
-Docker Desktop is required for the local broker.
+Docker Desktop is required for local Kafka and PostgreSQL.
 
 ## Start the local broker
 
@@ -72,8 +82,8 @@ To inspect claim events:
 4. Select all partitions and load the messages.
 
 The dashboard also shows partitions, offsets, consumer groups, and consumer
-lag. A lag of zero for `claims-registry-verifier-v1` means that the Python
-consumer has processed every available event.
+lag. A lag of zero for `claims-registry-scorer-v1` means that the scoring worker
+has processed every available event.
 
 Kafka stores the events in the `claims-kafka-data` Docker volume. The dashboard
 only reads and displays those events; it does not create a second copy.
@@ -94,6 +104,8 @@ Create the ignored Kafka environment file from the tracked template:
 
 ```bash
 cp integrations/kafka/.env.example integrations/kafka/.env.local
+cp integrations/postgres/.env.example integrations/postgres/.env.local
+cp model/.env.example model/.env.local
 ```
 
 For the local broker, set the following values in `.env.local`:
@@ -105,13 +117,15 @@ KAFKA_CLAIM_SUBMITTED_TOPIC="claims.submitted.v1"
 KAFKA_SECURITY_PROTOCOL="PLAINTEXT"
 ```
 
-The Kafka consumer also verifies IPFS content, so it loads both integration
-environment files:
+The scoring worker needs the configuration owned by each module:
 
 ```bash
 set -a
 source integrations/ipfs/.env.local
 source integrations/kafka/.env.local
+source integrations/postgres/.env.local
+source model/.env.local
+source backend/.env.local
 set +a
 ```
 
@@ -123,15 +137,18 @@ documented in `integrations/kafka/.env.example`.
 
 Start both processes before submitting a new synthetic claim.
 
-Terminal A:
+Terminal A, scoring worker:
 
 ```bash
 source backend/.venv/bin/activate
 set -a
 source integrations/ipfs/.env.local
 source integrations/kafka/.env.local
+source integrations/postgres/.env.local
+source model/.env.local
+source backend/.env.local
 set +a
-python -m integrations.kafka.consumer
+python -m integrations.kafka.scoring_worker
 ```
 
 Terminal B:
@@ -146,8 +163,13 @@ set +a
 python listener/claims_listener.py
 ```
 
-Submit through the React form or `POST /claims`. A successful flow prints
-`KafkaPublished` in the listener and `KafkaProcessed` in the consumer.
+Set `CLAIM_SCORING_MODE="async_xgboost"` in the backend configuration, then
+submit through the React form or `POST /claims`. A successful flow prints
+`KafkaPublished` in the listener and `ClaimAssessed` in the worker.
+
+The older verification-only consumer remains useful for inspecting events. Do
+not run it with the scorer's consumer-group ID because members of the same Kafka
+group divide messages between themselves.
 
 ## Test
 
@@ -155,7 +177,7 @@ Run the isolated tests without a broker:
 
 ```bash
 source backend/.venv/bin/activate
-python -m pytest integrations/kafka/tests -q
+python -m pytest integrations/kafka/tests integrations/postgres/tests -q
 ```
 
 Run the opt-in live producer/consumer test after the local broker is healthy:
@@ -165,7 +187,7 @@ KAFKA_INTEGRATION_TEST=true \
   python -m pytest integrations/kafka/tests/test_integration.py -q
 ```
 
-## Stop the broker
+## Stop local infrastructure
 
 ```bash
 docker compose -f integrations/kafka/compose.yml down
