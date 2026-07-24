@@ -18,18 +18,24 @@ The page offers claim-list sizes of 5, 10, 25, or 50.
 
 ## Install
 
+Run from the repository root:
+
 ```bash
-cd frontend
-npm ci
+npm --prefix frontend ci
 ```
 
-Use `npm install` instead if you intentionally need to update dependencies or the
-lock file.
+Use `npm --prefix frontend install` instead if you intentionally need to update
+dependencies or the lock file.
 
 ## Configure
 
+From the repository root, create the same local file used by the backend:
+
 ```bash
 cp .env.example .env.local
+set -a
+source .env.local
+set +a
 ```
 
 | Variable | Default | Purpose |
@@ -42,11 +48,14 @@ or other secret to a `VITE_` variable.
 
 ## Run locally
 
-Start the FastAPI backend first, then run:
+Start the FastAPI backend first. From the repository root, load the shared file
+in this terminal and run:
 
 ```bash
-cd frontend
-npm run dev -- --host 127.0.0.1
+set -a
+source .env.local
+set +a
+npm --prefix frontend run dev -- --host 127.0.0.1
 ```
 
 Open <http://127.0.0.1:5173>.

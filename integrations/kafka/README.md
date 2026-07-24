@@ -100,15 +100,13 @@ docker compose -f integrations/kafka/compose.yml exec kafka \
 
 ## Configure Kafka
 
-Create the ignored Kafka environment file from the tracked template:
+Create the one shared local environment file from the repository root:
 
 ```bash
-cp integrations/kafka/.env.example integrations/kafka/.env.local
-cp integrations/postgres/.env.example integrations/postgres/.env.local
-cp model/.env.example model/.env.local
+cp .env.example .env.local
 ```
 
-For the local broker, set the following values in `.env.local`:
+The example already contains the settings used by the local broker:
 
 ```dotenv
 KAFKA_ENABLED="true"
@@ -117,21 +115,17 @@ KAFKA_CLAIM_SUBMITTED_TOPIC="claims.submitted.v1"
 KAFKA_SECURITY_PROTOCOL="PLAINTEXT"
 ```
 
-The scoring worker needs the configuration owned by each module:
+Load the root file before starting the scoring worker:
 
 ```bash
 set -a
-source integrations/ipfs/.env.local
-source integrations/kafka/.env.local
-source integrations/postgres/.env.local
-source model/.env.local
-source backend/.env.local
+source .env.local
 set +a
 ```
 
 Additional variables support the client ID, consumer group, delivery timeout,
 poll interval, and TLS/SASL credentials. Their names and safe local defaults are
-documented in `integrations/kafka/.env.example`.
+documented in the root `.env.example`.
 
 ## Run the event flow
 
@@ -142,11 +136,7 @@ Terminal A, scoring worker:
 ```bash
 source backend/.venv/bin/activate
 set -a
-source integrations/ipfs/.env.local
-source integrations/kafka/.env.local
-source integrations/postgres/.env.local
-source model/.env.local
-source backend/.env.local
+source .env.local
 set +a
 python -m integrations.kafka.scoring_worker
 ```
@@ -156,9 +146,7 @@ Terminal B:
 ```bash
 source backend/.venv/bin/activate
 set -a
-source listener/.env.local
-source integrations/ipfs/.env.local
-source integrations/kafka/.env.local
+source .env.local
 set +a
 python listener/claims_listener.py
 ```

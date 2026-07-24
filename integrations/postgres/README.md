@@ -21,7 +21,7 @@ PostgreSQL is included with the Kafka Compose environment:
 
 ```bash
 docker compose -f integrations/kafka/compose.yml up -d postgres
-cp integrations/postgres/.env.example integrations/postgres/.env.local
+cp .env.example .env.local
 ```
 
 The worker creates the table and index on startup. Load the connection setting
@@ -29,7 +29,7 @@ where either FastAPI or the worker needs assessment access:
 
 ```bash
 set -a
-source integrations/postgres/.env.local
+source .env.local
 set +a
 ```
 

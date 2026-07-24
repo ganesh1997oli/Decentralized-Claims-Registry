@@ -143,10 +143,14 @@ file. It loads the pipeline and SHAP explainer once, enriches each claim with
 the reviewed country reference value, and returns the existing `FraudScore`
 interface with three claim-specific SHAP reasons.
 
-Copy the environment template after training:
+The artifact location and optional checksum live in the shared root
+configuration:
 
 ```bash
-cp model/.env.example model/.env.local
+cp .env.example .env.local
+set -a
+source .env.local
+set +a
 ```
 
 The asynchronous Kafka worker is the intended application seam:

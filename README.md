@@ -78,24 +78,31 @@ the Python source.
 - A Pinata JWT with public file-upload permission
 - Docker Desktop for the local Kafka and PostgreSQL environment
 
-Never use a wallet that holds real assets. Keep the private key and Pinata JWT in
-ignored `.env.local` files and never expose them to the browser.
+Never use a wallet that holds real assets. Local development uses one ignored
+file at the repository root:
 
-Environment settings are kept beside the module that owns them:
+```bash
+cp .env.example .env.local
+```
 
-| File | Settings |
-| --- | --- |
-| `backend/.env.local` | Sepolia signing, model and browser access |
-| `listener/.env.local` | Sepolia polling and checkpoint behaviour |
-| `integrations/ipfs/.env.local` | Pinata upload and IPFS gateway |
-| `integrations/kafka/.env.local` | Kafka connection, delivery and security |
-| `integrations/postgres/.env.local` | PostgreSQL assessment storage |
-| `model/.env.local` | Reviewed XGBoost artifact location and optional checksum |
-| `frontend/.env.local` | Public browser configuration only |
+Add your Sepolia private key and Pinata JWT to `.env.local`. The tracked example
+contains all other safe local defaults. Load the same file once in every new
+terminal before starting an application process:
 
-If you used the older combined files, manually move `PINATA_*` and `IPFS_*`
-values into the IPFS file and `KAFKA_*` values into the Kafka file. Do not copy
-secret values into any tracked `.env.example` file.
+```bash
+set -a
+source .env.local
+set +a
+```
+
+Python and Vite then read the values from the process environment. Contract
+deployment continues to use Hardhat's encrypted keystore as described in the
+contract guide. Only variables beginning with `VITE_` are exposed to browser
+code, so never put a private key or token in a `VITE_` variable.
+
+For a deployed environment, do not copy `.env.local` to a server or container.
+Inject the required settings into each process through the hosting platform's
+secret manager.
 
 ## Quick start on Sepolia
 
@@ -110,15 +117,8 @@ source backend/.venv/bin/activate
 pip install -r backend/requirements.txt -r model/requirements.txt \
   -r integrations/kafka/requirements.txt
 
-cp backend/.env.example backend/.env.local                 # first run only
-cp integrations/ipfs/.env.example integrations/ipfs/.env.local  # first run only
-cp integrations/postgres/.env.example integrations/postgres/.env.local
-cp model/.env.example model/.env.local
-# Add the Sepolia values to the backend file and PINATA_JWT to the IPFS file.
 set -a
-source backend/.env.local
-source integrations/ipfs/.env.local
-source integrations/postgres/.env.local
+source .env.local
 set +a
 
 uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
@@ -130,10 +130,11 @@ documentation at <http://127.0.0.1:8000/docs>.
 ### 2. Start the frontend
 
 ```bash
-cd frontend
-npm install
-cp .env.example .env.local
-npm run dev -- --host 127.0.0.1
+set -a
+source .env.local
+set +a
+npm --prefix frontend install
+npm --prefix frontend run dev -- --host 127.0.0.1
 ```
 
 Open <http://127.0.0.1:5173> and keep the page ready. Complete the listener and
@@ -152,10 +153,9 @@ Start Docker Desktop, then run:
 
 ```bash
 docker compose -f integrations/kafka/compose.yml up -d
-
-cp integrations/kafka/.env.example integrations/kafka/.env.local
-# Set KAFKA_ENABLED="true".
 ```
+
+The root example already enables Kafka and matches the local Compose ports.
 
 ### 5. Publish verified blockchain events
 
@@ -163,12 +163,8 @@ cp integrations/kafka/.env.example integrations/kafka/.env.local
 source backend/.venv/bin/activate
 pip install -r listener/requirements.txt
 
-cp listener/.env.example listener/.env.local  # first run only
-# Add SEPOLIA_RPC_URL to the listener file.
 set -a
-source listener/.env.local
-source integrations/ipfs/.env.local
-source integrations/kafka/.env.local
+source .env.local
 set +a
 
 python listener/claims_listener.py
@@ -178,11 +174,7 @@ python listener/claims_listener.py
 
 ```bash
 set -a
-source backend/.env.local
-source integrations/ipfs/.env.local
-source integrations/kafka/.env.local
-source integrations/postgres/.env.local
-source model/.env.local
+source .env.local
 set +a
 python -m integrations.kafka.scoring_worker
 ```

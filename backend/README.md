@@ -39,20 +39,18 @@ pip install -r backend/requirements.txt
 
 ## Configure
 
+Create the shared local file from the repository root:
+
 ```bash
-cp backend/.env.example backend/.env.local
-cp integrations/ipfs/.env.example integrations/ipfs/.env.local
-cp integrations/postgres/.env.example integrations/postgres/.env.local
+cp .env.example .env.local
 ```
 
-Add the blockchain settings to the backend file and the Pinata settings to the
-IPFS file. Load both before running FastAPI:
+Add the Sepolia private key and Pinata JWT, then load that same file before
+running FastAPI:
 
 ```bash
 set -a
-source backend/.env.local
-source integrations/ipfs/.env.local
-source integrations/postgres/.env.local
+source .env.local
 set +a
 ```
 
@@ -77,17 +75,15 @@ IPFS settings:
 | `PINATA_JWT` | Yes | Server-side Pinata upload credential |
 | `IPFS_GATEWAY` | No | Gateway used for the upload round-trip check |
 
-Never commit any `.env.local` file. The signer must contain test ETH. The worker
-signer must also have assessor permission in the deployed contract.
+Never commit `.env.local`. The signer must contain test ETH. The worker signer
+must also have assessor permission in the deployed contract.
 
 ## Run
 
 ```bash
 source backend/.venv/bin/activate
 set -a
-source backend/.env.local
-source integrations/ipfs/.env.local
-source integrations/postgres/.env.local
+source .env.local
 set +a
 uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```

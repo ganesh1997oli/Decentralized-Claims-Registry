@@ -30,17 +30,17 @@ The adapter reads two environment variables:
 | `PINATA_JWT` | For uploads | Server-side Pinata credential with public file-upload permission |
 | `IPFS_GATEWAY` | No | Base gateway URL used to retrieve a CID |
 
-Create the ignored local file from the tracked template:
+Create the shared ignored file from the repository root:
 
 ```bash
-cp integrations/ipfs/.env.example integrations/ipfs/.env.local
+cp .env.example .env.local
 ```
 
 The default gateway is `https://gateway.pinata.cloud/ipfs`. Any process using
-IPFS loads the module-owned file with:
+IPFS loads the root file with:
 
 ```bash
-set -a; source integrations/ipfs/.env.local; set +a
+set -a; source .env.local; set +a
 ```
 
 Never put `PINATA_JWT` in the React environment or commit it to Git.
