@@ -65,6 +65,9 @@ The form begins with clearly labelled synthetic values. After a successful
 submission, the receipt links to Etherscan and the configured IPFS gateway. In
 asynchronous mode it polls FastAPI for up to one minute while Kafka scores the
 claim, then displays the stored assessment and refreshes the contract state.
+The header labels the interface **Research test data only** to make clear that
+users must enter fictional test claims; it does not describe where the research
+dataset is hosted.
 
 The browser keeps the latest successful public receipt so its Sepolia details,
 XGBoost score, and SHAP indicators remain visible after a page refresh. A newer

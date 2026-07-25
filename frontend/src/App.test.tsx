@@ -77,6 +77,13 @@ describe('App refresh recovery', () => {
     expect(page).toContain('Claim amount')
     expect(page).toContain('3,930')
   })
+
+  it('clearly labels the form as research test data', () => {
+    const page = renderToStaticMarkup(<App />)
+
+    expect(page).toContain('Research test data only')
+    expect(page).not.toContain('Synthetic data only')
+  })
 })
 
 const historicalClaim: ClaimSummary = {
