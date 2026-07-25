@@ -77,7 +77,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-function isClaimReceipt(value: unknown): value is ClaimReceipt {
+export function isClaimReceipt(value: unknown): value is ClaimReceipt {
   if (!isRecord(value)) return false
 
   return (

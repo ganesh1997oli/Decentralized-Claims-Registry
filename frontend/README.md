@@ -65,6 +65,13 @@ submission, the receipt links to Etherscan and the configured IPFS gateway. In
 asynchronous mode it polls FastAPI for up to one minute while Kafka scores the
 claim, then displays the stored assessment and refreshes the contract state.
 
+The browser keeps the latest successful public receipt so its Sepolia details,
+XGBoost score, and SHAP indicators remain visible after a page refresh. A newer
+successful claim replaces it. If that browser receipt is unavailable, the page
+rebuilds the panel from the newest Sepolia claim and its FastAPI assessment.
+Browser storage contains no form fields, wallet key, or Pinata credential and
+can be cleared through the browser's site-data tools.
+
 ## Verify the frontend
 
 ```bash

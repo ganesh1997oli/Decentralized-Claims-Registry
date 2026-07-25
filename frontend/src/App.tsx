@@ -11,10 +11,15 @@ import {
   listClaims,
   submitClaim,
   type ClaimPayload,
-  type ClaimReceipt,
   type ClaimStatus,
   type ClaimSummary,
 } from './api.ts'
+import {
+  hasSubmissionReceipt,
+  receiptFromCurrentClaim,
+  type DisplayReceipt,
+} from './display-receipt.ts'
+import { loadLastReceipt, saveLastReceipt } from './receipt-storage.ts'
 
 type FormValues = {
   claimReference: string
@@ -82,8 +87,10 @@ function CopyButton({ label, value }: { label: string; value: string }) {
   )
 }
 
-function ReceiptCard({ receipt }: { receipt: ClaimReceipt }) {
-  const transactionUrl = `https://sepolia.etherscan.io/tx/${receipt.transaction_hash}`
+function ReceiptCard({ receipt }: { receipt: DisplayReceipt }) {
+  const transactionUrl = receipt.transaction_hash
+    ? `https://sepolia.etherscan.io/tx/${receipt.transaction_hash}`
+    : null
   const assessment = receipt.assessment
   const assessmentUrl = assessment?.transaction_hash
     ? `https://sepolia.etherscan.io/tx/${assessment.transaction_hash}`
@@ -119,25 +126,39 @@ function ReceiptCard({ receipt }: { receipt: ClaimReceipt }) {
       </div>
 
       <dl className="divide-y divide-ink/8 px-6 sm:px-8">
-        <div className="grid gap-2 py-5 sm:grid-cols-[9rem_1fr_auto] sm:items-center">
-          <dt className="text-xs font-bold tracking-[0.14em] text-slate uppercase">
-            Transaction
-          </dt>
-          <dd className="min-w-0 font-mono text-sm text-ink">
-            {shorten(receipt.transaction_hash, 12)}
-          </dd>
-          <div className="flex gap-2">
-            <CopyButton label="transaction hash" value={receipt.transaction_hash} />
-            <a
-              href={transactionUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-full bg-ink px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-teal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
-            >
-              Etherscan ↗
-            </a>
+        {receipt.transaction_hash && transactionUrl ? (
+          <div className="grid gap-2 py-5 sm:grid-cols-[9rem_1fr_auto] sm:items-center">
+            <dt className="text-xs font-bold tracking-[0.14em] text-slate uppercase">
+              Transaction
+            </dt>
+            <dd className="min-w-0 font-mono text-sm text-ink">
+              {shorten(receipt.transaction_hash, 12)}
+            </dd>
+            <div className="flex gap-2">
+              <CopyButton
+                label="transaction hash"
+                value={receipt.transaction_hash}
+              />
+              <a
+                href={transactionUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-full bg-ink px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-teal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
+              >
+                Etherscan ↗
+              </a>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="grid gap-2 py-5 sm:grid-cols-[9rem_1fr] sm:items-center">
+            <dt className="text-xs font-bold tracking-[0.14em] text-slate uppercase">
+              Sepolia source
+            </dt>
+            <dd className="text-sm text-ink">
+              Restored from the newest claim in the current contract state
+            </dd>
+          </div>
+        )}
 
         <div className="grid gap-2 py-5 sm:grid-cols-[9rem_1fr_auto] sm:items-center">
           <dt className="text-xs font-bold tracking-[0.14em] text-slate uppercase">
@@ -256,7 +277,11 @@ function ReceiptCard({ receipt }: { receipt: ClaimReceipt }) {
       )}
 
       <div className="flex items-center justify-between bg-sand/70 px-6 py-4 text-sm sm:px-8">
-        <span className="font-medium text-slate">Block {receipt.block_number}</span>
+        <span className="font-medium text-slate">
+          {receipt.block_number === null
+            ? 'Current Sepolia contract state'
+            : `Block ${receipt.block_number}`}
+        </span>
         <span className="font-semibold text-teal">
           {assessment?.on_chain ? 'Lifecycle recorded' : 'Claim anchored'}
         </span>
@@ -481,7 +506,9 @@ function App() {
   const [form, setForm] = useState<FormValues>(initialForm)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [receipt, setReceipt] = useState<ClaimReceipt | null>(null)
+  const [receipt, setReceipt] = useState<DisplayReceipt | null>(() =>
+    loadLastReceipt(),
+  )
   const [claims, setClaims] = useState<ClaimSummary[]>([])
   const [claimsPage, setClaimsPage] = useState(1)
   const [claimsPageSize, setClaimsPageSize] = useState(10)
@@ -493,6 +520,12 @@ function App() {
     receipt && !receipt.assessment?.on_chain && !receipt.assessment?.error
       ? receipt.claim_id
       : null
+
+  useEffect(() => {
+    saveLastReceipt(
+      receipt && hasSubmissionReceipt(receipt) ? receipt : null,
+    )
+  }, [receipt])
 
   const loadClaims = useCallback(
     async (page: number, pageSize: number, signal?: AbortSignal) => {
@@ -528,6 +561,43 @@ function App() {
     void loadClaims(claimsPage, claimsPageSize, controller.signal)
     return () => controller.abort()
   }, [claimsPage, claimsPageSize, loadClaims])
+
+  useEffect(() => {
+    if (claimsPage !== 1 || isLoadingClaims || claims.length === 0) return
+
+    const latestClaim = claims[0]
+    if (receipt && receipt.claim_id >= latestClaim.claim_id) return
+
+    const controller = new AbortController()
+
+    async function restoreLatestClaim() {
+      let assessment = null
+      try {
+        assessment = await getClaimAssessment(
+          latestClaim.claim_id,
+          controller.signal,
+        )
+      } catch (loadingError) {
+        if (
+          loadingError instanceof DOMException &&
+          loadingError.name === 'AbortError'
+        ) {
+          return
+        }
+      }
+
+      if (controller.signal.aborted) return
+      const restored = receiptFromCurrentClaim(latestClaim, assessment)
+      setReceipt((current) =>
+        current && current.claim_id >= latestClaim.claim_id
+          ? current
+          : restored,
+      )
+    }
+
+    void restoreLatestClaim()
+    return () => controller.abort()
+  }, [claims, claimsPage, isLoadingClaims, receipt])
 
   useEffect(() => {
     if (pendingAssessmentClaimId === null) return
@@ -600,7 +670,6 @@ function App() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError(null)
-    setReceipt(null)
 
     if (!Number.isFinite(claimAmountUsd) || claimAmountUsd <= 0) {
       setError('Enter a claim amount greater than $0.00.')
@@ -654,7 +723,6 @@ function App() {
   function resetForm() {
     setForm(initialForm())
     setError(null)
-    setReceipt(null)
   }
 
   return (
