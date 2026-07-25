@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import App from './App.tsx'
-import type { ClaimReceipt } from './api.ts'
+import App, { ClaimsDashboard, ReceiptCard } from './App.tsx'
+import type { ClaimReceipt, ClaimSummary } from './api.ts'
+import { receiptFromCurrentClaim } from './display-receipt.ts'
 
 const LAST_RECEIPT_STORAGE_KEY = 'claims-registry:last-receipt:v1'
 
@@ -75,5 +76,53 @@ describe('App refresh recovery', () => {
     expect(page).toContain('african-motor-xgboost-v1')
     expect(page).toContain('Claim amount')
     expect(page).toContain('3,930')
+  })
+})
+
+const historicalClaim: ClaimSummary = {
+  claim_id: 5,
+  claimant: '0x0000000000000000000000000000000000000001',
+  claim_hash: '0xhistorical',
+  data_pointer: 'ipfs://bafy-historical',
+  status: 'Flagged',
+  fraud_score: 3_909,
+  submitted_at: 1_753_459_420,
+  updated_at: 1_753_459_500,
+}
+
+describe('Historical claim details', () => {
+  it('makes every listed claim selectable', () => {
+    const page = renderToStaticMarkup(
+      <ClaimsDashboard
+        claims={[historicalClaim]}
+        page={1}
+        pageSize={10}
+        totalItems={1}
+        totalPages={1}
+        isLoading={false}
+        error={null}
+        selectedClaimId={5}
+        openingClaimId={null}
+        onRefresh={() => undefined}
+        onClaimSelect={() => undefined}
+        onPageChange={() => undefined}
+        onPageSizeChange={() => undefined}
+      />,
+    )
+
+    expect(page).toContain('aria-label="View details for claim 5"')
+    expect(page).toContain('aria-current="true"')
+    expect(page).toContain('View details')
+  })
+
+  it('shows the on-chain score when an older model record is unavailable', () => {
+    const page = renderToStaticMarkup(
+      <ReceiptCard receipt={receiptFromCurrentClaim(historicalClaim, null)} />,
+    )
+
+    expect(page).toContain('Claim #5 is anchored')
+    expect(page).toContain('On-chain screening recorded')
+    expect(page).toContain('3,909')
+    expect(page).toContain('SHAP indicators are')
   })
 })

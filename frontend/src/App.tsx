@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ChangeEvent,
   type FormEvent,
@@ -87,7 +88,7 @@ function CopyButton({ label, value }: { label: string; value: string }) {
   )
 }
 
-function ReceiptCard({ receipt }: { receipt: DisplayReceipt }) {
+export function ReceiptCard({ receipt }: { receipt: DisplayReceipt }) {
   const transactionUrl = receipt.transaction_hash
     ? `https://sepolia.etherscan.io/tx/${receipt.transaction_hash}`
     : null
@@ -155,7 +156,7 @@ function ReceiptCard({ receipt }: { receipt: DisplayReceipt }) {
               Sepolia source
             </dt>
             <dd className="text-sm text-ink">
-              Restored from the newest claim in the current contract state
+              Read from this claim's current Sepolia contract state
             </dd>
           </div>
         )}
@@ -261,6 +262,37 @@ function ReceiptCard({ receipt }: { receipt: DisplayReceipt }) {
           not be used to decide a real insurance claim.
         </p>
         </section>
+      ) : receipt.chain_state &&
+        receipt.chain_state.status !== 'Submitted' ? (
+        <section className="border-t border-ink/8 bg-sand/55 px-6 py-6 sm:px-8">
+          <p className="text-xs font-bold tracking-[0.14em] text-teal uppercase">
+            On-chain screening recorded
+          </p>
+          <div className="mt-1 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h3 className="text-xl font-bold text-ink">
+                Current status:{' '}
+                {receipt.chain_state.status === 'UnderReview'
+                  ? 'Under review'
+                  : receipt.chain_state.status}
+              </h3>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate">
+                The score and status are available from Sepolia. The detailed
+                model version, assessment transaction and SHAP indicators are
+                not available in the current database for this earlier claim.
+              </p>
+            </div>
+            <div className="shrink-0 rounded-2xl bg-mint px-5 py-3 text-center text-teal">
+              <span className="block text-2xl font-black">
+                {(receipt.chain_state.fraud_score / 100).toFixed(2)}%
+              </span>
+              <span className="text-xs font-bold uppercase">on-chain score</span>
+            </div>
+          </div>
+          <p className="mt-5 border-t border-ink/8 pt-4 text-sm font-bold text-ink">
+            {receipt.chain_state.fraud_score.toLocaleString()} / 10,000
+          </p>
+        </section>
       ) : (
         <section className="border-t border-ink/8 bg-sand/55 px-6 py-6 sm:px-8">
           <p className="text-xs font-bold tracking-[0.14em] text-teal uppercase">
@@ -320,12 +352,15 @@ type ClaimsDashboardProps = {
   totalPages: number
   isLoading: boolean
   error: string | null
+  selectedClaimId: number | null
+  openingClaimId: number | null
   onRefresh: () => void
+  onClaimSelect: (claim: ClaimSummary) => void
   onPageChange: (page: number) => void
   onPageSizeChange: (pageSize: number) => void
 }
 
-function ClaimsDashboard({
+export function ClaimsDashboard({
   claims,
   page,
   pageSize,
@@ -333,7 +368,10 @@ function ClaimsDashboard({
   totalPages,
   isLoading,
   error,
+  selectedClaimId,
+  openingClaimId,
   onRefresh,
+  onClaimSelect,
   onPageChange,
   onPageSizeChange,
 }: ClaimsDashboardProps) {
@@ -352,7 +390,8 @@ function ClaimsDashboard({
             All submitted claims
           </h2>
           <p className="mt-1 text-sm leading-6 text-slate">
-            Current smart-contract state, newest claim first.
+            Current smart-contract state, newest claim first. Select a claim to
+            open its Sepolia and fraud-screening details.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -418,14 +457,36 @@ function ClaimsDashboard({
             </thead>
             <tbody className="divide-y divide-ink/8">
               {claims.map((claim) => (
-                <tr key={claim.claim_id} className="align-top hover:bg-sand/35">
+                <tr
+                  key={claim.claim_id}
+                  className={`align-top transition ${
+                    selectedClaimId === claim.claim_id
+                      ? 'bg-mint/70'
+                      : 'hover:bg-sand/35'
+                  }`}
+                >
                   <td className="px-6 py-4 sm:px-8">
-                    <span className="block font-bold text-ink">
-                      #{claim.claim_id}
-                    </span>
-                    <span className="mt-1 block font-mono text-xs text-slate">
-                      {shorten(claim.claim_hash, 7)}
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onClaimSelect(claim)}
+                      aria-label={`View details for claim ${claim.claim_id}`}
+                      aria-current={
+                        selectedClaimId === claim.claim_id ? 'true' : undefined
+                      }
+                      className="group rounded-lg text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal"
+                    >
+                      <span className="block font-bold text-ink group-hover:text-teal">
+                        #{claim.claim_id}
+                      </span>
+                      <span className="mt-1 block font-mono text-xs text-slate">
+                        {shorten(claim.claim_hash, 7)}
+                      </span>
+                      <span className="mt-2 block text-xs font-bold text-teal">
+                        {openingClaimId === claim.claim_id
+                          ? 'Opening details…'
+                          : 'View details →'}
+                      </span>
+                    </button>
                   </td>
                   <td className="px-4 py-4">
                     <span
@@ -516,16 +577,30 @@ function App() {
   const [claimsTotalPages, setClaimsTotalPages] = useState(1)
   const [isLoadingClaims, setIsLoadingClaims] = useState(true)
   const [claimsError, setClaimsError] = useState<string | null>(null)
+  const [selectedClaimId, setSelectedClaimId] = useState<number | null>(null)
+  const [openingClaimId, setOpeningClaimId] = useState<number | null>(null)
+  const [claimDetailsError, setClaimDetailsError] = useState<string | null>(null)
+  const claimDetailsRequest = useRef<AbortController | null>(null)
   const pendingAssessmentClaimId =
-    receipt && !receipt.assessment?.on_chain && !receipt.assessment?.error
+    receipt &&
+    !receipt.assessment?.on_chain &&
+    !receipt.assessment?.error &&
+    (!receipt.chain_state || receipt.chain_state.status === 'Submitted')
       ? receipt.claim_id
       : null
 
   useEffect(() => {
-    saveLastReceipt(
-      receipt && hasSubmissionReceipt(receipt) ? receipt : null,
-    )
+    // A historical selection has no original submission receipt, so keep the
+    // latest complete browser receipt instead of accidentally deleting it.
+    if (receipt && hasSubmissionReceipt(receipt)) saveLastReceipt(receipt)
   }, [receipt])
+
+  useEffect(
+    () => () => {
+      claimDetailsRequest.current?.abort()
+    },
+    [],
+  )
 
   const loadClaims = useCallback(
     async (page: number, pageSize: number, signal?: AbortSignal) => {
@@ -563,7 +638,14 @@ function App() {
   }, [claimsPage, claimsPageSize, loadClaims])
 
   useEffect(() => {
-    if (claimsPage !== 1 || isLoadingClaims || claims.length === 0) return
+    if (
+      selectedClaimId !== null ||
+      claimsPage !== 1 ||
+      isLoadingClaims ||
+      claims.length === 0
+    ) {
+      return
+    }
 
     const latestClaim = claims[0]
     if (receipt && receipt.claim_id >= latestClaim.claim_id) return
@@ -597,7 +679,7 @@ function App() {
 
     void restoreLatestClaim()
     return () => controller.abort()
-  }, [claims, claimsPage, isLoadingClaims, receipt])
+  }, [claims, claimsPage, isLoadingClaims, receipt, selectedClaimId])
 
   useEffect(() => {
     if (pendingAssessmentClaimId === null) return
@@ -667,6 +749,56 @@ function App() {
     setForm((current) => ({ ...current, [name]: nextValue }))
   }
 
+  async function showClaimDetails(claim: ClaimSummary) {
+    claimDetailsRequest.current?.abort()
+    const controller = new AbortController()
+    claimDetailsRequest.current = controller
+
+    setSelectedClaimId(claim.claim_id)
+    setOpeningClaimId(claim.claim_id)
+    setClaimDetailsError(null)
+
+    // Show the Sepolia values immediately while the model explanation is read
+    // from PostgreSQL. This makes a slow assessment lookup feel responsive.
+    setReceipt((current) => receiptFromCurrentClaim(claim, null, current))
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById('claim-details')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+
+    try {
+      const assessment = await getClaimAssessment(
+        claim.claim_id,
+        controller.signal,
+      )
+      setReceipt((current) =>
+        current?.claim_id === claim.claim_id
+          ? receiptFromCurrentClaim(claim, assessment, current)
+          : current,
+      )
+    } catch (loadingError) {
+      if (
+        loadingError instanceof DOMException &&
+        loadingError.name === 'AbortError'
+      ) {
+        return
+      }
+      setClaimDetailsError(
+        loadingError instanceof Error
+          ? loadingError.message
+          : 'The fraud-screening details could not be loaded.',
+      )
+    } finally {
+      setOpeningClaimId((current) =>
+        current === claim.claim_id ? null : current,
+      )
+      if (claimDetailsRequest.current === controller) {
+        claimDetailsRequest.current = null
+      }
+    }
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError(null)
@@ -703,7 +835,11 @@ function App() {
 
     setIsSubmitting(true)
     try {
-      setReceipt(await submitClaim(payload))
+      const submittedReceipt = await submitClaim(payload)
+      claimDetailsRequest.current?.abort()
+      setSelectedClaimId(null)
+      setClaimDetailsError(null)
+      setReceipt(submittedReceipt)
       if (claimsPage === 1) {
         void loadClaims(1, claimsPageSize)
       } else {
@@ -1111,7 +1247,20 @@ function App() {
           </aside>
         </div>
 
-        {receipt && <div className="mt-8"><ReceiptCard receipt={receipt} /></div>}
+        {receipt && (
+          <div id="claim-details" className="mt-8 scroll-mt-6">
+            {claimDetailsError && (
+              <div
+                role="alert"
+                className="mb-3 rounded-2xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-medium text-red-800"
+              >
+                Sepolia details are shown below, but the stored model explanation
+                could not be loaded: {claimDetailsError}
+              </div>
+            )}
+            <ReceiptCard receipt={receipt} />
+          </div>
+        )}
 
         <ClaimsDashboard
           claims={claims}
@@ -1121,7 +1270,10 @@ function App() {
           totalPages={claimsTotalPages}
           isLoading={isLoadingClaims}
           error={claimsError}
+          selectedClaimId={receipt?.claim_id ?? null}
+          openingClaimId={openingClaimId}
           onRefresh={() => void loadClaims(claimsPage, claimsPageSize)}
+          onClaimSelect={(claim) => void showClaimDetails(claim)}
           onPageChange={setClaimsPage}
           onPageSizeChange={(pageSize) => {
             setClaimsPage(1)

@@ -13,6 +13,7 @@ operation; it does not connect directly to a wallet, Pinata, Kafka, or the model
 - The XGBoost probability and claim-specific SHAP indicators from PostgreSQL
 - The on-chain assessment status and transaction
 - A newest-first, paginated list of submitted claims and fraud scores
+- A selectable details view for every claim in the Sepolia claims list
 
 The page offers claim-list sizes of 5, 10, 25, or 50.
 
@@ -71,6 +72,12 @@ successful claim replaces it. If that browser receipt is unavailable, the page
 rebuilds the panel from the newest Sepolia claim and its FastAPI assessment.
 Browser storage contains no form fields, wallet key, or Pinata credential and
 can be cleared through the browser's site-data tools.
+
+Select any claim number in **All submitted claims** to reopen its Sepolia hash,
+IPFS pointer, on-chain score, model result, and SHAP indicators. Older claims
+created before the current PostgreSQL assessment history may only have their
+on-chain status and score; the page labels that limitation instead of inventing
+missing XGBoost or SHAP details.
 
 ## Verify the frontend
 

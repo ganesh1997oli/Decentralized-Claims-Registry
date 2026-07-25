@@ -44,7 +44,28 @@ describe('current claim receipt', () => {
       data_pointer: 'ipfs://bafy-latest',
       claim_hash: '0xclaim',
       assessment,
+      chain_state: claim,
     })
     expect(hasSubmissionReceipt(receipt)).toBe(false)
+  })
+
+  it('keeps the original submission transaction when selecting the same claim', () => {
+    const currentReceipt = {
+      claim_id: 9,
+      transaction_hash: '0xsubmission',
+      block_number: 11_348_385,
+      data_pointer: claim.data_pointer,
+      claim_hash: claim.claim_hash,
+      assessment: null,
+    }
+
+    const receipt = receiptFromCurrentClaim(
+      claim,
+      assessment,
+      currentReceipt,
+    )
+
+    expect(receipt.transaction_hash).toBe('0xsubmission')
+    expect(receipt.block_number).toBe(11_348_385)
   })
 })

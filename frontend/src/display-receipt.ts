@@ -10,19 +10,25 @@ export type DisplayReceipt = Omit<
 > & {
   transaction_hash: string | null
   block_number: number | null
+  chain_state?: ClaimSummary
 }
 
 export function receiptFromCurrentClaim(
   claim: ClaimSummary,
   assessment: ClaimAssessment | null,
+  currentReceipt?: DisplayReceipt | null,
 ): DisplayReceipt {
+  const sameClaimReceipt =
+    currentReceipt?.claim_id === claim.claim_id ? currentReceipt : null
+
   return {
     claim_id: claim.claim_id,
-    transaction_hash: null,
-    block_number: null,
+    transaction_hash: sameClaimReceipt?.transaction_hash ?? null,
+    block_number: sameClaimReceipt?.block_number ?? null,
     data_pointer: claim.data_pointer,
     claim_hash: claim.claim_hash,
     assessment,
+    chain_state: claim,
   }
 }
 
