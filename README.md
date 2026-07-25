@@ -1,46 +1,64 @@
 # Decentralized Claims Registry
 
-A dissertation prototype that records verifiable insurance-claim references on
-Ethereum while keeping the claim document off-chain. The application combines a
-Solidity registry, public IPFS storage, a FastAPI backend, a React interface, a
-transparent synthetic fraud model, and an optional Kafka event stream.
+A dissertation prototype that explores one practical question: can an insurance
+claim be stored off-chain, screened by a machine-learning workflow, and still
+leave a small public record that another party can verify independently?
 
-> **Research prototype:** the current workflow uses synthetic claim data,
-> unencrypted public IPFS, a Sepolia test wallet, and a demonstration model. Do
-> not enter real names, addresses, policy details, photographs, or documents.
+The application combines a Solidity registry, public IPFS storage, FastAPI,
+React, Kafka, PostgreSQL, XGBoost, and SHAP. Each part has one clear job, and the
+guides explain both what it does and why it is present.
+
+> **Research test data only:** use fictional claim references, values, and
+> descriptions. The current IPFS upload is public and unencrypted, the wallet
+> holds Sepolia test ETH, and the model was trained on a synthetic research
+> dataset. Do not enter real names, addresses, policies, photographs, or files.
+
+## What this prototype demonstrates
+
+- The full claim document does not need to be stored on Ethereum.
+- A Keccak-256 hash can prove whether later IPFS bytes match the submitted claim.
+- Kafka can separate user submission from slower model processing.
+- PostgreSQL can retain detailed model and SHAP context that is unsuitable for a
+  smart contract.
+- Sepolia can hold a compact, independently visible lifecycle record.
+
+It does **not** demonstrate a production fraud decision. The model supports
+research and integration testing; it never approves or rejects a real claim.
 
 ## What the application does
 
-When a user submits a synthetic claim:
+When a user submits a fictional test claim:
 
 1. FastAPI validates the form and creates deterministic JSON bytes.
-2. The local demonstration model calculates a fraud probability and short
-   contributing reasons.
-3. The backend uploads the exact JSON bytes to IPFS through Pinata and downloads
+2. The backend uploads the exact JSON bytes to IPFS through Pinata and downloads
    them again to verify the upload.
-4. The backend stores the IPFS pointer and the document's Keccak-256 hash in the
+3. The backend stores the IPFS pointer and the document's Keccak-256 hash in the
    `ClaimsRegistry` contract on Ethereum Sepolia.
-5. The model result is written back as `UnderReview` or `Flagged`.
-6. The React interface displays the receipt and a paginated view of submitted
-   claims.
-7. The optional listener verifies IPFS data against the on-chain hash and can
-   publish the verified event to Kafka.
+4. The listener verifies the claim and publishes its deterministic event to
+   Kafka.
+5. The scoring worker verifies the IPFS bytes again, runs XGBoost, creates
+   claim-specific SHAP reasons, and saves the result in PostgreSQL.
+6. The worker writes `UnderReview` or `Flagged` and the score to Sepolia.
+7. The React interface polls FastAPI for the assessment and displays the score,
+   reasons, transaction, and paginated contract state.
+
+The recommended mode is `CLAIM_SCORING_MODE="async_xgboost"`. The older
+`inline_demo` mode remains available for comparing the original synchronous
+logistic-regression demonstration without Kafka.
 
 ```text
-React
-  │
-  ▼
-FastAPI ──► synthetic fraud model
-  │
-  ├──────► Pinata / public IPFS (claim JSON)
-  │
-  └──────► Ethereum Sepolia (hash, CID, status and fraud score)
-                                  │
-                                  ▼
-                         blockchain listener
-                                  │
-                                  ▼ optional
-                                Kafka
+React ──► FastAPI ──► IPFS + Sepolia claim anchor
+                           │
+                           ▼
+                 listener ──► Kafka
+                                │
+                                ▼
+                         XGBoost + SHAP
+                                │
+                         PostgreSQL audit
+                                │
+                                ▼
+                    Sepolia assessment write-back
 ```
 
 ## Project structure
@@ -50,10 +68,11 @@ FastAPI ──► synthetic fraud model
 | `contract/` | Solidity contract, tests and Ignition deployments | [Contract guide](contract/README.md) |
 | `backend/` | FastAPI validation, scoring, IPFS and Sepolia workflow | [Backend guide](backend/README.md) |
 | `frontend/` | React claim form, receipt and claims dashboard | [Frontend guide](frontend/README.md) |
-| `model/` | Deterministic synthetic model training and inference | [Model guide](model/README.md) |
+| `model/` | Demonstration scoring plus XGBoost/SHAP research evaluation | [Model guide](model/README.md) |
 | `listener/` | Blockchain event polling, verification and checkpoints | [Listener guide](listener/README.md) |
 | `integrations/ipfs/` | Shared Pinata and IPFS adapter | [IPFS guide](integrations/ipfs/README.md) |
 | `integrations/kafka/` | Kafka messages, producer, consumer and local broker | [Kafka guide](integrations/kafka/README.md) |
+| `integrations/postgres/` | Idempotent assessment and explanation storage | [PostgreSQL guide](integrations/postgres/README.md) |
 
 ## Current Sepolia deployment
 
@@ -73,131 +92,193 @@ the Python source.
 - A Sepolia RPC endpoint
 - A fresh Sepolia-only wallet with test ETH
 - A Pinata JWT with public file-upload permission
-- Docker Desktop, only if you want to run Kafka
+- Docker Desktop for the local Kafka and PostgreSQL environment
 
-Never use a wallet that holds real assets. Keep the private key and Pinata JWT in
-ignored `.env.local` files and never expose them to the browser.
+Never use a wallet that holds real assets. The setup below creates one ignored
+`.env.local` file for local development. A deployed environment should inject
+the same settings through its secret manager instead of copying that file.
 
-Environment settings are kept beside the module that owns them:
+## First-time local setup
 
-| File | Settings |
-| --- | --- |
-| `backend/.env.local` | Sepolia signing, model and browser access |
-| `listener/.env.local` | Sepolia polling and checkpoint behaviour |
-| `integrations/ipfs/.env.local` | Pinata upload and IPFS gateway |
-| `integrations/kafka/.env.local` | Kafka connection, delivery and security |
-| `frontend/.env.local` | Public browser configuration only |
+The Sepolia contract is already deployed, so normal application testing does
+not require another contract deployment.
 
-If you used the older combined files, manually move `PINATA_*` and `IPFS_*`
-values into the IPFS file and `KAFKA_*` values into the Kafka file. Do not copy
-secret values into any tracked `.env.example` file.
+Run the following commands from the repository root.
 
-## Quick start on Sepolia
-
-The contract is already deployed, so the normal application run needs the
-backend and frontend. Run each process in a separate terminal from the repository
-root.
-
-### 1. Start the backend
+### 1. Create the Python environment
 
 ```bash
 python3 -m venv backend/.venv
 source backend/.venv/bin/activate
-pip install -r backend/requirements.txt
-
-cp backend/.env.example backend/.env.local                 # first run only
-cp integrations/ipfs/.env.example integrations/ipfs/.env.local  # first run only
-# Add the Sepolia values to the backend file and PINATA_JWT to the IPFS file.
-set -a
-source backend/.env.local
-source integrations/ipfs/.env.local
-set +a
-
-uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+python -m pip install --upgrade pip
+python -m pip install \
+  -r backend/requirements.txt \
+  -r listener/requirements.txt \
+  -r model/requirements.txt \
+  -r integrations/kafka/requirements.txt
 ```
 
-Check the service at <http://127.0.0.1:8000/health> or open the interactive API
-documentation at <http://127.0.0.1:8000/docs>.
-
-### 2. Start the frontend
+The application shares this environment across FastAPI, the listener, the
+worker, and the research model. On macOS, XGBoost also needs OpenMP:
 
 ```bash
-cd frontend
-npm install
-cp .env.example .env.local
-npm run dev -- --host 127.0.0.1
+brew install libomp
 ```
 
-Open <http://127.0.0.1:5173>, submit the pre-filled synthetic claim, and wait for
-the Sepolia receipt. The same page lists submitted claims, their current status,
-and fraud score.
+### 2. Install the frontend
 
-### 3. Observe and verify events (optional)
+```bash
+npm --prefix frontend ci
+```
+
+`npm ci` uses the committed lock file, which makes a clean installation more
+repeatable than silently updating package versions.
+
+### 3. Configure local secrets
+
+```bash
+cp .env.example .env.local
+```
+
+Open `.env.local` and add:
+
+- `SEPOLIA_PRIVATE_KEY`: a fresh testnet-only wallet key;
+- `PINATA_JWT`: a server-side Pinata upload token.
+
+Keep the remaining defaults unless your local ports differ. `.env.local` is
+ignored by Git. If either secret has appeared in a screenshot, chat, or commit,
+rotate it rather than continuing to use it.
+
+### 4. Prepare the XGBoost artifact
+
+On a fresh clone, create the reviewed artifact with:
 
 ```bash
 source backend/.venv/bin/activate
-pip install -r listener/requirements.txt
-
-cp listener/.env.example listener/.env.local  # first run only
-# Add SEPOLIA_RPC_URL to the listener file.
-set -a
-source listener/.env.local
-source integrations/ipfs/.env.local
-set +a
-
-python listener/claims_listener.py
+python -m model.train_xgboost --download
 ```
 
-For a successful submission, the listener prints `ClaimSubmitted`,
-`IPFSVerified`, and `ClaimAssessed` messages.
+This command downloads the pinned Hugging Face dataset revision, verifies its
+SHA-256 digest, trains the pipeline, and writes the model, metadata, and SHAP
+summary under `model/artifacts/xgboost-african-motor-v1/`.
 
-### 4. Stream verified events through Kafka (optional)
+Confirm that the application can load it:
+
+```bash
+set -a
+source .env.local
+set +a
+python -c "from model.xgboost_scorer import XGBoostFraudScorer; m=XGBoostFraudScorer.from_env(); print('Model loaded:', m.model_version); print('Threshold:', m.threshold)"
+```
+
+The expected model is `african-motor-xgboost-v1`. The current reviewed threshold
+is `0.47`, meaning 47%.
+
+## Start the complete application
+
+The asynchronous workflow has four long-running processes plus Docker. Using a
+separate terminal for each process makes failures much easier to identify.
+
+### 1. Start Kafka and PostgreSQL
+
+Start Docker Desktop, then run:
 
 ```bash
 docker compose -f integrations/kafka/compose.yml up -d
+docker compose -f integrations/kafka/compose.yml ps
+```
 
-cp integrations/kafka/.env.example integrations/kafka/.env.local  # first run only
-# Set KAFKA_ENABLED="true" in integrations/kafka/.env.local.
+Wait until Kafka and PostgreSQL report healthy. The optional Kafka dashboard is
+available at <http://127.0.0.1:8081>.
 
-# Terminal A
+### 2. Start FastAPI — terminal A
+
+```bash
+source backend/.venv/bin/activate
 set -a
-source integrations/ipfs/.env.local
-source integrations/kafka/.env.local
+source .env.local
 set +a
-python -m integrations.kafka.consumer
+uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+```
 
-# Terminal B
+Confirm the process at <http://127.0.0.1:8000/health>. The interactive API
+documentation is at <http://127.0.0.1:8000/docs>.
+
+### 3. Start React — terminal B
+
+```bash
 set -a
-source listener/.env.local
-source integrations/ipfs/.env.local
-source integrations/kafka/.env.local
+source .env.local
+set +a
+npm --prefix frontend run dev -- --host 127.0.0.1
+```
+
+Open <http://127.0.0.1:5173>. The browser talks only to FastAPI; it never
+receives the wallet private key or Pinata token.
+
+### 4. Start the blockchain listener — terminal C
+
+```bash
+source backend/.venv/bin/activate
+set -a
+source .env.local
 set +a
 python listener/claims_listener.py
 ```
 
-Start both processes before submitting a new claim. The listener should print
-`KafkaPublished`; the consumer should print `KafkaProcessed`.
+A healthy listener prints the contract address, Kafka topic, and checkpoint.
+The checkpoint lets it resume after a restart without beginning from block zero.
+
+### 5. Start the scoring worker — terminal D
+
+```bash
+source backend/.venv/bin/activate
+set -a
+source .env.local
+set +a
+python -m integrations.kafka.scoring_worker
+```
+
+The first import may build a Matplotlib font cache; that is normal. A healthy
+worker prints the topic and consumer-group name, then waits for a new claim.
+
+### 6. Submit and follow one claim
+
+Keep the listener and worker running, then submit the pre-filled fictional claim
+from the browser.
+
+You should see this sequence:
+
+1. The browser shows the Sepolia submission transaction, IPFS pointer, and hash.
+2. The listener prints `IPFSVerified` followed by `KafkaPublished`.
+3. The worker prints `ClaimAssessed`.
+4. The browser replaces the pending message with the XGBoost probability, SHAP
+   indicators, on-chain score, assessment transaction, and lifecycle status.
+5. The newest row appears in **All submitted claims**.
+
+Click **View details →** on any row to reopen that claim. The page keeps the
+latest public receipt after a refresh and restores the newest contract claim if
+browser storage is empty.
 
 ## Run the automated checks
 
-Install the backend and listener requirements first, then run the project checks:
+After the first-time installation, run the checks from the repository root:
 
 ```bash
 # Python: backend, model, listener and integrations
 source backend/.venv/bin/activate
-pip install -r listener/requirements.txt
 python -m pytest \
   listener/test_*.py integrations/ipfs/tests integrations/kafka/tests \
-  backend/tests model/tests -q
+  integrations/postgres/tests backend/tests model/tests -q
 
 # Smart contract
 cd contract
-npm install
+npm ci
 npx hardhat test
 
 # Frontend
 cd ../frontend
-npm install
+npm ci
 npm test
 npm run lint
 npm run build
@@ -226,18 +307,112 @@ The registry uses five statuses:
 The model never approves or rejects a claim automatically. A low score becomes
 `UnderReview`, while a score above the saved threshold becomes `Flagged`.
 
+In the normal asynchronous flow, `Submitted` can be brief because the worker may
+score the claim before the dashboard refreshes. `Approved` and `Rejected` are
+reserved for a future authenticated human-review workflow.
+
+## Understanding the model result
+
+XGBoost returns a probability between `0` and `1`. Solidity has no floating-point
+type, so the worker multiplies the probability by `10,000` and stores a whole
+number:
+
+```text
+probability 0.2466 = 24.66% = on-chain score 2,466 / 10,000
+threshold   0.4700 = 47.00% = threshold score 4,700 / 10,000
+```
+
+The three displayed SHAP indicators are the features that moved that individual
+prediction most. They explain the model's behaviour; they do not prove fraud or
+show that a feature caused fraud.
+
+Older claims can show a score without current XGBoost/SHAP details if they were
+created before the PostgreSQL assessment history. The interface says so rather
+than inventing missing model information.
+
+## Common local problems
+
+### The worker shows `Coordinator load in progress`
+
+Kafka is still starting its internal coordinator. Wait a few seconds and leave
+the process running. If it continues, check:
+
+```bash
+docker compose -f integrations/kafka/compose.yml ps
+```
+
+### The worker fails on `schemaVersion: 1`
+
+The local Kafka volume contains an older message from before claim schema v2.
+Stop the worker and, only if those old local test messages are no longer needed,
+move this development consumer group to the latest offsets:
+
+```bash
+docker compose -f integrations/kafka/compose.yml exec kafka \
+  /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 \
+  --group claims-registry-scorer-v1 \
+  --topic claims.submitted.v1 \
+  --reset-offsets \
+  --to-latest \
+  --execute
+```
+
+This skips old messages; it does not delete the topic. A production worker should
+quarantine incompatible messages in a dead-letter workflow instead.
+
+### A claim remains `Submitted`
+
+Check that both `listener/claims_listener.py` and
+`integrations.kafka/scoring_worker.py` are running. Then confirm Kafka consumer
+lag in <http://127.0.0.1:8081>.
+
+### Every new claim is `UnderReview`
+
+That is expected when its probability is below the current 47% threshold.
+`Flagged` appears only at or above the threshold. Neither status is a final claim
+decision.
+
+### XGBoost cannot load `libomp`
+
+On macOS:
+
+```bash
+brew install libomp
+```
+
+Then restart the Python process.
+
+## Stop the local application
+
+Stop each foreground process with `Ctrl+C`, then stop Docker services:
+
+```bash
+docker compose -f integrations/kafka/compose.yml down
+```
+
+Do not add `--volumes` unless you deliberately want to delete local Kafka
+messages and PostgreSQL assessments.
+
 ## Security and production limitations
 
 This repository demonstrates integration, not a production insurance platform.
-Before processing real claims, the design would need at least:
+The evidence field is intentionally disabled because a public CID is an address,
+not a password. Anyone who learns the CID can request the unencrypted bytes while
+an IPFS node continues to provide them.
 
-- encrypted private storage or client-side envelope encryption before IPFS;
+Before accepting real claims or evidence, the design would need at least:
+
+- per-file envelope encryption before IPFS and managed off-chain keys;
 - audited role-based contract access control;
 - managed transaction signing instead of a process-level private key;
-- authenticated users, authorization and an audit database;
+- authenticated users, authorization and formal audit-retention controls;
+- file validation, malware scanning, access logs, and deletion procedures;
 - an indexed event history rather than repeated direct contract reads;
 - a validated real insurance-fraud dataset and monitored model;
-- managed Kafka with TLS/SASL, replication and operational monitoring.
+- managed Kafka with TLS/SASL, replication, dead-letter handling, and monitoring.
 
-Public IPFS content cannot be made private by hiding its CID. Anyone who obtains
-the CID can request the unencrypted bytes from an available gateway.
+For a production deployment, inject secrets through a managed secret store and
+use a cloud KMS or Vault-style service for encryption keys. Never place a
+decryption key, wallet private key, or Pinata token on IPFS, Sepolia, or in a
+`VITE_` browser variable.

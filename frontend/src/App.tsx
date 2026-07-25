@@ -2,34 +2,55 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ChangeEvent,
   type FormEvent,
 } from 'react'
 import {
+  getClaimAssessment,
   listClaims,
   submitClaim,
   type ClaimPayload,
-  type ClaimReceipt,
   type ClaimStatus,
   type ClaimSummary,
 } from './api.ts'
+import {
+  hasSubmissionReceipt,
+  receiptFromCurrentClaim,
+  type DisplayReceipt,
+} from './display-receipt.ts'
+import { loadLastReceipt, saveLastReceipt } from './receipt-storage.ts'
 
 type FormValues = {
   claimReference: string
   policyReference: string
-  claimType: string
+  claimType: ClaimPayload['claimType']
   incidentDate: string
-  amountPounds: string
+  claimAmountUsd: string
+  policyPremiumUsd: string
+  vehicleAge: string
+  vehicleType: string
+  country: string
+  regionType: ClaimPayload['regionType']
+  thirdPartyInjuryFlag: boolean
+  totalLossFlag: boolean
   description: string
 }
 
 const initialForm = (): FormValues => ({
   claimReference: `synthetic-web-${Date.now().toString().slice(-6)}`,
   policyReference: 'synthetic-policy-42',
-  claimType: 'vehicle_damage',
+  claimType: 'collision',
   incidentDate: new Date().toISOString().slice(0, 10),
-  amountPounds: '2500.00',
+  claimAmountUsd: '2500.00',
+  policyPremiumUsd: '480.00',
+  vehicleAge: '6',
+  vehicleType: 'sedan',
+  country: 'Nigeria',
+  regionType: 'urban',
+  thirdPartyInjuryFlag: false,
+  totalLossFlag: false,
   description: 'Synthetic bumper damage submitted through the React form',
 })
 
@@ -67,14 +88,20 @@ function CopyButton({ label, value }: { label: string; value: string }) {
   )
 }
 
-function ReceiptCard({ receipt }: { receipt: ClaimReceipt }) {
-  const transactionUrl = `https://sepolia.etherscan.io/tx/${receipt.transaction_hash}`
+export function ReceiptCard({ receipt }: { receipt: DisplayReceipt }) {
+  const transactionUrl = receipt.transaction_hash
+    ? `https://sepolia.etherscan.io/tx/${receipt.transaction_hash}`
+    : null
   const assessment = receipt.assessment
-  const assessmentUrl = assessment.transaction_hash
+  const assessmentUrl = assessment?.transaction_hash
     ? `https://sepolia.etherscan.io/tx/${assessment.transaction_hash}`
     : null
-  const probabilityPercent = (assessment.probability * 100).toFixed(1)
-  const thresholdPercent = (assessment.threshold * 100).toFixed(0)
+  const probabilityPercent = assessment
+    ? (assessment.probability * 100).toFixed(1)
+    : null
+  const thresholdPercent = assessment
+    ? (assessment.threshold * 100).toFixed(0)
+    : null
 
   return (
     <section
@@ -100,25 +127,39 @@ function ReceiptCard({ receipt }: { receipt: ClaimReceipt }) {
       </div>
 
       <dl className="divide-y divide-ink/8 px-6 sm:px-8">
-        <div className="grid gap-2 py-5 sm:grid-cols-[9rem_1fr_auto] sm:items-center">
-          <dt className="text-xs font-bold tracking-[0.14em] text-slate uppercase">
-            Transaction
-          </dt>
-          <dd className="min-w-0 font-mono text-sm text-ink">
-            {shorten(receipt.transaction_hash, 12)}
-          </dd>
-          <div className="flex gap-2">
-            <CopyButton label="transaction hash" value={receipt.transaction_hash} />
-            <a
-              href={transactionUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-full bg-ink px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-teal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
-            >
-              Etherscan ↗
-            </a>
+        {receipt.transaction_hash && transactionUrl ? (
+          <div className="grid gap-2 py-5 sm:grid-cols-[9rem_1fr_auto] sm:items-center">
+            <dt className="text-xs font-bold tracking-[0.14em] text-slate uppercase">
+              Transaction
+            </dt>
+            <dd className="min-w-0 font-mono text-sm text-ink">
+              {shorten(receipt.transaction_hash, 12)}
+            </dd>
+            <div className="flex gap-2">
+              <CopyButton
+                label="transaction hash"
+                value={receipt.transaction_hash}
+              />
+              <a
+                href={transactionUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-full bg-ink px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-teal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
+              >
+                Etherscan ↗
+              </a>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="grid gap-2 py-5 sm:grid-cols-[9rem_1fr] sm:items-center">
+            <dt className="text-xs font-bold tracking-[0.14em] text-slate uppercase">
+              Sepolia source
+            </dt>
+            <dd className="text-sm text-ink">
+              Read from this claim's current Sepolia contract state
+            </dd>
+          </div>
+        )}
 
         <div className="grid gap-2 py-5 sm:grid-cols-[9rem_1fr_auto] sm:items-center">
           <dt className="text-xs font-bold tracking-[0.14em] text-slate uppercase">
@@ -151,7 +192,8 @@ function ReceiptCard({ receipt }: { receipt: ClaimReceipt }) {
         </div>
       </dl>
 
-      <section className="border-t border-ink/8 bg-sand/55 px-6 py-6 sm:px-8">
+      {assessment ? (
+        <section className="border-t border-ink/8 bg-sand/55 px-6 py-6 sm:px-8">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <p className="text-xs font-bold tracking-[0.14em] text-teal uppercase">
@@ -216,15 +258,64 @@ function ReceiptCard({ receipt }: { receipt: ClaimReceipt }) {
         </div>
 
         <p className="mt-5 border-t border-ink/8 pt-4 text-xs leading-5 text-slate">
-          This is a synthetic logistic-regression demonstration. It supports the
-          integration test and must not be used to decide a real insurance claim.
+          This synthetic research score supports the integration test and must
+          not be used to decide a real insurance claim.
         </p>
-      </section>
+        </section>
+      ) : receipt.chain_state &&
+        receipt.chain_state.status !== 'Submitted' ? (
+        <section className="border-t border-ink/8 bg-sand/55 px-6 py-6 sm:px-8">
+          <p className="text-xs font-bold tracking-[0.14em] text-teal uppercase">
+            On-chain screening recorded
+          </p>
+          <div className="mt-1 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h3 className="text-xl font-bold text-ink">
+                Current status:{' '}
+                {receipt.chain_state.status === 'UnderReview'
+                  ? 'Under review'
+                  : receipt.chain_state.status}
+              </h3>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate">
+                The score and status are available from Sepolia. The detailed
+                model version, assessment transaction and SHAP indicators are
+                not available in the current database for this earlier claim.
+              </p>
+            </div>
+            <div className="shrink-0 rounded-2xl bg-mint px-5 py-3 text-center text-teal">
+              <span className="block text-2xl font-black">
+                {(receipt.chain_state.fraud_score / 100).toFixed(2)}%
+              </span>
+              <span className="text-xs font-bold uppercase">on-chain score</span>
+            </div>
+          </div>
+          <p className="mt-5 border-t border-ink/8 pt-4 text-sm font-bold text-ink">
+            {receipt.chain_state.fraud_score.toLocaleString()} / 10,000
+          </p>
+        </section>
+      ) : (
+        <section className="border-t border-ink/8 bg-sand/55 px-6 py-6 sm:px-8">
+          <p className="text-xs font-bold tracking-[0.14em] text-teal uppercase">
+            XGBoost screening queued
+          </p>
+          <h3 className="mt-1 text-xl font-bold text-ink">
+            Waiting for the verified claim event
+          </h3>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate">
+            Kafka will pass this claim to the XGBoost worker. This page checks
+            PostgreSQL for the score and claim-specific SHAP reasons.
+          </p>
+        </section>
+      )}
 
       <div className="flex items-center justify-between bg-sand/70 px-6 py-4 text-sm sm:px-8">
-        <span className="font-medium text-slate">Block {receipt.block_number}</span>
+        <span className="font-medium text-slate">
+          {receipt.block_number === null
+            ? 'Current Sepolia contract state'
+            : `Block ${receipt.block_number}`}
+        </span>
         <span className="font-semibold text-teal">
-          {assessment.on_chain ? 'Lifecycle recorded' : 'Claim anchored'}
+          {assessment?.on_chain ? 'Lifecycle recorded' : 'Claim anchored'}
         </span>
       </div>
     </section>
@@ -261,12 +352,15 @@ type ClaimsDashboardProps = {
   totalPages: number
   isLoading: boolean
   error: string | null
+  selectedClaimId: number | null
+  openingClaimId: number | null
   onRefresh: () => void
+  onClaimSelect: (claim: ClaimSummary) => void
   onPageChange: (page: number) => void
   onPageSizeChange: (pageSize: number) => void
 }
 
-function ClaimsDashboard({
+export function ClaimsDashboard({
   claims,
   page,
   pageSize,
@@ -274,7 +368,10 @@ function ClaimsDashboard({
   totalPages,
   isLoading,
   error,
+  selectedClaimId,
+  openingClaimId,
   onRefresh,
+  onClaimSelect,
   onPageChange,
   onPageSizeChange,
 }: ClaimsDashboardProps) {
@@ -293,7 +390,8 @@ function ClaimsDashboard({
             All submitted claims
           </h2>
           <p className="mt-1 text-sm leading-6 text-slate">
-            Current smart-contract state, newest claim first.
+            Current smart-contract state, newest claim first. Select a claim to
+            open its Sepolia and fraud-screening details.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -359,14 +457,36 @@ function ClaimsDashboard({
             </thead>
             <tbody className="divide-y divide-ink/8">
               {claims.map((claim) => (
-                <tr key={claim.claim_id} className="align-top hover:bg-sand/35">
+                <tr
+                  key={claim.claim_id}
+                  className={`align-top transition ${
+                    selectedClaimId === claim.claim_id
+                      ? 'bg-mint/70'
+                      : 'hover:bg-sand/35'
+                  }`}
+                >
                   <td className="px-6 py-4 sm:px-8">
-                    <span className="block font-bold text-ink">
-                      #{claim.claim_id}
-                    </span>
-                    <span className="mt-1 block font-mono text-xs text-slate">
-                      {shorten(claim.claim_hash, 7)}
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onClaimSelect(claim)}
+                      aria-label={`View details for claim ${claim.claim_id}`}
+                      aria-current={
+                        selectedClaimId === claim.claim_id ? 'true' : undefined
+                      }
+                      className="group rounded-lg text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal"
+                    >
+                      <span className="block font-bold text-ink group-hover:text-teal">
+                        #{claim.claim_id}
+                      </span>
+                      <span className="mt-1 block font-mono text-xs text-slate">
+                        {shorten(claim.claim_hash, 7)}
+                      </span>
+                      <span className="mt-2 block text-xs font-bold text-teal">
+                        {openingClaimId === claim.claim_id
+                          ? 'Opening details…'
+                          : 'View details →'}
+                      </span>
+                    </button>
                   </td>
                   <td className="px-4 py-4">
                     <span
@@ -447,7 +567,9 @@ function App() {
   const [form, setForm] = useState<FormValues>(initialForm)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [receipt, setReceipt] = useState<ClaimReceipt | null>(null)
+  const [receipt, setReceipt] = useState<DisplayReceipt | null>(() =>
+    loadLastReceipt(),
+  )
   const [claims, setClaims] = useState<ClaimSummary[]>([])
   const [claimsPage, setClaimsPage] = useState(1)
   const [claimsPageSize, setClaimsPageSize] = useState(10)
@@ -455,6 +577,30 @@ function App() {
   const [claimsTotalPages, setClaimsTotalPages] = useState(1)
   const [isLoadingClaims, setIsLoadingClaims] = useState(true)
   const [claimsError, setClaimsError] = useState<string | null>(null)
+  const [selectedClaimId, setSelectedClaimId] = useState<number | null>(null)
+  const [openingClaimId, setOpeningClaimId] = useState<number | null>(null)
+  const [claimDetailsError, setClaimDetailsError] = useState<string | null>(null)
+  const claimDetailsRequest = useRef<AbortController | null>(null)
+  const pendingAssessmentClaimId =
+    receipt &&
+    !receipt.assessment?.on_chain &&
+    !receipt.assessment?.error &&
+    (!receipt.chain_state || receipt.chain_state.status === 'Submitted')
+      ? receipt.claim_id
+      : null
+
+  useEffect(() => {
+    // A historical selection has no original submission receipt, so keep the
+    // latest complete browser receipt instead of accidentally deleting it.
+    if (receipt && hasSubmissionReceipt(receipt)) saveLastReceipt(receipt)
+  }, [receipt])
+
+  useEffect(
+    () => () => {
+      claimDetailsRequest.current?.abort()
+    },
+    [],
+  )
 
   const loadClaims = useCallback(
     async (page: number, pageSize: number, signal?: AbortSignal) => {
@@ -491,25 +637,188 @@ function App() {
     return () => controller.abort()
   }, [claimsPage, claimsPageSize, loadClaims])
 
-  const amountPence = useMemo(() => {
-    const amount = Number(form.amountPounds)
-    return Number.isFinite(amount) ? Math.round(amount * 100) : 0
-  }, [form.amountPounds])
+  useEffect(() => {
+    // On a fresh page, the claims table is our source of truth. Rebuild the
+    // details card from the newest contract claim unless the user deliberately
+    // selected an older row they are still reading.
+    if (
+      selectedClaimId !== null ||
+      claimsPage !== 1 ||
+      isLoadingClaims ||
+      claims.length === 0
+    ) {
+      return
+    }
+
+    const latestClaim = claims[0]
+    if (receipt && receipt.claim_id >= latestClaim.claim_id) return
+
+    const controller = new AbortController()
+
+    async function restoreLatestClaim() {
+      let assessment = null
+      try {
+        assessment = await getClaimAssessment(
+          latestClaim.claim_id,
+          controller.signal,
+        )
+      } catch (loadingError) {
+        if (
+          loadingError instanceof DOMException &&
+          loadingError.name === 'AbortError'
+        ) {
+          return
+        }
+      }
+
+      if (controller.signal.aborted) return
+      const restored = receiptFromCurrentClaim(latestClaim, assessment)
+      setReceipt((current) =>
+        current && current.claim_id >= latestClaim.claim_id
+          ? current
+          : restored,
+      )
+    }
+
+    void restoreLatestClaim()
+    return () => controller.abort()
+  }, [claims, claimsPage, isLoadingClaims, receipt, selectedClaimId])
+
+  useEffect(() => {
+    if (pendingAssessmentClaimId === null) return
+
+    // Claim submission finishes before the asynchronous worker. Poll for up to
+    // one minute so the browser can move naturally from "anchored" to the final
+    // XGBoost/SHAP assessment without asking the user to refresh.
+    const claimId = pendingAssessmentClaimId
+    const controller = new AbortController()
+    let timer: number | undefined
+    let attempts = 0
+
+    async function pollAssessment() {
+      try {
+        const assessment = await getClaimAssessment(
+          claimId,
+          controller.signal,
+        )
+        if (assessment) {
+          setReceipt((current) =>
+            current?.claim_id === claimId
+              ? { ...current, assessment }
+              : current,
+          )
+          if (assessment.on_chain || assessment.error) {
+            void loadClaims(1, claimsPageSize)
+            return
+          }
+        }
+      } catch (pollingError) {
+        if (
+          pollingError instanceof DOMException &&
+          pollingError.name === 'AbortError'
+        ) {
+          return
+        }
+      }
+
+      attempts += 1
+      if (attempts < 30 && !controller.signal.aborted) {
+        timer = window.setTimeout(pollAssessment, 2_000)
+      }
+    }
+
+    void pollAssessment()
+    return () => {
+      controller.abort()
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [pendingAssessmentClaimId, claimsPageSize, loadClaims])
+
+  const claimAmountUsd = useMemo(
+    () => Number(form.claimAmountUsd),
+    [form.claimAmountUsd],
+  )
+  const policyPremiumUsd = useMemo(
+    () => Number(form.policyPremiumUsd),
+    [form.policyPremiumUsd],
+  )
+  const vehicleAge = useMemo(() => Number(form.vehicleAge), [form.vehicleAge])
 
   function update(
     event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>,
   ) {
     const { name, value } = event.target
-    setForm((current) => ({ ...current, [name]: value }))
+    const nextValue =
+      event.target instanceof HTMLInputElement && event.target.type === 'checkbox'
+        ? event.target.checked
+        : value
+    setForm((current) => ({ ...current, [name]: nextValue }))
+  }
+
+  async function showClaimDetails(claim: ClaimSummary) {
+    claimDetailsRequest.current?.abort()
+    const controller = new AbortController()
+    claimDetailsRequest.current = controller
+
+    setSelectedClaimId(claim.claim_id)
+    setOpeningClaimId(claim.claim_id)
+    setClaimDetailsError(null)
+
+    // Show the Sepolia values immediately while the model explanation is read
+    // from PostgreSQL. This makes a slow assessment lookup feel responsive.
+    setReceipt((current) => receiptFromCurrentClaim(claim, null, current))
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById('claim-details')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+
+    try {
+      const assessment = await getClaimAssessment(
+        claim.claim_id,
+        controller.signal,
+      )
+      setReceipt((current) =>
+        current?.claim_id === claim.claim_id
+          ? receiptFromCurrentClaim(claim, assessment, current)
+          : current,
+      )
+    } catch (loadingError) {
+      if (
+        loadingError instanceof DOMException &&
+        loadingError.name === 'AbortError'
+      ) {
+        return
+      }
+      setClaimDetailsError(
+        loadingError instanceof Error
+          ? loadingError.message
+          : 'The fraud-screening details could not be loaded.',
+      )
+    } finally {
+      setOpeningClaimId((current) =>
+        current === claim.claim_id ? null : current,
+      )
+      if (claimDetailsRequest.current === controller) {
+        claimDetailsRequest.current = null
+      }
+    }
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError(null)
-    setReceipt(null)
 
-    if (amountPence < 1) {
-      setError('Enter a claim amount greater than £0.00.')
+    if (!Number.isFinite(claimAmountUsd) || claimAmountUsd <= 0) {
+      setError('Enter a claim amount greater than $0.00.')
+      return
+    }
+    if (!Number.isFinite(policyPremiumUsd) || policyPremiumUsd <= 0) {
+      setError('Enter a policy premium greater than $0.00.')
+      return
+    }
+    if (!Number.isInteger(vehicleAge) || vehicleAge < 1 || vehicleAge > 30) {
+      setError('Enter a vehicle age between 1 and 30 years.')
       return
     }
 
@@ -518,14 +827,25 @@ function App() {
       policyReference: form.policyReference.trim(),
       claimType: form.claimType,
       incidentDate: form.incidentDate,
-      amountPence,
+      claimAmountUsd,
+      policyPremiumUsd,
+      vehicleAge,
+      vehicleType: form.vehicleType,
+      country: form.country,
+      regionType: form.regionType,
+      thirdPartyInjuryFlag: form.thirdPartyInjuryFlag,
+      totalLossFlag: form.totalLossFlag,
       description: form.description.trim(),
       evidence: [],
     }
 
     setIsSubmitting(true)
     try {
-      setReceipt(await submitClaim(payload))
+      const submittedReceipt = await submitClaim(payload)
+      claimDetailsRequest.current?.abort()
+      setSelectedClaimId(null)
+      setClaimDetailsError(null)
+      setReceipt(submittedReceipt)
       if (claimsPage === 1) {
         void loadClaims(1, claimsPageSize)
       } else {
@@ -545,7 +865,6 @@ function App() {
   function resetForm() {
     setForm(initialForm())
     setError(null)
-    setReceipt(null)
   }
 
   return (
@@ -573,7 +892,7 @@ function App() {
             </a>
             <div className="flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/75">
               <span className="size-2 rounded-full bg-emerald-400 shadow-[0_0_0_4px_rgba(52,211,153,0.12)]" />
-              Synthetic data only
+              Research test data only
             </div>
           </div>
         </div>
@@ -672,11 +991,10 @@ function App() {
                     value={form.claimType}
                     onChange={update}
                   >
-                    <option value="vehicle_damage">Vehicle damage</option>
-                    <option value="vehicle_theft">Vehicle theft</option>
                     <option value="collision">Collision</option>
-                    <option value="windscreen">Windscreen damage</option>
-                    <option value="other_motor">Other motor claim</option>
+                    <option value="theft">Theft</option>
+                    <option value="fire">Fire</option>
+                    <option value="flood">Flood</option>
                   </select>
                 </label>
 
@@ -694,17 +1012,30 @@ function App() {
                 </label>
               </div>
 
-              <label className="field-group max-w-sm">
-                <span className="field-label">Claim amount</span>
-                <span className="relative block">
-                  <span className="pointer-events-none absolute inset-y-0 left-4 flex items-center font-bold text-slate">
-                    £
-                  </span>
+              <div className="grid gap-5 sm:grid-cols-2">
+                <label className="field-group">
+                  <span className="field-label">Claim amount (USD)</span>
                   <input
-                    className="field-control pl-8"
+                    className="field-control"
                     type="number"
-                    name="amountPounds"
-                    value={form.amountPounds}
+                    name="claimAmountUsd"
+                    value={form.claimAmountUsd}
+                    onChange={update}
+                    required
+                    min="0.01"
+                    max="100000000"
+                    step="0.01"
+                    inputMode="decimal"
+                  />
+                </label>
+
+                <label className="field-group">
+                  <span className="field-label">Annual policy premium (USD)</span>
+                  <input
+                    className="field-control"
+                    type="number"
+                    name="policyPremiumUsd"
+                    value={form.policyPremiumUsd}
                     onChange={update}
                     required
                     min="0.01"
@@ -712,9 +1043,115 @@ function App() {
                     step="0.01"
                     inputMode="decimal"
                   />
-                </span>
-                <span className="field-help">Sent as {amountPence.toLocaleString()} pence</span>
-              </label>
+                </label>
+
+                <label className="field-group">
+                  <span className="field-label">Vehicle age</span>
+                  <input
+                    className="field-control"
+                    type="number"
+                    name="vehicleAge"
+                    value={form.vehicleAge}
+                    onChange={update}
+                    required
+                    min="1"
+                    max="30"
+                    step="1"
+                  />
+                </label>
+
+                <label className="field-group">
+                  <span className="field-label">Vehicle type</span>
+                  <select
+                    className="field-control"
+                    name="vehicleType"
+                    value={form.vehicleType}
+                    onChange={update}
+                  >
+                    {[
+                      'sedan',
+                      'suv',
+                      'pickup',
+                      'minibus',
+                      'truck',
+                      'motorcycle',
+                      'bus',
+                      'hatchback',
+                      'van',
+                      'other',
+                    ].map((vehicleType) => (
+                      <option key={vehicleType} value={vehicleType}>
+                        {vehicleType}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="field-group">
+                  <span className="field-label">Country</span>
+                  <select
+                    className="field-control"
+                    name="country"
+                    value={form.country}
+                    onChange={update}
+                  >
+                    {[
+                      'South Africa',
+                      'Nigeria',
+                      'Kenya',
+                      'Ghana',
+                      'Tanzania',
+                      'Uganda',
+                      'Rwanda',
+                      'Ethiopia',
+                      'Senegal',
+                      "Cote d'Ivoire",
+                      'Zambia',
+                      'Mozambique',
+                    ].map((country) => (
+                      <option key={country} value={country}>
+                        {country}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="field-group">
+                  <span className="field-label">Region type</span>
+                  <select
+                    className="field-control"
+                    name="regionType"
+                    value={form.regionType}
+                    onChange={update}
+                  >
+                    <option value="urban">Urban</option>
+                    <option value="rural">Rural</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="flex items-center gap-3 rounded-2xl border border-ink/10 bg-sand/45 px-4 py-3 text-sm font-semibold text-ink">
+                  <input
+                    type="checkbox"
+                    name="thirdPartyInjuryFlag"
+                    checked={form.thirdPartyInjuryFlag}
+                    onChange={update}
+                    className="size-4 accent-teal"
+                  />
+                  Third-party injury involved
+                </label>
+                <label className="flex items-center gap-3 rounded-2xl border border-ink/10 bg-sand/45 px-4 py-3 text-sm font-semibold text-ink">
+                  <input
+                    type="checkbox"
+                    name="totalLossFlag"
+                    checked={form.totalLossFlag}
+                    onChange={update}
+                    className="size-4 accent-teal"
+                  />
+                  Vehicle is a total loss
+                </label>
+              </div>
 
               <label className="field-group">
                 <span className="field-label">Incident description</span>
@@ -816,7 +1253,20 @@ function App() {
           </aside>
         </div>
 
-        {receipt && <div className="mt-8"><ReceiptCard receipt={receipt} /></div>}
+        {receipt && (
+          <div id="claim-details" className="mt-8 scroll-mt-6">
+            {claimDetailsError && (
+              <div
+                role="alert"
+                className="mb-3 rounded-2xl border border-red-200 bg-red-50 px-5 py-3 text-sm font-medium text-red-800"
+              >
+                Sepolia details are shown below, but the stored model explanation
+                could not be loaded: {claimDetailsError}
+              </div>
+            )}
+            <ReceiptCard receipt={receipt} />
+          </div>
+        )}
 
         <ClaimsDashboard
           claims={claims}
@@ -826,7 +1276,10 @@ function App() {
           totalPages={claimsTotalPages}
           isLoading={isLoadingClaims}
           error={claimsError}
+          selectedClaimId={receipt?.claim_id ?? null}
+          openingClaimId={openingClaimId}
           onRefresh={() => void loadClaims(claimsPage, claimsPageSize)}
+          onClaimSelect={(claim) => void showClaimDetails(claim)}
           onPageChange={setClaimsPage}
           onPageSizeChange={(pageSize) => {
             setClaimsPage(1)
@@ -838,7 +1291,7 @@ function App() {
       <footer className="border-t border-ink/8 bg-white/60">
         <div className="mx-auto flex max-w-7xl flex-col gap-2 px-5 py-6 text-xs text-slate sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-12">
           <span>Decentralized Claims Registry · Research prototype</span>
-          <span>React → FastAPI → IPFS → Sepolia</span>
+          <span>React → FastAPI → Sepolia → Kafka → XGBoost</span>
         </div>
       </footer>
     </div>

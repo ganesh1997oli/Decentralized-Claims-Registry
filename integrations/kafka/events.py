@@ -193,7 +193,7 @@ class KafkaSettings:
     bootstrap_servers: str = "127.0.0.1:9092"
     topic: str = DEFAULT_TOPIC
     client_id: str = "claims-registry-listener"
-    consumer_group_id: str = "claims-registry-verifier-v1"
+    consumer_group_id: str = "claims-registry-scorer-v1"
     security_protocol: str = "PLAINTEXT"
     sasl_mechanism: str | None = None
     sasl_username: str | None = None
@@ -232,7 +232,7 @@ class KafkaSettings:
                 "KAFKA_CLIENT_ID", "claims-registry-listener"
             ).strip(),
             consumer_group_id=values.get(
-                "KAFKA_CONSUMER_GROUP_ID", "claims-registry-verifier-v1"
+                "KAFKA_CONSUMER_GROUP_ID", "claims-registry-scorer-v1"
             ).strip(),
             security_protocol=security_protocol,
             sasl_mechanism=values.get("KAFKA_SASL_MECHANISM") or None,

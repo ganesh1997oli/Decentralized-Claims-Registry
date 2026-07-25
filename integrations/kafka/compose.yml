@@ -1,5 +1,23 @@
 # Local Kafka broker used by the claims event integration.
 services:
+  postgres:
+    image: postgres:17-alpine
+    hostname: postgres
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: "claims_registry"
+      POSTGRES_USER: "claims"
+      POSTGRES_PASSWORD: "claims-local"
+    volumes:
+      - claims-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claims -d claims_registry"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   kafka:
     image: apache/kafka:4.2.0
     hostname: kafka
@@ -70,3 +88,4 @@ services:
 
 volumes:
   claims-kafka-data:
+  claims-postgres-data:

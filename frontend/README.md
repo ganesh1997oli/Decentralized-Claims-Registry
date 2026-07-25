@@ -1,34 +1,44 @@
 # React frontend
 
-The frontend provides a simple interface for submitting a synthetic motor claim
-and reviewing claims already recorded on Sepolia. It calls FastAPI for every
-operation; it does not connect directly to a wallet, Pinata, Kafka, or the model.
+The frontend provides a simple interface for submitting a fictional motor-claim
+test case and reviewing claims already recorded on Sepolia. It calls FastAPI for
+every operation; it does not connect directly to a wallet, Pinata, Kafka, or the
+model. Keeping those integrations server-side is why secrets never need to enter
+browser code.
 
 ## What the interface shows
 
-- A synthetic claim-submission form
+- A research test claim-submission form
 - The confirmed Sepolia transaction and block
 - The IPFS pointer and claim hash
-- The demonstration fraud probability and contributing indicators
+- A pending state while Kafka processes the anchored claim
+- The XGBoost probability and claim-specific SHAP indicators from PostgreSQL
 - The on-chain assessment status and transaction
 - A newest-first, paginated list of submitted claims and fraud scores
+- A selectable details view for every claim in the Sepolia claims list
 
 The page offers claim-list sizes of 5, 10, 25, or 50.
 
 ## Install
 
+Run from the repository root:
+
 ```bash
-cd frontend
-npm ci
+npm --prefix frontend ci
 ```
 
-Use `npm install` instead if you intentionally need to update dependencies or the
-lock file.
+Use `npm --prefix frontend install` instead if you intentionally need to update
+dependencies or the lock file.
 
 ## Configure
 
+From the repository root, create the same local file used by the backend:
+
 ```bash
 cp .env.example .env.local
+set -a
+source .env.local
+set +a
 ```
 
 | Variable | Default | Purpose |
@@ -41,18 +51,38 @@ or other secret to a `VITE_` variable.
 
 ## Run locally
 
-Start the FastAPI backend first, then run:
+Start the FastAPI backend first. From the repository root, load the shared file
+in this terminal and run:
 
 ```bash
-cd frontend
-npm run dev -- --host 127.0.0.1
+set -a
+source .env.local
+set +a
+npm --prefix frontend run dev -- --host 127.0.0.1
 ```
 
 Open <http://127.0.0.1:5173>.
 
 The form begins with clearly labelled synthetic values. After a successful
-submission, the receipt links to Etherscan and the configured IPFS gateway, and
-the claims list refreshes automatically.
+submission, the receipt links to Etherscan and the configured IPFS gateway. In
+asynchronous mode it polls FastAPI for up to one minute while Kafka scores the
+claim, then displays the stored assessment and refreshes the contract state.
+The header labels the interface **Research test data only** to make clear that
+users must enter fictional test claims; it does not describe where the research
+dataset is hosted.
+
+The browser keeps the latest successful public receipt so its Sepolia details,
+XGBoost score, and SHAP indicators remain visible after a page refresh. A newer
+successful claim replaces it. If that browser receipt is unavailable, the page
+rebuilds the panel from the newest Sepolia claim and its FastAPI assessment.
+Browser storage contains no form fields, wallet key, or Pinata credential and
+can be cleared through the browser's site-data tools.
+
+Select any claim number in **All submitted claims** to reopen its Sepolia hash,
+IPFS pointer, on-chain score, model result, and SHAP indicators. Older claims
+created before the current PostgreSQL assessment history may only have their
+on-chain status and score; the page labels that limitation instead of inventing
+missing XGBoost or SHAP details.
 
 ## Verify the frontend
 
@@ -69,11 +99,11 @@ npm run build
 
 ## Safety and limitations
 
-- Enter synthetic information only.
+- Enter fictional test information only. Do not use real policyholder data.
 - Evidence uploads are intentionally absent while storage is public and
-  unencrypted.
-- The displayed score comes from a demonstration model and must not be used to
-  decide a real claim.
+  unencrypted. Hiding a CID would not make a photograph or document private.
+- The displayed XGBoost score comes from synthetic training data and must not be
+  used to decide a real claim.
 - The dashboard reads current Sepolia state through FastAPI; it is not a
   production search or reporting system.
 

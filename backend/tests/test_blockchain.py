@@ -169,3 +169,14 @@ def test_registry_lists_all_claims_newest_first():
     empty_page, total = registry.list_claims(page=3, page_size=1)
     assert total == 2
     assert empty_page == []
+
+
+def test_registry_reads_one_claim_for_idempotency_checks():
+    registry = SepoliaClaimsRegistry.__new__(SepoliaClaimsRegistry)
+    registry.contract = FakeReadContract()
+
+    claim = registry.get_claim(1)
+
+    assert claim.claim_id == 1
+    assert claim.status == 4
+    assert claim.fraud_score == 8500

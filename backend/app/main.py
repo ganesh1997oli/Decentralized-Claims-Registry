@@ -6,16 +6,23 @@ import os
 from functools import lru_cache
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.models import (
+    AssessmentReasonResponse,
+    ClaimAssessmentResponse,
     ClaimPageResponse,
     ClaimSubmission,
     ClaimSubmissionResponse,
     HealthResponse,
 )
 from backend.app.service import ClaimSubmissionService, ClaimSubmissionServiceError
+from integrations.postgres import (
+    PostgresAssessmentRepository,
+    PostgresConfigurationError,
+    PostgresStorageError,
+)
 
 
 app = FastAPI(
@@ -57,6 +64,27 @@ ClaimServiceDependency = Annotated[
 ]
 
 
+@lru_cache
+def get_assessment_repository() -> PostgresAssessmentRepository:
+    """Create the assessment reader only when the dashboard asks for it."""
+
+    try:
+        repository = PostgresAssessmentRepository.from_env()
+        repository.ensure_schema()
+        return repository
+    except (PostgresConfigurationError, PostgresStorageError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+
+AssessmentRepositoryDependency = Annotated[
+    PostgresAssessmentRepository,
+    Depends(get_assessment_repository),
+]
+
+
 @app.get("/health", response_model=HealthResponse, tags=["operations"])
 def health() -> HealthResponse:
     return HealthResponse(status="ok")
@@ -76,6 +104,48 @@ def list_claims(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
+
+
+@app.get(
+    "/claims/{claim_id}/assessment",
+    response_model=ClaimAssessmentResponse,
+    tags=["claims"],
+)
+def get_claim_assessment(
+    claim_id: Annotated[int, Path(ge=0)],
+    repository: AssessmentRepositoryDependency,
+) -> ClaimAssessmentResponse:
+    try:
+        record = repository.get_latest_for_claim(claim_id)
+    except PostgresStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Assessment is still pending",
+        )
+    return ClaimAssessmentResponse(
+        status=record.status,
+        fraud_score=record.fraud_score,
+        probability=record.probability,
+        threshold=record.threshold,
+        model_version=record.model_version,
+        reasons=[
+            AssessmentReasonResponse(
+                feature=reason.feature,
+                label=reason.label,
+                contribution=reason.contribution,
+            )
+            for reason in record.reasons
+        ],
+        on_chain=record.processing_status == "completed",
+        transaction_hash=record.transaction_hash,
+        block_number=record.block_number,
+        error=record.error,
+    )
 
 
 @app.post(

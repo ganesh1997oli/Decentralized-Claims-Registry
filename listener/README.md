@@ -53,18 +53,18 @@ pip install -r listener/requirements.txt
 
 ## Configure
 
+Create the shared local file from the repository root:
+
 ```bash
-cp listener/.env.example listener/.env.local
-cp integrations/ipfs/.env.example integrations/ipfs/.env.local
+cp .env.example .env.local
 ```
 
-The listener owns blockchain polling settings; the IPFS module owns the gateway.
-Load both before starting the listener:
+Add your local values, then load the same file used by the rest of the
+application:
 
 ```bash
 set -a
-source listener/.env.local
-source integrations/ipfs/.env.local
+source .env.local
 set +a
 ```
 
@@ -93,8 +93,7 @@ From the repository root:
 ```bash
 source backend/.venv/bin/activate
 set -a
-source listener/.env.local
-source integrations/ipfs/.env.local
+source .env.local
 set +a
 python listener/claims_listener.py
 ```
@@ -139,8 +138,7 @@ demonstration, load a Pinata JWT and a funded assessor key, then run:
 
 ```bash
 set -a
-source listener/.env.local
-source integrations/ipfs/.env.local
+source .env.local
 set +a
 python listener/submit_and_assess_demo.py
 ```

@@ -30,17 +30,17 @@ The adapter reads two environment variables:
 | `PINATA_JWT` | For uploads | Server-side Pinata credential with public file-upload permission |
 | `IPFS_GATEWAY` | No | Base gateway URL used to retrieve a CID |
 
-Create the ignored local file from the tracked template:
+Create the shared ignored file from the repository root:
 
 ```bash
-cp integrations/ipfs/.env.example integrations/ipfs/.env.local
+cp .env.example .env.local
 ```
 
 The default gateway is `https://gateway.pinata.cloud/ipfs`. Any process using
-IPFS loads the module-owned file with:
+IPFS loads the root file with:
 
 ```bash
-set -a; source integrations/ipfs/.env.local; set +a
+set -a; source .env.local; set +a
 ```
 
 Never put `PINATA_JWT` in the React environment or commit it to Git.
@@ -63,8 +63,9 @@ The current upload explicitly uses Pinata's public network. A CID is an address,
 not a password. Anyone who obtains the CID can request the unencrypted content
 while an IPFS node continues to provide it.
 
-For that reason, this prototype accepts synthetic data only. A real claim would
-need encryption before upload, controlled key distribution, retention and
-deletion policies, and a documented privacy and regulatory assessment.
+For that reason, the application accepts fictional research test claims only. A
+real claim would need encryption before upload, controlled key distribution,
+retention and deletion policies, and a documented privacy and regulatory
+assessment.
 
 See the [root project guide](../../README.md) for the complete data flow.

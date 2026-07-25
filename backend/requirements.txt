@@ -1,4 +1,5 @@
 -r ../integrations/ipfs/requirements.txt
+-r ../integrations/postgres/requirements.txt
 
 web3>=7.0,<8.0
 

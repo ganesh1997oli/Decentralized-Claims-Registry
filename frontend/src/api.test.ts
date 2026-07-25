@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  getClaimAssessment,
   listClaims,
   submitClaim,
   type ClaimPayload,
@@ -10,9 +11,16 @@ import {
 const payload: ClaimPayload = {
   claimReference: 'synthetic-web-1',
   policyReference: 'synthetic-policy-42',
-  claimType: 'vehicle_damage',
+  claimType: 'collision',
   incidentDate: '2026-07-13',
-  amountPence: 250000,
+  claimAmountUsd: 2500,
+  policyPremiumUsd: 480,
+  vehicleAge: 6,
+  vehicleType: 'sedan',
+  country: 'Nigeria',
+  regionType: 'urban',
+  thirdPartyInjuryFlag: false,
+  totalLossFlag: false,
   description: 'Synthetic bumper damage',
   evidence: [],
 }
@@ -88,6 +96,21 @@ describe('submitClaim', () => {
     expect(JSON.parse(request.body)).toEqual(payload)
   })
 
+  it('accepts a receipt while asynchronous scoring is pending', async () => {
+    const pendingReceipt = { ...receipt, assessment: null }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(pendingReceipt), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+
+    await expect(submitClaim(payload)).resolves.toEqual(pendingReceipt)
+  })
+
   it('surfaces FastAPI error details', async () => {
     vi.stubGlobal(
       'fetch',
@@ -108,6 +131,29 @@ describe('submitClaim', () => {
     await expect(submitClaim(payload)).rejects.toThrow(
       'Confirm that the backend is running',
     )
+  })
+})
+
+describe('getClaimAssessment', () => {
+  it('returns null while the worker has not stored an assessment', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 404 })))
+
+    await expect(getClaimAssessment(4)).resolves.toBeNull()
+  })
+
+  it('returns the completed assessment', async () => {
+    const assessment = receipt.assessment
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(assessment), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+
+    await expect(getClaimAssessment(4)).resolves.toEqual(assessment)
   })
 })
 

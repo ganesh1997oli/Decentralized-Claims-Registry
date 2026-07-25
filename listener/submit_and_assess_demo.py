@@ -132,12 +132,19 @@ def send(fn):
 if args.assess_existing is None:
     claim_id = contract.functions.claimCount().call()  # next id == current count
     claim_document = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "claimReference": f"synthetic-claim-{claim_id}",
         "policyReference": "synthetic-policy-42",
-        "claimType": "vehicle_damage",
+        "claimType": "collision",
         "incidentDate": "2026-07-13",
-        "amountPence": 250000,
+        "claimAmountUsd": 2500,
+        "policyPremiumUsd": 480,
+        "vehicleAge": 6,
+        "vehicleType": "sedan",
+        "country": "Nigeria",
+        "regionType": "urban",
+        "thirdPartyInjuryFlag": False,
+        "totalLossFlag": False,
         "description": "Synthetic bumper damage claim for IPFS integration testing",
         "evidence": [],
     }

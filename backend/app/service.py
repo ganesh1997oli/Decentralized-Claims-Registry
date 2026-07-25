@@ -1,8 +1,15 @@
-"""Run the claim workflow across the model, IPFS, and Sepolia."""
+"""Coordinate the user-facing claim submission without leaking adapter details.
+
+The order is important: create one canonical document, prove that the same bytes
+can be read from IPFS, and only then anchor their hash on Sepolia. In asynchronous
+mode this service deliberately stops after the anchor; the listener and Kafka
+worker own the later model assessment.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 from typing import Protocol
 
 from web3 import Web3
@@ -49,6 +56,8 @@ class ClaimsRegistry(Protocol):
         self, *, page: int, page_size: int
     ) -> tuple[list[ChainClaim], int]: ...
 
+    def get_claim(self, claim_id: int) -> ChainClaim: ...
+
 
 class FraudScoring(Protocol):
     def score(self, claim: ClaimSubmission) -> FraudScore: ...
@@ -66,24 +75,43 @@ def canonical_claim_bytes(claim: ClaimSubmission) -> bytes:
 
 
 class ClaimSubmissionService:
+    """Join validation, IPFS, Sepolia, and the optional inline demo scorer."""
+
     def __init__(
         self,
         *,
         ipfs: IPFSStore,
         registry: ClaimsRegistry,
         scorer: FraudScoring | None = None,
+        assess_inline: bool = True,
     ) -> None:
         self.ipfs = ipfs
         self.registry = registry
-        self.scorer = scorer or SyntheticFraudScorer.from_env()
+        self.scorer = (
+            (scorer or SyntheticFraudScorer.from_env())
+            if assess_inline
+            else None
+        )
 
     @classmethod
     def from_env(cls) -> "ClaimSubmissionService":
+        scoring_mode = os.environ.get("CLAIM_SCORING_MODE", "inline_demo")
+        if scoring_mode not in {"inline_demo", "async_xgboost"}:
+            raise ClaimSubmissionServiceError(
+                "CLAIM_SCORING_MODE must be inline_demo or async_xgboost"
+            )
         try:
+            # Keeping both modes behind the same API lets the small original demo
+            # remain reproducible while the main application uses Kafka/XGBoost.
             return cls(
                 ipfs=IPFSClient.from_env(require_upload=True),
                 registry=SepoliaClaimsRegistry.from_env(),
-                scorer=SyntheticFraudScorer.from_env(),
+                scorer=(
+                    SyntheticFraudScorer.from_env()
+                    if scoring_mode == "inline_demo"
+                    else None
+                ),
+                assess_inline=scoring_mode == "inline_demo",
             )
         except (IPFSError, BlockchainSubmissionError, ValueError) as exc:
             raise ClaimSubmissionServiceError(str(exc)) from exc
@@ -92,8 +120,9 @@ class ClaimSubmissionService:
         # These exact bytes are uploaded to IPFS and hashed for the contract.
         payload = canonical_claim_bytes(claim)
         try:
-            # Scoring happens locally; no claim data is sent to another model API.
-            model_result = self.scorer.score(claim)
+            # Inline scoring remains available for the original demonstration.
+            # In async mode, Kafka owns scoring after the claim is anchored.
+            model_result = self.scorer.score(claim) if self.scorer else None
             cid = self.ipfs.upload_bytes(
                 payload,
                 filename=f"{claim.claim_reference}.json",
@@ -121,8 +150,21 @@ class ClaimSubmissionService:
                 f"Claim submission failed: {exc}"
             ) from exc
 
-        # These numbers match the Status enum in the Solidity contract:
-        # 1 = UnderReview and 4 = Flagged.
+        if model_result is None:
+            # The anchor is already complete. `assessment: null` is an honest
+            # pending state; the browser will poll while Kafka finishes the rest.
+            return ClaimSubmissionResponse(
+                claim_id=chain_result.claim_id,
+                transaction_hash=chain_result.transaction_hash,
+                block_number=chain_result.block_number,
+                data_pointer=data_pointer,
+                claim_hash=claim_hash.hex(),
+                assessment=None,
+            )
+
+        # These numbers match Solidity's Status enum. The model may request human
+        # review (1) or flag a higher-risk case (4), but it never makes the final
+        # Approved/Rejected decision reserved for a human workflow.
         assessment_status = 4 if model_result.flagged else 1
         assessment_label = "Flagged" if model_result.flagged else "UnderReview"
         assessment_error: str | None = None
@@ -176,6 +218,8 @@ class ClaimSubmissionService:
     def list_claims(self, *, page: int, page_size: int) -> ClaimPageResponse:
         """Build one dashboard page from the current contract state."""
 
+        # The contract stores compact enum numbers. Translate them here so the
+        # browser receives domain words rather than Solidity implementation data.
         status_names = [
             "Submitted",
             "UnderReview",
