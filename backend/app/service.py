@@ -1,4 +1,10 @@
-"""Run the claim workflow across the model, IPFS, and Sepolia."""
+"""Coordinate the user-facing claim submission without leaking adapter details.
+
+The order is important: create one canonical document, prove that the same bytes
+can be read from IPFS, and only then anchor their hash on Sepolia. In asynchronous
+mode this service deliberately stops after the anchor; the listener and Kafka
+worker own the later model assessment.
+"""
 
 from __future__ import annotations
 
@@ -69,6 +75,8 @@ def canonical_claim_bytes(claim: ClaimSubmission) -> bytes:
 
 
 class ClaimSubmissionService:
+    """Join validation, IPFS, Sepolia, and the optional inline demo scorer."""
+
     def __init__(
         self,
         *,
@@ -93,6 +101,8 @@ class ClaimSubmissionService:
                 "CLAIM_SCORING_MODE must be inline_demo or async_xgboost"
             )
         try:
+            # Keeping both modes behind the same API lets the small original demo
+            # remain reproducible while the main application uses Kafka/XGBoost.
             return cls(
                 ipfs=IPFSClient.from_env(require_upload=True),
                 registry=SepoliaClaimsRegistry.from_env(),
@@ -141,6 +151,8 @@ class ClaimSubmissionService:
             ) from exc
 
         if model_result is None:
+            # The anchor is already complete. `assessment: null` is an honest
+            # pending state; the browser will poll while Kafka finishes the rest.
             return ClaimSubmissionResponse(
                 claim_id=chain_result.claim_id,
                 transaction_hash=chain_result.transaction_hash,
@@ -150,8 +162,9 @@ class ClaimSubmissionService:
                 assessment=None,
             )
 
-        # These numbers match the Status enum in the Solidity contract:
-        # 1 = UnderReview and 4 = Flagged.
+        # These numbers match Solidity's Status enum. The model may request human
+        # review (1) or flag a higher-risk case (4), but it never makes the final
+        # Approved/Rejected decision reserved for a human workflow.
         assessment_status = 4 if model_result.flagged else 1
         assessment_label = "Flagged" if model_result.flagged else "UnderReview"
         assessment_error: str | None = None
@@ -205,6 +218,8 @@ class ClaimSubmissionService:
     def list_claims(self, *, page: int, page_size: int) -> ClaimPageResponse:
         """Build one dashboard page from the current contract state."""
 
+        # The contract stores compact enum numbers. Translate them here so the
+        # browser receives domain words rather than Solidity implementation data.
         status_names = [
             "Submitted",
             "UnderReview",

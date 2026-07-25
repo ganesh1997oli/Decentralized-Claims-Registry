@@ -7,8 +7,8 @@ after anchoring and PostgreSQL supplies the completed assessment to the browser.
 
 It also provides the paginated claims data used by the React dashboard.
 
-> Submit synthetic data only. The current IPFS storage is public and
-> unencrypted.
+> Submit fictional research test data only. The current IPFS storage is public
+> and unencrypted; a CID is an address, not a password.
 
 ## Workflow
 
@@ -134,6 +134,11 @@ A successful asynchronous response has HTTP status `201` and includes:
 Once the worker stores a result, the assessment endpoint returns the model
 version, probability, threshold, SHAP reasons, processing error if any, and
 assessment transaction.
+
+Returning `assessment: null` is not an error. It means the permanent claim anchor
+has succeeded and the independent Kafka worker has not finished yet. This split
+keeps a slow model or temporary worker restart from holding the submission
+request open.
 
 ## Test
 

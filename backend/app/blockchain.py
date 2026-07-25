@@ -1,4 +1,10 @@
-"""Read from and write to the ClaimsRegistry contract on Sepolia."""
+"""Keep all Sepolia-specific behaviour behind one small Python adapter.
+
+The service layer should be able to talk in terms of claims and assessments
+without knowing about nonces, ABI files, receipts, or event decoding. This file
+owns those details and checks each write rather than treating a submitted
+transaction hash as proof that the contract accepted it.
+"""
 
 from __future__ import annotations
 
@@ -76,7 +82,7 @@ def load_deployment(
 
 
 class SepoliaClaimsRegistry:
-    """Use the demonstration wallet to call the Sepolia contract."""
+    """Read the registry and sign testnet transactions with one service wallet."""
 
     def __init__(
         self,
@@ -109,8 +115,9 @@ class SepoliaClaimsRegistry:
                 "SEPOLIA_PRIVATE_KEY is not a valid Ethereum private key"
             ) from exc
         self.receipt_timeout = receipt_timeout
-        # One wallet must use each nonce once. The lock keeps two API requests
-        # from trying to send transactions with the same nonce.
+        # Ethereum accepts each wallet nonce only once. FastAPI and the worker can
+        # issue writes close together, so keep nonce allocation inside one lock
+        # instead of letting two requests accidentally build the same transaction.
         self._submission_lock = threading.Lock()
         self._next_nonce: int | None = None
 
@@ -191,8 +198,8 @@ class SepoliaClaimsRegistry:
                     f"Sepolia transaction reverted: {_hex(transaction_hash)}"
                 )
 
-            # The event is the contract's confirmation of the claim ID assigned
-            # to this transaction.
+            # A successful receipt says the transaction ran, while the event tells
+            # us which claim ID the contract actually assigned to this submission.
             events = self.contract.events.ClaimSubmitted().process_receipt(receipt)
             if len(events) != 1:
                 raise BlockchainSubmissionError(
@@ -304,13 +311,14 @@ class SepoliaClaimsRegistry:
     def list_claims(
         self, *, page: int, page_size: int
     ) -> tuple[list[ChainClaim], int]:
-        """Read only the requested page, starting with the newest claim."""
+        """Read one small page directly from the contract, newest claim first."""
 
         try:
             claim_count = self.contract.functions.claimCount().call()
             claims: list[ChainClaim] = []
-            # Claim IDs grow from zero. Working backwards makes the newest claim
-            # appear first without loading every older claim.
+            # Claim IDs grow from zero. Walking backwards avoids reading the whole
+            # registry just to render one dashboard page. A production application
+            # would normally serve this view from an event index instead.
             first_claim_id = claim_count - 1 - ((page - 1) * page_size)
             if first_claim_id < 0:
                 return claims, claim_count

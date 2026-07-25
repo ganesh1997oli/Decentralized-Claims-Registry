@@ -1,4 +1,10 @@
-"""Load the reviewed XGBoost artifact and explain one motor claim at a time."""
+"""Load the reviewed XGBoost artifact and explain one motor claim at a time.
+
+Training and serving share an explicit feature contract. The scorer verifies the
+saved model checksum, enriches the form with the reviewed country reference
+value, predicts one probability, and turns the strongest local SHAP effects into
+short labels for a human reviewer.
+"""
 
 from __future__ import annotations
 
@@ -176,6 +182,8 @@ class XGBoostFraudScorer:
         if not reviewed_digest or actual_digest != reviewed_digest:
             raise ValueError("XGBoost model checksum does not match metadata")
 
+        # Joblib can execute Python objects while loading. Verify the reviewed
+        # checksum first and never point this loader at a user-supplied artifact.
         try:
             pipeline = joblib.load(model_path)
         except Exception as exc:
@@ -191,6 +199,8 @@ class XGBoostFraudScorer:
 
     def score(self, claim: ScorableMotorClaim) -> FraudScore:
         try:
+            # Market frequency came from the reviewed training metadata. It is not
+            # accepted from the browser, where a user could manipulate it.
             frequency = self.claim_frequency[claim.country]
         except KeyError as exc:
             raise ValueError(
@@ -212,6 +222,9 @@ class XGBoostFraudScorer:
         else:
             raise ValueError("Unexpected SHAP result shape")
 
+        # Absolute magnitude finds the features that moved this particular result
+        # most. A contribution may push risk up or down; SHAP explains the model,
+        # not whether fraud actually occurred.
         strongest = np.argsort(np.abs(contributions))[::-1][:3]
         reasons = tuple(
             FraudReason(
@@ -224,6 +237,8 @@ class XGBoostFraudScorer:
             )
             for index in strongest
         )
+        # Solidity has no floating-point type. Basis points retain two percentage
+        # decimals: 0.2466 becomes 2,466 out of 10,000, displayed as 24.66%.
         score_basis_points = min(max(round(probability * 10_000), 0), 10_000)
         return FraudScore(
             probability=probability,

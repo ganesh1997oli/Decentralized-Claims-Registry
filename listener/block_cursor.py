@@ -1,4 +1,9 @@
-"""Small durable checkpoint used by the blockchain listener."""
+"""Remember how far the listener safely progressed across process restarts.
+
+The checkpoint moves only after every event in a block range has been verified
+and published. If the process stops halfway through, it replays that range; the
+deterministic Kafka event ID makes that safer than silently skipping a claim.
+"""
 
 from __future__ import annotations
 
@@ -41,6 +46,9 @@ class BlockCursor:
         """Replace the checkpoint atomically after a full block range succeeds."""
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Write a complete temporary file first. `replace` then makes the new
+        # checkpoint visible in one operation, avoiding a half-written JSON file
+        # if the machine loses power during the write.
         temporary = self.path.with_suffix(f"{self.path.suffix}.tmp")
         temporary.write_text(
             json.dumps(

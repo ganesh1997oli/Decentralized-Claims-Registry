@@ -78,6 +78,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function isClaimReceipt(value: unknown): value is ClaimReceipt {
+  // TypeScript types disappear at runtime. Validate FastAPI responses here so a
+  // partial deployment or older backend produces a useful error instead of a
+  // broken details card later in the page.
   if (!isRecord(value)) return false
 
   return (

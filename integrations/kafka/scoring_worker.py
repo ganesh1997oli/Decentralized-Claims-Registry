@@ -1,4 +1,10 @@
-"""Score verified claim events and write one idempotent assessment."""
+"""Turn one verified Kafka event into one repeatable model assessment.
+
+The worker treats Kafka delivery as at-least-once: a message may return after a
+restart, so every step is written to be safe on replay. PostgreSQL remembers the
+score and Sepolia remains the public lifecycle record. The Kafka offset is
+committed only after this handler returns successfully.
+"""
 
 from __future__ import annotations
 
@@ -56,6 +62,8 @@ class AssessmentRegistry(Protocol):
 
 
 def verify_claim_payload(event: ClaimSubmittedEvent, payload: bytes) -> None:
+    """Refuse to score bytes that do not match the public on-chain commitment."""
+
     actual_hash = Web3.keccak(payload).hex().removeprefix("0x").lower()
     expected_hash = event.claim_hash.removeprefix("0x").lower()
     if actual_hash != expected_hash:
@@ -81,6 +89,8 @@ class ClaimScoringHandler:
     def __call__(self, event: ClaimSubmittedEvent) -> None:
         existing = self.repository.get_by_event_id(event.event_id)
         if existing and existing.processing_status == "completed":
+            # Kafka may redeliver a committed event after maintenance or an
+            # offset reset. A completed database record makes that a cheap no-op.
             print(
                 f"[AssessmentAlreadyCompleted] eventId={event.event_id} "
                 f"claimId={event.claim_id}"
@@ -89,6 +99,8 @@ class ClaimScoringHandler:
 
         payload = self.ipfs.download_pointer(event.data_pointer)
         verify_claim_payload(event, payload)
+        # Parse only after the hash check. This prevents a different document at
+        # the same external URL from ever reaching feature extraction.
         claim = StoredClaimDocument.model_validate_json(payload)
 
         record = existing
@@ -101,12 +113,20 @@ class ClaimScoringHandler:
                 claim_id=event.claim_id,
                 score=score,
             )
+            # Save the exact probability, threshold, and SHAP reasons before the
+            # chain write. A retry then reuses the original decision rather than
+            # silently rescoring with a changed model artifact.
             self.repository.save_scored(record)
 
+        # The automated model has only two allowed outcomes. UnderReview (1) and
+        # Flagged (4) both still require a person; Approved/Rejected are never
+        # inferred from a probability.
         desired_status = 4 if record.status == "Flagged" else 1
         try:
             chain_claim = self.registry.get_claim(event.claim_id)
             if chain_claim.status == 0:
+                # Submitted is the only state the worker is allowed to assess.
+                # Any later human or model state is checked rather than overwritten.
                 assessment = self.registry.assess_claim(
                     event.claim_id,
                     desired_status,
@@ -171,4 +191,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

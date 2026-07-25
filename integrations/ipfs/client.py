@@ -1,4 +1,10 @@
-"""Upload claim bytes to Pinata and read them through an IPFS gateway."""
+"""Provide the application with one cautious interface to public IPFS.
+
+Pinata handles the upload, while an HTTP gateway handles reads. Callers work
+with ``ipfs://`` pointers so the stored reference is not tied to one gateway.
+The bytes are public and unencrypted in this prototype; a CID must never be
+treated as an access-control secret.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +26,8 @@ class IPFSError(RuntimeError):
 
 
 class IPFSClient:
+    """Upload public bytes and safely resolve the resulting IPFS pointer."""
+
     def __init__(
         self,
         *,
@@ -56,7 +64,8 @@ class IPFSClient:
         if not payload:
             raise IPFSError("Refusing to upload an empty IPFS payload")
 
-        # Keep only the file name. A caller cannot use ../ to create a path.
+        # Pinata only needs a display name. Removing any parent path also prevents
+        # a caller from smuggling local directory information into the upload.
         safe_filename = Path(filename).name
         try:
             response = self.session.post(
@@ -98,8 +107,9 @@ class IPFSClient:
 
         url = self.gateway_url(pointer)
         last_error: Exception | None = None
-        # A new CID can take a moment to appear at the gateway. Retry with a
-        # short increasing delay instead of failing immediately.
+        # Upload acknowledgement and gateway availability are separate events. A
+        # new CID may need a few seconds to propagate, so retry briefly before
+        # telling the user that an otherwise successful upload has failed.
         for attempt in range(attempts):
             try:
                 response = self.session.get(url, timeout=30)

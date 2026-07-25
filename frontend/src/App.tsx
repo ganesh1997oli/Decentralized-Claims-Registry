@@ -638,6 +638,9 @@ function App() {
   }, [claimsPage, claimsPageSize, loadClaims])
 
   useEffect(() => {
+    // On a fresh page, the claims table is our source of truth. Rebuild the
+    // details card from the newest contract claim unless the user deliberately
+    // selected an older row they are still reading.
     if (
       selectedClaimId !== null ||
       claimsPage !== 1 ||
@@ -684,6 +687,9 @@ function App() {
   useEffect(() => {
     if (pendingAssessmentClaimId === null) return
 
+    // Claim submission finishes before the asynchronous worker. Poll for up to
+    // one minute so the browser can move naturally from "anchored" to the final
+    // XGBoost/SHAP assessment without asking the user to refresh.
     const claimId = pendingAssessmentClaimId
     const controller = new AbortController()
     let timer: number | undefined

@@ -1,27 +1,14 @@
-"""Listen for ClaimRegistry events and verify IPFS-backed claim payloads.
+"""Bridge confirmed Sepolia claim events into the off-chain scoring workflow.
 
-ClaimSubmitted (claimant -> chain) a new claim was anchored on-chain
-ClaimAssessed (assessor -> chain) the fraud verdict was written back
+For each ``ClaimSubmitted`` event, the listener downloads the referenced IPFS
+document and checks its Keccak-256 hash against the value stored by the contract.
+Only verified events are published to Kafka. ``ClaimAssessed`` events are also
+printed so an operator can follow the claim lifecycle from one terminal.
 
-Approach: ask for logs in small block ranges and remember the last block read.
-This works reliably with hosted RPC services and resumes cleanly after restarts.
-
-Targets web3.py v7.x. On v6.x, change `from_block` / `to_block` to
-`fromBlock` / `toBlock` in the get_logs call.
-
-Configuration (env vars):
-RPC_URL JSON_RPC endpoint (also honors SEPOLIA_RPC_URL)
-IGNITION_DIR Hardhat Ignition deployment directory (default: ./contract/ignition)
-IPFS_GATEWAY HTTP gateway base (default: https://gateway.pinata.cloud/ipfs)
-POLL_INTERVAL seconds between polls (default 5)
-CONFIRMATION_BLOCKS reorg-safety confirmations (default 2)
-KAFKA_ENABLED publish verified ClaimSubmitted events when true (default false)
-LISTENER_STATE_FILE durable block checkpoint (default: listener/.state/...)
-LISTENER_START_BLOCK first block to read when no checkpoint exists (optional)
-
-Run AFTER deploying, from the contract/directory:
-    npx hardhat ignition deploy ignition/modules/ClaimsRegistry.tx --network sepolia
-    python claims_listener.py
+The listener reads small confirmed block ranges and saves a durable checkpoint.
+That makes public RPC failures and normal restarts recoverable without relying
+on an in-memory event filter. Configuration and run instructions live in
+``listener/README.md`` and the root project guide.
 """
 
 import json
@@ -130,7 +117,8 @@ def verify_ipfs_payload(claim_id: int, pointer: str, expected_hash) -> bool:
 
 
 def on_claim_submitted(e):
-    # The event already contains everything needed to find and verify the file.
+    # The event carries the pointer and expected hash, so verification does not
+    # need to trust a separate backend response or local browser state.
     a = e["args"]
     print(
         f"[ClaimSubmitted] claimId={a['claimId']} claimant={a['claimant']} "
@@ -146,6 +134,8 @@ def on_claim_submitted(e):
         raise RuntimeError(f"IPFS verification failed for claim {a['claimId']}")
 
     if claim_event_publisher is not None:
+        # The blockchain log gives this message a deterministic identity. Seeing
+        # the same log after a restart therefore produces the same Kafka event ID.
         event = ClaimSubmittedEvent.create(
             chain_id=w3.eth.chain_id,
             contract_address=CONTRACT_ADDRESS,
@@ -192,6 +182,9 @@ def poll_range(from_block: int, to_block: int) -> None:
     for name in HANDLERS:
         ev = getattr(contract.events, name)()
         entries.extend(ev.get_logs(from_block=from_block, to_block=to_block))
+    # Separate event queries can return interleaved results. Restore blockchain
+    # order before handling them so a submission is never observed after its
+    # later assessment from the same range.
     entries.sort(key=lambda e: (e["blockNumber"], e["logIndex"]))
     for e in entries:
         HANDLERS[e["event"]](e)

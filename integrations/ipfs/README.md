@@ -63,8 +63,9 @@ The current upload explicitly uses Pinata's public network. A CID is an address,
 not a password. Anyone who obtains the CID can request the unencrypted content
 while an IPFS node continues to provide it.
 
-For that reason, this prototype accepts synthetic data only. A real claim would
-need encryption before upload, controlled key distribution, retention and
-deletion policies, and a documented privacy and regulatory assessment.
+For that reason, the application accepts fictional research test claims only. A
+real claim would need encryption before upload, controlled key distribution,
+retention and deletion policies, and a documented privacy and regulatory
+assessment.
 
 See the [root project guide](../../README.md) for the complete data flow.

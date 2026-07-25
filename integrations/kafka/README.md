@@ -129,7 +129,7 @@ documented in the root `.env.example`.
 
 ## Run the event flow
 
-Start both processes before submitting a new synthetic claim.
+Start both processes before submitting a new fictional test claim.
 
 Terminal A, scoring worker:
 

@@ -1,4 +1,10 @@
-"""Store model assessments with a Kafka event as the idempotency key."""
+"""Keep the detailed, replay-safe assessment record that does not belong on-chain.
+
+Sepolia stores a compact status and score for public verification. PostgreSQL
+keeps the larger operational context: model version, probability, threshold,
+SHAP reasons, write-back receipt, and any failure. The deterministic Kafka event
+ID prevents a replay from creating a second assessment.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +27,8 @@ class PostgresStorageError(RuntimeError):
 
 @dataclass(frozen=True)
 class AssessmentRecord:
+    """One model decision and its progress toward the Sepolia write-back."""
+
     event_id: str
     chain_id: int
     contract_address: str
@@ -205,6 +213,8 @@ class PostgresAssessmentRepository:
     def save_scored(self, record: AssessmentRecord) -> None:
         reasons = json.dumps([asdict(reason) for reason in record.reasons])
         with self._cursor() as cursor:
+            # A replay may update a failed or half-finished attempt, but a completed
+            # record is immutable. This preserves the audit trail users already saw.
             cursor.execute(
                 """
                 INSERT INTO claim_assessments (

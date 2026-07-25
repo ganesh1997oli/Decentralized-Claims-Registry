@@ -1,12 +1,14 @@
 # React frontend
 
-The frontend provides a simple interface for submitting a synthetic motor claim
-and reviewing claims already recorded on Sepolia. It calls FastAPI for every
-operation; it does not connect directly to a wallet, Pinata, Kafka, or the model.
+The frontend provides a simple interface for submitting a fictional motor-claim
+test case and reviewing claims already recorded on Sepolia. It calls FastAPI for
+every operation; it does not connect directly to a wallet, Pinata, Kafka, or the
+model. Keeping those integrations server-side is why secrets never need to enter
+browser code.
 
 ## What the interface shows
 
-- A synthetic claim-submission form
+- A research test claim-submission form
 - The confirmed Sepolia transaction and block
 - The IPFS pointer and claim hash
 - A pending state while Kafka processes the anchored claim
@@ -97,9 +99,9 @@ npm run build
 
 ## Safety and limitations
 
-- Enter synthetic information only.
+- Enter fictional test information only. Do not use real policyholder data.
 - Evidence uploads are intentionally absent while storage is public and
-  unencrypted.
+  unencrypted. Hiding a CID would not make a photograph or document private.
 - The displayed XGBoost score comes from synthetic training data and must not be
   used to decide a real claim.
 - The dashboard reads current Sepolia state through FastAPI; it is not a
