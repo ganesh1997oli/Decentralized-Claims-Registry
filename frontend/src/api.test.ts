@@ -9,6 +9,7 @@ import {
 } from './api.ts'
 
 const payload: ClaimPayload = {
+  insurerId: 'harbour-shield',
   claimReference: 'synthetic-web-1',
   policyReference: 'synthetic-policy-42',
   claimType: 'collision',
@@ -36,18 +37,29 @@ const receipt: ClaimReceipt = {
     fraud_score: 8500,
     probability: 0.85,
     threshold: 0.3,
-    model_version: 'synthetic-logistic-v1',
+    model_version: 'african-motor-xgboost-v1',
     reasons: [
       {
-        feature: 'high_risk_type',
-        label: 'Higher-risk claim category',
-        contribution: 1.5,
+        feature: 'claim_amount_usd',
+        label: 'Claim amount',
+        contribution: 0.42,
       },
     ],
     on_chain: true,
     transaction_hash: '0xassessment',
     block_number: 11319479,
     error: null,
+    duplicate_detection: {
+      insurer_id: 'harbour-shield',
+      fingerprint_version: 'incident-hmac-sha256-v1',
+      duplicate_detected: true,
+      matches: [
+        {
+          claim_id: 3,
+          insurer_id: 'northstar-mutual',
+        },
+      ],
+    },
   },
 }
 
@@ -154,6 +166,29 @@ describe('getClaimAssessment', () => {
     )
 
     await expect(getClaimAssessment(4)).resolves.toEqual(assessment)
+  })
+
+  it('rejects an inconsistent duplicate-detection response', async () => {
+    const assessment = {
+      ...receipt.assessment,
+      duplicate_detection: {
+        ...receipt.assessment?.duplicate_detection,
+        duplicate_detected: false,
+      },
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(assessment), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+
+    await expect(getClaimAssessment(4)).rejects.toThrow(
+      'unexpected assessment shape',
+    )
   })
 })
 

@@ -14,7 +14,8 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
-from model.scorer import FraudReason, FraudScore
+from duplicates import DuplicateCheck, DuplicateMatch
+from model.contracts import FraudReason, FraudScore
 
 
 class PostgresConfigurationError(ValueError):
@@ -97,6 +98,31 @@ CREATE TABLE IF NOT EXISTS claim_assessments (
 INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS claim_assessments_claim_id_idx
     ON claim_assessments (claim_id, updated_at DESC);
+"""
+
+DUPLICATE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS claim_incident_fingerprints (
+    chain_id BIGINT NOT NULL,
+    contract_address TEXT NOT NULL,
+    claim_id BIGINT NOT NULL,
+    event_id TEXT NOT NULL UNIQUE,
+    insurer_id TEXT NOT NULL,
+    fingerprint_version TEXT NOT NULL,
+    incident_fingerprint TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (chain_id, contract_address, claim_id)
+);
+"""
+
+DUPLICATE_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS claim_incident_fingerprint_match_idx
+    ON claim_incident_fingerprints (
+        chain_id,
+        contract_address,
+        fingerprint_version,
+        incident_fingerprint
+    );
 """
 
 SELECT_COLUMNS = """
@@ -191,6 +217,8 @@ class PostgresAssessmentRepository:
         with self._cursor() as cursor:
             cursor.execute(TABLE_SQL)
             cursor.execute(INDEX_SQL)
+            cursor.execute(DUPLICATE_TABLE_SQL)
+            cursor.execute(DUPLICATE_INDEX_SQL)
 
     def get_by_event_id(self, event_id: str) -> AssessmentRecord | None:
         with self._cursor() as cursor:
@@ -209,6 +237,145 @@ class PostgresAssessmentRepository:
                 (claim_id,),
             )
             return _record_from_row(cursor.fetchone())
+
+    def record_and_find_duplicates(
+        self,
+        *,
+        event_id: str,
+        chain_id: int,
+        contract_address: str,
+        claim_id: int,
+        insurer_id: str,
+        fingerprint_version: str,
+        incident_fingerprint: str,
+    ) -> DuplicateCheck:
+        """Atomically record one fingerprint and return other-insurer matches."""
+
+        normalized_contract = contract_address.lower()
+        lock_identity = (
+            f"{chain_id}:{normalized_contract}:{fingerprint_version}:"
+            f"{incident_fingerprint}"
+        )
+        with self._cursor() as cursor:
+            # Concurrent submissions with the same fingerprint must serialize so
+            # at least the later transaction observes the earlier one.
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (lock_identity,),
+            )
+            cursor.execute(
+                """
+                INSERT INTO claim_incident_fingerprints (
+                    chain_id, contract_address, claim_id, event_id, insurer_id,
+                    fingerprint_version, incident_fingerprint
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (chain_id, contract_address, claim_id) DO UPDATE SET
+                    event_id = EXCLUDED.event_id,
+                    insurer_id = EXCLUDED.insurer_id,
+                    fingerprint_version = EXCLUDED.fingerprint_version,
+                    incident_fingerprint = EXCLUDED.incident_fingerprint,
+                    updated_at = NOW()
+                """,
+                (
+                    chain_id,
+                    normalized_contract,
+                    claim_id,
+                    event_id,
+                    insurer_id,
+                    fingerprint_version,
+                    incident_fingerprint,
+                ),
+            )
+            cursor.execute(
+                """
+                SELECT claim_id, insurer_id
+                FROM claim_incident_fingerprints
+                WHERE chain_id = %s
+                  AND contract_address = %s
+                  AND fingerprint_version = %s
+                  AND incident_fingerprint = %s
+                  AND claim_id <> %s
+                  AND insurer_id <> %s
+                ORDER BY claim_id
+                """,
+                (
+                    chain_id,
+                    normalized_contract,
+                    fingerprint_version,
+                    incident_fingerprint,
+                    claim_id,
+                    insurer_id,
+                ),
+            )
+            matches = tuple(
+                DuplicateMatch(
+                    claim_id=int(row["claim_id"]),
+                    insurer_id=str(row["insurer_id"]),
+                )
+                for row in cursor.fetchall()
+            )
+        return DuplicateCheck(
+            insurer_id=insurer_id,
+            fingerprint_version=fingerprint_version,
+            matches=matches,
+        )
+
+    def get_duplicate_check_for_claim(
+        self,
+        claim_id: int,
+    ) -> DuplicateCheck | None:
+        """Rebuild the current match result so earlier claims see later matches."""
+
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT chain_id, contract_address, insurer_id,
+                       fingerprint_version, incident_fingerprint
+                FROM claim_incident_fingerprints
+                WHERE claim_id = %s
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (claim_id,),
+            )
+            current = cursor.fetchone()
+            if current is None:
+                return None
+
+            cursor.execute(
+                """
+                SELECT claim_id, insurer_id
+                FROM claim_incident_fingerprints
+                WHERE chain_id = %s
+                  AND contract_address = %s
+                  AND fingerprint_version = %s
+                  AND incident_fingerprint = %s
+                  AND claim_id <> %s
+                  AND insurer_id <> %s
+                ORDER BY claim_id
+                """,
+                (
+                    current["chain_id"],
+                    current["contract_address"],
+                    current["fingerprint_version"],
+                    current["incident_fingerprint"],
+                    claim_id,
+                    current["insurer_id"],
+                ),
+            )
+            matches = tuple(
+                DuplicateMatch(
+                    claim_id=int(row["claim_id"]),
+                    insurer_id=str(row["insurer_id"]),
+                )
+                for row in cursor.fetchall()
+            )
+            return DuplicateCheck(
+                insurer_id=str(current["insurer_id"]),
+                fingerprint_version=str(current["fingerprint_version"]),
+                matches=matches,
+            )
 
     def save_scored(self, record: AssessmentRecord) -> None:
         reasons = json.dumps([asdict(reason) for reason in record.reasons])

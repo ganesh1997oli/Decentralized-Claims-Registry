@@ -18,9 +18,10 @@ from backend.app.blockchain import (
     SepoliaClaimsRegistry,
 )
 from backend.app.models import StoredClaimDocument
+from duplicates import CrossInsurerDuplicateDetector, DuplicateCheck
 from integrations.ipfs import IPFSClient
 from integrations.postgres import AssessmentRecord, PostgresAssessmentRepository
-from model.scorer import FraudScore
+from model.contracts import FraudScore
 from model.xgboost_scorer import XGBoostFraudScorer
 
 from .events import ClaimSubmittedEvent, KafkaClaimEventConsumer, KafkaSettings
@@ -32,6 +33,14 @@ class ClaimReader(Protocol):
 
 class ClaimScorer(Protocol):
     def score(self, claim: StoredClaimDocument) -> FraudScore: ...
+
+
+class DuplicateDetector(Protocol):
+    def check(
+        self,
+        event: ClaimSubmittedEvent,
+        claim: StoredClaimDocument,
+    ) -> DuplicateCheck: ...
 
 
 class AssessmentStore(Protocol):
@@ -78,11 +87,13 @@ class ClaimScoringHandler:
         *,
         ipfs: ClaimReader,
         scorer: ClaimScorer,
+        duplicate_detector: DuplicateDetector,
         repository: AssessmentStore,
         registry: AssessmentRegistry,
     ) -> None:
         self.ipfs = ipfs
         self.scorer = scorer
+        self.duplicate_detector = duplicate_detector
         self.repository = repository
         self.registry = registry
 
@@ -102,6 +113,7 @@ class ClaimScoringHandler:
         # Parse only after the hash check. This prevents a different document at
         # the same external URL from ever reaching feature extraction.
         claim = StoredClaimDocument.model_validate_json(payload)
+        duplicate_check = self.duplicate_detector.check(event, claim)
 
         record = existing
         if record is None:
@@ -158,7 +170,8 @@ class ClaimScoringHandler:
 
         print(
             f"[ClaimAssessed] eventId={event.event_id} claimId={event.claim_id} "
-            f"model={record.model_version} score={record.fraud_score}"
+            f"model={record.model_version} score={record.fraud_score} "
+            f"crossInsurerMatches={len(duplicate_check.matches)}"
         )
 
 
@@ -172,6 +185,7 @@ def main() -> None:
     handler = ClaimScoringHandler(
         ipfs=IPFSClient.from_env(),
         scorer=XGBoostFraudScorer.from_env(),
+        duplicate_detector=CrossInsurerDuplicateDetector.from_env(repository),
         repository=repository,
         registry=SepoliaClaimsRegistry.from_env(),
     )

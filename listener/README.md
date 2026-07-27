@@ -159,6 +159,8 @@ source backend/.venv/bin/activate
 python -m pytest listener/test_*.py -q
 ```
 
-These tests do not connect to Sepolia, IPFS, or Kafka.
+These tests exercise confirmed-block handling, event ordering, IPFS tamper
+rejection, Kafka publication and durable-checkpoint safety through injected
+adapters. They do not connect to Sepolia, IPFS or Kafka.
 
 See the [root project guide](../README.md) for the complete application run.

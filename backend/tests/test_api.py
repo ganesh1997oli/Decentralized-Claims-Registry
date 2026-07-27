@@ -12,11 +12,13 @@ from backend.app.models import (
     ClaimSubmissionResponse,
 )
 from backend.app.service import ClaimSubmissionServiceError
+from duplicates import DuplicateCheck, DuplicateMatch
 from integrations.postgres import AssessmentRecord
-from model.scorer import FraudReason
+from model.contracts import FraudReason
 
 
 VALID_CLAIM = {
+    "insurerId": "northstar-mutual",
     "claimReference": "synthetic-claim-api-1",
     "policyReference": "synthetic-policy-42",
     "claimType": "collision",
@@ -37,6 +39,7 @@ VALID_CLAIM = {
 class SuccessfulService:
     def submit(self, claim):
         assert claim.claim_reference == "synthetic-claim-api-1"
+        assert claim.insurer_id == "northstar-mutual"
         return ClaimSubmissionResponse(
             claim_id=7,
             transaction_hash="0xtransaction",
@@ -121,9 +124,21 @@ class SuccessfulAssessmentRepository:
             block_number=124,
         )
 
+    def get_duplicate_check_for_claim(self, claim_id):
+        assert claim_id == 7
+        return DuplicateCheck(
+            insurer_id="harbour-shield",
+            fingerprint_version="incident-hmac-sha256-v1",
+            matches=(DuplicateMatch(3, "northstar-mutual"),),
+        )
+
 
 class PendingAssessmentRepository:
     def get_latest_for_claim(self, claim_id):
+        assert claim_id == 7
+        return None
+
+    def get_duplicate_check_for_claim(self, claim_id):
         assert claim_id == 7
         return None
 
@@ -177,6 +192,7 @@ def test_submit_claim_returns_created_receipt():
             "transaction_hash": "0xassessment",
             "block_number": 124,
             "error": None,
+            "duplicate_detection": None,
         },
     }
 
@@ -247,6 +263,17 @@ def test_get_claim_assessment_returns_postgres_result():
         "transaction_hash": "0xassessment",
         "block_number": 124,
         "error": None,
+        "duplicate_detection": {
+            "insurer_id": "harbour-shield",
+            "fingerprint_version": "incident-hmac-sha256-v1",
+            "duplicate_detected": True,
+            "matches": [
+                {
+                    "claim_id": 3,
+                    "insurer_id": "northstar-mutual",
+                }
+            ],
+        },
     }
 
 
@@ -273,6 +300,18 @@ def test_list_claims_validates_pagination_parameters():
 
 def test_submit_claim_rejects_invalid_amount_before_external_calls():
     invalid_claim = {**VALID_CLAIM, "claimAmountUsd": -1}
+
+    app.dependency_overrides[get_claim_submission_service] = UnexpectedService
+    try:
+        response = TestClient(app).post("/claims", json=invalid_claim)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
+def test_submit_claim_rejects_an_invalid_insurer_id_before_external_calls():
+    invalid_claim = {**VALID_CLAIM, "insurerId": "Northstar Mutual"}
 
     app.dependency_overrides[get_claim_submission_service] = UnexpectedService
     try:

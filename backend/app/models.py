@@ -43,6 +43,12 @@ class ClaimSubmission(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    insurer_id: str = Field(
+        min_length=3,
+        max_length=64,
+        pattern=r"^[a-z0-9][a-z0-9-]*[a-z0-9]$",
+        alias="insurerId",
+    )
     claim_reference: str = Field(
         min_length=1, max_length=100, alias="claimReference"
     )
@@ -75,7 +81,7 @@ class ClaimSubmission(BaseModel):
 
         # The schema version gives us a safe way to change this document later.
         return {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             **self.model_dump(by_alias=True, mode="json"),
         }
 
@@ -83,7 +89,7 @@ class ClaimSubmission(BaseModel):
 class StoredClaimDocument(ClaimSubmission):
     """The versioned claim document downloaded from IPFS by workers."""
 
-    schema_version: Literal[2] = Field(alias="schemaVersion")
+    schema_version: Literal[3] = Field(alias="schemaVersion")
 
 
 class ClaimSubmissionResponse(BaseModel):
@@ -103,6 +109,20 @@ class AssessmentReasonResponse(BaseModel):
     contribution: float
 
 
+class DuplicateMatchResponse(BaseModel):
+    claim_id: int = Field(ge=0)
+    insurer_id: str
+
+
+class DuplicateDetectionResponse(BaseModel):
+    """A possible cross-insurer match that always requires human review."""
+
+    insurer_id: str
+    fingerprint_version: str
+    duplicate_detected: bool
+    matches: list[DuplicateMatchResponse]
+
+
 class ClaimAssessmentResponse(BaseModel):
     """Model result and the receipt showing whether it reached the contract."""
 
@@ -116,6 +136,7 @@ class ClaimAssessmentResponse(BaseModel):
     transaction_hash: str | None = None
     block_number: int | None = None
     error: str | None = None
+    duplicate_detection: DuplicateDetectionResponse | None = None
 
 
 class ClaimListItemResponse(BaseModel):

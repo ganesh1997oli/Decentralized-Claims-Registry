@@ -23,6 +23,7 @@ import {
 import { loadLastReceipt, saveLastReceipt } from './receipt-storage.ts'
 
 type FormValues = {
+  insurerId: string
   claimReference: string
   policyReference: string
   claimType: ClaimPayload['claimType']
@@ -38,7 +39,14 @@ type FormValues = {
   description: string
 }
 
+const RESEARCH_INSURERS = [
+  { id: 'northstar-mutual', label: 'Northstar Mutual' },
+  { id: 'harbour-shield', label: 'Harbour Shield' },
+  { id: 'cedar-insurance', label: 'Cedar Insurance' },
+] as const
+
 const initialForm = (): FormValues => ({
+  insurerId: RESEARCH_INSURERS[0].id,
   claimReference: `synthetic-web-${Date.now().toString().slice(-6)}`,
   policyReference: 'synthetic-policy-42',
   claimType: 'collision',
@@ -65,6 +73,16 @@ function shorten(value: string, visible = 10): string {
 
 function ipfsUrl(pointer: string): string {
   return `${IPFS_GATEWAY}/${pointer.replace(/^ipfs:\/\//, '')}`
+}
+
+function insurerLabel(insurerId: string): string {
+  return (
+    RESEARCH_INSURERS.find((insurer) => insurer.id === insurerId)?.label ??
+    insurerId
+      .split('-')
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ')
+  )
 }
 
 function CopyButton({ label, value }: { label: string; value: string }) {
@@ -219,6 +237,50 @@ export function ReceiptCard({ receipt }: { receipt: DisplayReceipt }) {
             <span className="text-xs font-bold uppercase">fraud probability</span>
           </div>
         </div>
+
+        {assessment.duplicate_detection ? (
+          <div
+            className={`mt-5 rounded-2xl border p-4 ${
+              assessment.duplicate_detection.duplicate_detected
+                ? 'border-coral/30 bg-coral-pale'
+                : 'border-teal/20 bg-mint'
+            }`}
+          >
+            <p className="text-xs font-bold tracking-[0.12em] text-slate uppercase">
+              Cross-insurer duplicate screening
+            </p>
+            <h4 className="mt-1 font-bold text-ink">
+              {assessment.duplicate_detection.duplicate_detected
+                ? 'Possible duplicate incident found'
+                : 'No cross-insurer match found'}
+            </h4>
+            {assessment.duplicate_detection.duplicate_detected ? (
+              <>
+                <p className="mt-1 text-sm leading-6 text-slate">
+                  This claim from{' '}
+                  {insurerLabel(assessment.duplicate_detection.insurer_id)} shares
+                  a private incident fingerprint with:
+                </p>
+                <ul className="mt-2 space-y-1 text-sm font-semibold text-ink">
+                  {assessment.duplicate_detection.matches.map((match) => (
+                    <li key={`${match.claim_id}:${match.insurer_id}`}>
+                      Claim #{match.claim_id} · {insurerLabel(match.insurer_id)}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-xs leading-5 text-slate">
+                  This is a review signal only. Similar synthetic incident details
+                  do not prove that either claim is fraudulent.
+                </p>
+              </>
+            ) : (
+              <p className="mt-1 text-sm leading-6 text-slate">
+                No other participating synthetic insurer has submitted the same
+                incident fingerprint.
+              </p>
+            )}
+          </div>
+        ) : null}
 
         <div className="mt-5 grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
           <div>
@@ -823,6 +885,7 @@ function App() {
     }
 
     const payload: ClaimPayload = {
+      insurerId: form.insurerId,
       claimReference: form.claimReference.trim(),
       policyReference: form.policyReference.trim(),
       claimType: form.claimType,
@@ -919,7 +982,7 @@ function App() {
               ['01', 'Validate'],
               ['02', 'Pin to IPFS'],
               ['03', 'Anchor'],
-              ['04', 'Score & assess'],
+              ['04', 'Match & score'],
             ].map(([number, label]) => (
               <li key={number} className="rounded-xl bg-sand px-3 py-4 text-center">
                 <span className="block text-xs font-black tracking-[0.18em] text-coral-dark">
@@ -955,6 +1018,26 @@ function App() {
 
             <form onSubmit={handleSubmit} className="mt-7 space-y-6">
               <div className="grid gap-5 sm:grid-cols-2">
+                <label className="field-group sm:col-span-2">
+                  <span className="field-label">Synthetic insurer</span>
+                  <select
+                    className="field-control"
+                    name="insurerId"
+                    value={form.insurerId}
+                    onChange={update}
+                  >
+                    {RESEARCH_INSURERS.map((insurer) => (
+                      <option key={insurer.id} value={insurer.id}>
+                        {insurer.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="field-help">
+                    Submit the same incident through another insurer to demonstrate
+                    cross-insurer matching.
+                  </span>
+                </label>
+
                 <label className="field-group">
                   <span className="field-label">Claim reference</span>
                   <input

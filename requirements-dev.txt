@@ -1,0 +1,6 @@
+-r backend/requirements.txt
+-r listener/requirements.txt
+-r model/requirements.txt
+
+pytest-cov>=7.0,<8.0
+ruff>=0.12,<1.0

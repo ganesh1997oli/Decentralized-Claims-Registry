@@ -5,6 +5,8 @@ import time
 import unittest
 import uuid
 
+import pytest
+
 from integrations.kafka import (
     ClaimSubmittedEvent,
     KafkaClaimEventConsumer,
@@ -13,19 +15,25 @@ from integrations.kafka import (
 )
 
 
-@unittest.skipUnless(
-    os.environ.get("KAFKA_INTEGRATION_TEST") == "true",
-    "set KAFKA_INTEGRATION_TEST=true to test a live broker",
-)
+pytestmark = pytest.mark.integration
+
+
 class LiveKafkaTests(unittest.TestCase):
     def test_publishes_and_consumes_the_versioned_event(self):
+        bootstrap_servers = os.environ.get(
+            "TEST_KAFKA_BOOTSTRAP_SERVERS",
+            "",
+        ).strip()
+        if not bootstrap_servers:
+            self.skipTest(
+                "set TEST_KAFKA_BOOTSTRAP_SERVERS to test a live broker"
+            )
+
         unique_id = uuid.uuid4().hex
         settings = KafkaSettings.from_mapping(
             {
                 "KAFKA_ENABLED": "true",
-                "KAFKA_BOOTSTRAP_SERVERS": os.environ.get(
-                    "KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092"
-                ),
+                "KAFKA_BOOTSTRAP_SERVERS": bootstrap_servers,
                 "KAFKA_CONSUMER_GROUP_ID": f"claims-smoke-{unique_id}",
             }
         )

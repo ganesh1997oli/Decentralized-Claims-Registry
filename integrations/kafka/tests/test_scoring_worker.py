@@ -6,16 +6,18 @@ import pytest
 from web3 import Web3
 
 from backend.app.blockchain import ChainAssessment, ChainClaim
+from duplicates import DuplicateCheck
 from integrations.kafka import ClaimSubmittedEvent
 from integrations.kafka.scoring_worker import ClaimScoringHandler
 from integrations.postgres import AssessmentRecord
-from model.scorer import FraudReason, FraudScore
+from model.contracts import FraudReason, FraudScore
 
 
 def claim_payload() -> bytes:
     return json.dumps(
         {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
+            "insurerId": "northstar-mutual",
             "claimReference": "synthetic-worker-1",
             "policyReference": "synthetic-policy-42",
             "claimType": "collision",
@@ -69,7 +71,7 @@ class FakeScorer:
         self.calls = 0
 
     def score(self, claim):
-        assert claim.schema_version == 2
+        assert claim.schema_version == 3
         assert claim.vehicle_age == 6
         self.calls += 1
         return FraudScore(
@@ -81,6 +83,19 @@ class FakeScorer:
             reasons=(
                 FraudReason("claim_amount_usd", "Claim amount", 0.42),
             ),
+        )
+
+
+class FakeDuplicateDetector:
+    def __init__(self):
+        self.calls = []
+
+    def check(self, event, claim):
+        assert claim.insurer_id == "northstar-mutual"
+        self.calls.append((event.claim_id, claim.insurer_id))
+        return DuplicateCheck(
+            insurer_id=claim.insurer_id,
+            fingerprint_version="incident-hmac-sha256-v1",
         )
 
 
@@ -149,10 +164,12 @@ def test_worker_scores_persists_and_assesses_one_verified_claim():
     event = claim_event(payload)
     repository = FakeRepository()
     scorer = FakeScorer()
+    duplicate_detector = FakeDuplicateDetector()
     registry = FakeRegistry()
     handler = ClaimScoringHandler(
         ipfs=FakeIPFS(payload),
         scorer=scorer,
+        duplicate_detector=duplicate_detector,
         repository=repository,
         registry=registry,
     )
@@ -160,6 +177,7 @@ def test_worker_scores_persists_and_assesses_one_verified_claim():
     handler(event)
 
     assert scorer.calls == 1
+    assert duplicate_detector.calls == [(7, "northstar-mutual")]
     assert repository.record.processing_status == "completed"
     assert registry.assessments == [(7, 4, 6800)]
     assert repository.completed == (event.event_id, "0xassessment", 101)
@@ -185,6 +203,7 @@ def test_worker_commits_a_duplicate_without_scoring_again():
     handler = ClaimScoringHandler(
         ipfs=ipfs,
         scorer=scorer,
+        duplicate_detector=FakeDuplicateDetector(),
         repository=FakeRepository(record),
         registry=FakeRegistry(status=4, fraud_score=6800),
     )
@@ -216,6 +235,7 @@ def test_worker_recovers_when_chain_write_finished_before_database_update():
     handler = ClaimScoringHandler(
         ipfs=FakeIPFS(payload),
         scorer=FakeScorer(),
+        duplicate_detector=FakeDuplicateDetector(),
         repository=repository,
         registry=registry,
     )
@@ -233,6 +253,7 @@ def test_worker_rejects_changed_ipfs_bytes_before_scoring():
     handler = ClaimScoringHandler(
         ipfs=FakeIPFS(b"changed"),
         scorer=scorer,
+        duplicate_detector=FakeDuplicateDetector(),
         repository=repository,
         registry=FakeRegistry(),
     )

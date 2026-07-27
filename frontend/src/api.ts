@@ -1,4 +1,5 @@
 export type ClaimPayload = {
+  insurerId: string
   claimReference: string
   policyReference: string
   claimType: 'collision' | 'theft' | 'fire' | 'flood'
@@ -21,6 +22,18 @@ export type AssessmentReason = {
   contribution: number
 }
 
+export type DuplicateMatch = {
+  claim_id: number
+  insurer_id: string
+}
+
+export type DuplicateDetection = {
+  insurer_id: string
+  fingerprint_version: string
+  duplicate_detected: boolean
+  matches: DuplicateMatch[]
+}
+
 export type ClaimAssessment = {
   status: 'UnderReview' | 'Flagged'
   fraud_score: number
@@ -32,6 +45,7 @@ export type ClaimAssessment = {
   transaction_hash: string | null
   block_number: number | null
   error: string | null
+  duplicate_detection?: DuplicateDetection | null
 }
 
 export type ClaimStatus =
@@ -93,6 +107,24 @@ export function isClaimReceipt(value: unknown): value is ClaimReceipt {
   )
 }
 
+function isDuplicateDetection(value: unknown): value is DuplicateDetection {
+  if (!isRecord(value) || !Array.isArray(value.matches)) return false
+
+  const matchesAreValid = value.matches.every(
+    (match) =>
+      isRecord(match) &&
+      typeof match.claim_id === 'number' &&
+      typeof match.insurer_id === 'string',
+  )
+  return (
+    typeof value.insurer_id === 'string' &&
+    typeof value.fingerprint_version === 'string' &&
+    typeof value.duplicate_detected === 'boolean' &&
+    matchesAreValid &&
+    value.duplicate_detected === (value.matches.length > 0)
+  )
+}
+
 function isClaimAssessment(value: unknown): value is ClaimAssessment {
   if (!isRecord(value)) return false
 
@@ -113,7 +145,10 @@ function isClaimAssessment(value: unknown): value is ClaimAssessment {
     typeof value.on_chain === 'boolean' &&
     (typeof value.transaction_hash === 'string' || value.transaction_hash === null) &&
     (typeof value.block_number === 'number' || value.block_number === null) &&
-    (typeof value.error === 'string' || value.error === null)
+    (typeof value.error === 'string' || value.error === null) &&
+    (value.duplicate_detection === undefined ||
+      value.duplicate_detection === null ||
+      isDuplicateDetection(value.duplicate_detection))
   )
 }
 

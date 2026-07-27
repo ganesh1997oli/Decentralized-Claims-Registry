@@ -9,28 +9,23 @@ worker own the later model assessment.
 from __future__ import annotations
 
 import json
-import os
 from typing import Protocol
 
 from web3 import Web3
 
 from backend.app.blockchain import (
     BlockchainSubmissionError,
-    ChainAssessment,
     ChainClaim,
     ChainSubmission,
     SepoliaClaimsRegistry,
 )
 from backend.app.models import (
-    AssessmentReasonResponse,
-    ClaimAssessmentResponse,
     ClaimListItemResponse,
     ClaimPageResponse,
     ClaimSubmission,
     ClaimSubmissionResponse,
 )
 from integrations.ipfs import IPFSClient, IPFSError
-from model.scorer import FraudScore, SyntheticFraudScorer
 
 
 class ClaimSubmissionServiceError(RuntimeError):
@@ -48,19 +43,9 @@ class IPFSStore(Protocol):
 class ClaimsRegistry(Protocol):
     def submit_claim(self, claim_hash: bytes, data_pointer: str) -> ChainSubmission: ...
 
-    def assess_claim(
-        self, claim_id: int, status: int, fraud_score: int
-    ) -> ChainAssessment: ...
-
     def list_claims(
         self, *, page: int, page_size: int
     ) -> tuple[list[ChainClaim], int]: ...
-
-    def get_claim(self, claim_id: int) -> ChainClaim: ...
-
-
-class FraudScoring(Protocol):
-    def score(self, claim: ClaimSubmission) -> FraudScore: ...
 
 
 def canonical_claim_bytes(claim: ClaimSubmission) -> bytes:
@@ -75,43 +60,23 @@ def canonical_claim_bytes(claim: ClaimSubmission) -> bytes:
 
 
 class ClaimSubmissionService:
-    """Join validation, IPFS, Sepolia, and the optional inline demo scorer."""
+    """Store and anchor a claim before asynchronous assessment begins."""
 
     def __init__(
         self,
         *,
         ipfs: IPFSStore,
         registry: ClaimsRegistry,
-        scorer: FraudScoring | None = None,
-        assess_inline: bool = True,
     ) -> None:
         self.ipfs = ipfs
         self.registry = registry
-        self.scorer = (
-            (scorer or SyntheticFraudScorer.from_env())
-            if assess_inline
-            else None
-        )
 
     @classmethod
     def from_env(cls) -> "ClaimSubmissionService":
-        scoring_mode = os.environ.get("CLAIM_SCORING_MODE", "inline_demo")
-        if scoring_mode not in {"inline_demo", "async_xgboost"}:
-            raise ClaimSubmissionServiceError(
-                "CLAIM_SCORING_MODE must be inline_demo or async_xgboost"
-            )
         try:
-            # Keeping both modes behind the same API lets the small original demo
-            # remain reproducible while the main application uses Kafka/XGBoost.
             return cls(
                 ipfs=IPFSClient.from_env(require_upload=True),
                 registry=SepoliaClaimsRegistry.from_env(),
-                scorer=(
-                    SyntheticFraudScorer.from_env()
-                    if scoring_mode == "inline_demo"
-                    else None
-                ),
-                assess_inline=scoring_mode == "inline_demo",
             )
         except (IPFSError, BlockchainSubmissionError, ValueError) as exc:
             raise ClaimSubmissionServiceError(str(exc)) from exc
@@ -120,9 +85,6 @@ class ClaimSubmissionService:
         # These exact bytes are uploaded to IPFS and hashed for the contract.
         payload = canonical_claim_bytes(claim)
         try:
-            # Inline scoring remains available for the original demonstration.
-            # In async mode, Kafka owns scoring after the claim is anchored.
-            model_result = self.scorer.score(claim) if self.scorer else None
             cid = self.ipfs.upload_bytes(
                 payload,
                 filename=f"{claim.claim_reference}.json",
@@ -150,69 +112,15 @@ class ClaimSubmissionService:
                 f"Claim submission failed: {exc}"
             ) from exc
 
-        if model_result is None:
-            # The anchor is already complete. `assessment: null` is an honest
-            # pending state; the browser will poll while Kafka finishes the rest.
-            return ClaimSubmissionResponse(
-                claim_id=chain_result.claim_id,
-                transaction_hash=chain_result.transaction_hash,
-                block_number=chain_result.block_number,
-                data_pointer=data_pointer,
-                claim_hash=claim_hash.hex(),
-                assessment=None,
-            )
-
-        # These numbers match Solidity's Status enum. The model may request human
-        # review (1) or flag a higher-risk case (4), but it never makes the final
-        # Approved/Rejected decision reserved for a human workflow.
-        assessment_status = 4 if model_result.flagged else 1
-        assessment_label = "Flagged" if model_result.flagged else "UnderReview"
-        assessment_error: str | None = None
-        assessment_transaction: ChainAssessment | None = None
-        try:
-            assessment_transaction = self.registry.assess_claim(
-                chain_result.claim_id,
-                assessment_status,
-                model_result.score_basis_points,
-            )
-        except BlockchainSubmissionError as exc:
-            # The claim is already safely anchored. Return that successful receipt
-            # so a browser retry does not create the same claim again.
-            assessment_error = f"On-chain assessment is pending: {exc}"
-
+        # The anchor is complete. `assessment: null` is the expected pending
+        # state while the listener and Kafka worker verify and score the claim.
         return ClaimSubmissionResponse(
             claim_id=chain_result.claim_id,
             transaction_hash=chain_result.transaction_hash,
             block_number=chain_result.block_number,
             data_pointer=data_pointer,
             claim_hash=claim_hash.hex(),
-            assessment=ClaimAssessmentResponse(
-                status=assessment_label,
-                fraud_score=model_result.score_basis_points,
-                probability=model_result.probability,
-                threshold=model_result.threshold,
-                model_version=model_result.model_version,
-                reasons=[
-                    AssessmentReasonResponse(
-                        feature=reason.feature,
-                        label=reason.label,
-                        contribution=reason.contribution,
-                    )
-                    for reason in model_result.reasons
-                ],
-                on_chain=assessment_transaction is not None,
-                transaction_hash=(
-                    assessment_transaction.transaction_hash
-                    if assessment_transaction
-                    else None
-                ),
-                block_number=(
-                    assessment_transaction.block_number
-                    if assessment_transaction
-                    else None
-                ),
-                error=assessment_error,
-            ),
+            assessment=None,
         )
 
     def list_claims(self, *, page: int, page_size: int) -> ClaimPageResponse:

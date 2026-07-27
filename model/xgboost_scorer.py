@@ -20,8 +20,8 @@ import numpy as np
 import pandas as pd
 import shap
 
+from model.contracts import FraudReason, FraudScore
 from model.research_pipeline import FEATURE_COLUMNS
-from model.scorer import FraudReason, FraudScore
 
 
 DEFAULT_ARTIFACT_DIR = (
