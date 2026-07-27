@@ -15,6 +15,8 @@ from backend.app.models import (
     ClaimPageResponse,
     ClaimSubmission,
     ClaimSubmissionResponse,
+    DuplicateDetectionResponse,
+    DuplicateMatchResponse,
     HealthResponse,
 )
 from backend.app.service import ClaimSubmissionService, ClaimSubmissionServiceError
@@ -117,6 +119,7 @@ def get_claim_assessment(
 ) -> ClaimAssessmentResponse:
     try:
         record = repository.get_latest_for_claim(claim_id)
+        duplicate_check = repository.get_duplicate_check_for_claim(claim_id)
     except PostgresStorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -145,6 +148,22 @@ def get_claim_assessment(
         transaction_hash=record.transaction_hash,
         block_number=record.block_number,
         error=record.error,
+        duplicate_detection=(
+            DuplicateDetectionResponse(
+                insurer_id=duplicate_check.insurer_id,
+                fingerprint_version=duplicate_check.fingerprint_version,
+                duplicate_detected=duplicate_check.duplicate_detected,
+                matches=[
+                    DuplicateMatchResponse(
+                        claim_id=match.claim_id,
+                        insurer_id=match.insurer_id,
+                    )
+                    for match in duplicate_check.matches
+                ],
+            )
+            if duplicate_check is not None
+            else None
+        ),
     )
 
 

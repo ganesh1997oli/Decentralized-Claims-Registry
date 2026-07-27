@@ -1,5 +1,6 @@
-"""Persistence interface for model assessments."""
+"""Persistence interfaces for claim assessments and duplicate fingerprints."""
 
+from duplicates import DuplicateCheck, DuplicateMatch
 from .assessment_repository import (
     AssessmentRecord,
     PostgresAssessmentRepository,
@@ -9,6 +10,8 @@ from .assessment_repository import (
 
 __all__ = [
     "AssessmentRecord",
+    "DuplicateCheck",
+    "DuplicateMatch",
     "PostgresAssessmentRepository",
     "PostgresConfigurationError",
     "PostgresStorageError",

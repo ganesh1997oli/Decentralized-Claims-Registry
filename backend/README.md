@@ -1,9 +1,9 @@
 # FastAPI backend
 
-The backend validates schema-version-2 motor claims, stores their canonical JSON
+The backend validates schema-version-3 motor claims, stores their canonical JSON
 on IPFS, verifies the uploaded bytes, and anchors the hash and pointer on
-Sepolia. In the recommended asynchronous mode, Kafka performs XGBoost scoring
-after anchoring and PostgreSQL supplies the completed assessment to the browser.
+Sepolia. Kafka performs XGBoost scoring after anchoring, and PostgreSQL supplies
+the completed assessment to the browser.
 
 It also provides the paginated claims data used by the React dashboard.
 
@@ -12,7 +12,7 @@ It also provides the paginated claims data used by the React dashboard.
 
 ## Workflow
 
-For `POST /claims` with `CLAIM_SCORING_MODE="async_xgboost"`:
+For `POST /claims`:
 
 1. Validate the request with Pydantic.
 2. Create deterministic JSON bytes.
@@ -21,9 +21,7 @@ For `POST /claims` with `CLAIM_SCORING_MODE="async_xgboost"`:
 5. Return the anchor receipt with `assessment: null`.
 
 The browser polls `GET /claims/{claim_id}/assessment`. The Kafka scoring worker
-stores that response and performs the assessment transaction. The original
-inline demonstration remains available through
-`CLAIM_SCORING_MODE="inline_demo"`.
+stores that response and performs the assessment transaction.
 
 The browser never receives the Pinata JWT or Sepolia private key.
 
@@ -63,8 +61,7 @@ Backend settings:
 | `MODULE_ID` | No | Ignition artifact ID; defaults to `ClaimsRegistryModule#ClaimsRegistry` |
 | `IGNITION_DIR` | No | Alternative Ignition deployment directory |
 | `RECEIPT_TIMEOUT` | No | Seconds to wait for a transaction receipt |
-| `FRAUD_MODEL_PATH` | No | Alternative compatible model artifact |
-| `CLAIM_SCORING_MODE` | No | `inline_demo` or recommended `async_xgboost` |
+| `DUPLICATE_FINGERPRINT_KEY` | Async | Private key used for incident HMAC fingerprints; minimum 32 bytes |
 | `FRONTEND_ORIGINS` | No | Comma-separated browser origins allowed by CORS |
 | `DATABASE_URL` | Async | PostgreSQL assessment store used by the polling endpoint |
 
@@ -99,7 +96,7 @@ Useful local URLs:
 | --- | --- | --- |
 | `GET` | `/health` | Confirms that the process is running; does not call Sepolia or Pinata |
 | `GET` | `/claims?page=1&page_size=10` | Returns current claims newest first; page size is limited to 50 |
-| `GET` | `/claims/{claim_id}/assessment` | Returns the stored XGBoost/SHAP result, or 404 while pending |
+| `GET` | `/claims/{claim_id}/assessment` | Returns the stored XGBoost/SHAP and cross-insurer duplicate result, or 404 while pending |
 | `POST` | `/claims` | Validates, stores and anchors a synthetic motor claim |
 
 ### Example submission
@@ -108,6 +105,7 @@ Useful local URLs:
 curl -X POST http://127.0.0.1:8000/claims \
   -H 'Content-Type: application/json' \
   -d '{
+    "insurerId": "northstar-mutual",
     "claimReference": "synthetic-api-1",
     "policyReference": "synthetic-policy-42",
     "claimType": "collision",
@@ -132,8 +130,8 @@ A successful asynchronous response has HTTP status `201` and includes:
 - `assessment: null` while Kafka processing is pending.
 
 Once the worker stores a result, the assessment endpoint returns the model
-version, probability, threshold, SHAP reasons, processing error if any, and
-assessment transaction.
+version, probability, threshold, SHAP reasons, current cross-insurer duplicate
+matches, processing error if any, and assessment transaction.
 
 Returning `assessment: null` is not an error. It means the permanent claim anchor
 has succeeded and the independent Kafka worker has not finished yet. This split
@@ -156,6 +154,9 @@ python -m pytest backend/tests -q
 - One process-level wallet submits and assesses every claim.
 - IPFS content is public and unencrypted.
 - The XGBoost model is trained on synthetic data, not real insurance records.
+- Duplicate detection uses exact normalized incident fields. It produces review
+  candidates, not proof of fraud or privacy-preserving record linkage suitable
+  for real insurers.
 - Authentication, authorization and rate limiting are not yet implemented.
 
 See the [root project guide](../README.md) for the complete application run and

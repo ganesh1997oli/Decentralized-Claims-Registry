@@ -12,6 +12,7 @@ browser code.
 - The confirmed Sepolia transaction and block
 - The IPFS pointer and claim hash
 - A pending state while Kafka processes the anchored claim
+- The cross-insurer duplicate-review result and any matched claim IDs
 - The XGBoost probability and claim-specific SHAP indicators from PostgreSQL
 - The on-chain assessment status and transaction
 - A newest-first, paginated list of submitted claims and fraud scores
@@ -66,7 +67,8 @@ Open <http://127.0.0.1:5173>.
 The form begins with clearly labelled synthetic values. After a successful
 submission, the receipt links to Etherscan and the configured IPFS gateway. In
 asynchronous mode it polls FastAPI for up to one minute while Kafka scores the
-claim, then displays the stored assessment and refreshes the contract state.
+claim, then displays the duplicate check, stored assessment and refreshed
+contract state.
 The header labels the interface **Research test data only** to make clear that
 users must enter fictional test claims; it does not describe where the research
 dataset is hosted.
@@ -79,10 +81,10 @@ Browser storage contains no form fields, wallet key, or Pinata credential and
 can be cleared through the browser's site-data tools.
 
 Select any claim number in **All submitted claims** to reopen its Sepolia hash,
-IPFS pointer, on-chain score, model result, and SHAP indicators. Older claims
-created before the current PostgreSQL assessment history may only have their
-on-chain status and score; the page labels that limitation instead of inventing
-missing XGBoost or SHAP details.
+IPFS pointer, on-chain score, duplicate check, model result, and SHAP indicators.
+Older claims created before the current PostgreSQL assessment history may only
+have their on-chain status and score; the page labels that limitation instead
+of inventing missing XGBoost, duplicate or SHAP details.
 
 ## Verify the frontend
 
@@ -91,11 +93,15 @@ cd frontend
 npm test
 npm run lint
 npm run build
+npx playwright install chromium
+npm run test:e2e
 ```
 
 - `npm test` checks the backend client and response validation.
 - `npm run lint` checks the source for common mistakes.
 - `npm run build` runs TypeScript compilation and creates the production bundle.
+- `npm run test:e2e` opens the application in Chromium and verifies submission,
+  assessment polling and the review-only cross-insurer match experience.
 
 ## Safety and limitations
 
@@ -104,6 +110,8 @@ npm run build
   unencrypted. Hiding a CID would not make a photograph or document private.
 - The displayed XGBoost score comes from synthetic training data and must not be
   used to decide a real claim.
+- A matching incident fingerprint is only a human-review signal; it does not
+  establish that either synthetic claim is fraudulent.
 - The dashboard reads current Sepolia state through FastAPI; it is not a
   production search or reporting system.
 

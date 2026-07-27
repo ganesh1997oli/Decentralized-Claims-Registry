@@ -33,6 +33,7 @@ const assessment: ClaimAssessment = {
   transaction_hash: '0xassessment',
   block_number: 11_348_390,
   error: null,
+  duplicate_detection: null,
 }
 
 describe('current claim receipt', () => {

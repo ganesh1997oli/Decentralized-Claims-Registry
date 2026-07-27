@@ -9,7 +9,8 @@ IPFS references needed by a downstream worker.
 - `events.py`: versioned event schema, configuration, producer, and consumer
 - `consumer.py`: demonstration worker that downloads the IPFS bytes and checks
   their Keccak-256 hash
-- `scoring_worker.py`: idempotent XGBoost, SHAP, PostgreSQL and Sepolia workflow
+- `scoring_worker.py`: idempotent duplicate detection, XGBoost, SHAP,
+  PostgreSQL and Sepolia workflow
 - `compose.yml`: Kafka, PostgreSQL and a Kafka dashboard for local development
 - `tests/`: isolated adapter tests and an optional live-broker smoke test
 
@@ -29,7 +30,10 @@ claims.submitted.v1
         │
         ▼
 XGBoost scoring worker
-        │ verify CID and parse schema v2
+        │ verify CID and parse claim schema v3
+        ▼
+private incident HMAC + cross-insurer lookup
+        │
         ▼
 XGBoost probability + local SHAP
         │
@@ -151,8 +155,7 @@ set +a
 python listener/claims_listener.py
 ```
 
-Set `CLAIM_SCORING_MODE="async_xgboost"` in the backend configuration, then
-submit through the React form or `POST /claims`. A successful flow prints
+Submit through the React form or `POST /claims`. A successful flow prints
 `KafkaPublished` in the listener and `ClaimAssessed` in the worker.
 
 The older verification-only consumer remains useful for inspecting events. Do
@@ -168,11 +171,13 @@ source backend/.venv/bin/activate
 python -m pytest integrations/kafka/tests integrations/postgres/tests -q
 ```
 
-Run the opt-in live producer/consumer test after the local broker is healthy:
+Run all broker- and database-backed integration tests after the local services
+are healthy:
 
 ```bash
-KAFKA_INTEGRATION_TEST=true \
-  python -m pytest integrations/kafka/tests/test_integration.py -q
+TEST_DATABASE_URL=postgresql://claims:claims-local@127.0.0.1:5432/claims_registry \
+TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
+  python -m pytest -m integration
 ```
 
 ## Stop local infrastructure

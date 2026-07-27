@@ -1,78 +1,14 @@
 # Fraud models
 
-This module has two deliberately separate workflows:
+This module has one application scoring path: the asynchronous Kafka worker
+loads the reviewed XGBoost artifact and produces claim-specific SHAP reasons.
+The training pipeline also evaluates logistic regression as a scientific
+baseline, but that baseline is not saved or served by the application.
 
-- the lightweight logistic scorer keeps the web demonstration working;
-- the research pipeline compares that kind of baseline with XGBoost and creates
-  SHAP explanations from a larger motor-claims dataset.
+The dataset is synthetic, so this workflow is not a validated real-world
+insurance-fraud model.
 
-Neither workflow is a validated real-world insurance-fraud model.
-
-## How scoring works
-
-The model is a logistic-regression baseline using six values derived from the
-claim form:
-
-| Feature | What it represents |
-| --- | --- |
-| `amount_ratio` | Claim amount scaled to the demonstration range |
-| `high_risk_type` | Whether the selected category is marked higher risk |
-| `incident_age_ratio` | Time between the incident and scoring date |
-| `no_evidence` | Whether the evidence list is empty |
-| `short_description` | Whether the description has fewer than eight words |
-| `suspicious_language` | Presence of a small demonstration phrase list |
-
-The weighted values are converted to a probability with the sigmoid function.
-The probability is then converted to an integer from `0` to `10,000` for the
-smart contract. For example, `0.1479` becomes `1,479`, displayed as `14.79%`.
-
-The three strongest positive feature contributions become the human-readable
-reasons shown in the interface. These contributions are transparent
-logistic-regression terms; they are not SHAP values.
-
-## Train the demonstration artifact
-
-Run from the repository root:
-
-```bash
-python -m model.train
-```
-
-Training uses a fixed random seed and generates 4,000 rows:
-
-- 3,200 rows fit the logistic-regression weights;
-- 800 held-out rows select a threshold using validation F1;
-- the result is saved as readable JSON at
-  `model/artifacts/synthetic-logistic-v1.json`.
-
-Use a different output path when experimenting without replacing the tracked
-artifact:
-
-```bash
-python -m model.train --output /tmp/claims-model.json
-```
-
-## Run the tests
-
-The model uses the Python standard library; the shared backend environment
-already contains pytest:
-
-```bash
-source backend/.venv/bin/activate
-python -m pytest model/tests -q
-```
-
-The tests check feature extraction, artifact loading, repeatable scoring,
-reasons, and threshold behaviour.
-
-## Application behaviour
-
-- A probability below the saved threshold becomes `UnderReview`.
-- A probability at or above the threshold becomes `Flagged`.
-- The model never automatically sets `Approved` or `Rejected`.
-- FastAPI can load another compatible artifact through `FRAUD_MODEL_PATH`.
-
-## Research XGBoost and SHAP workflow
+## XGBoost and SHAP workflow
 
 The research workflow uses the CC BY 4.0
 [African Motor Insurance Claims dataset](https://huggingface.co/datasets/electricsheepafrica/africa-synth-motor-insurance-claims-all).
@@ -140,7 +76,7 @@ Training now saves an artifact schema containing:
 
 `XGBoostFraudScorer` verifies the checksum before loading the trusted joblib
 file. It loads the pipeline and SHAP explainer once, enriches each claim with
-the reviewed country reference value, and returns the existing `FraudScore`
+the reviewed country reference value, and returns the stable `FraudScore`
 interface with three claim-specific SHAP reasons.
 
 The artifact location and optional checksum live in the shared root
@@ -161,6 +97,18 @@ python -m integrations.kafka.scoring_worker
 
 Do not load joblib files received from users or untrusted storage. Joblib uses
 Python object deserialization and must be restricted to reviewed artifacts.
+
+### Run the tests
+
+From the repository root:
+
+```bash
+source backend/.venv/bin/activate
+python -m pytest model/tests -q
+```
+
+The tests cover leakage controls, artifact integrity, feature compatibility,
+XGBoost scoring, and SHAP reason generation.
 
 ### Explore in Jupyter or Colab
 

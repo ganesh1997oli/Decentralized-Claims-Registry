@@ -29,6 +29,17 @@ const completedReceipt: ClaimReceipt = {
     transaction_hash: '0xassessment',
     block_number: 11_348_390,
     error: null,
+    duplicate_detection: {
+      insurer_id: 'harbour-shield',
+      fingerprint_version: 'incident-hmac-sha256-v1',
+      duplicate_detected: true,
+      matches: [
+        {
+          claim_id: 3,
+          insurer_id: 'northstar-mutual',
+        },
+      ],
+    },
   },
 }
 
@@ -76,6 +87,9 @@ describe('App refresh recovery', () => {
     expect(page).toContain('african-motor-xgboost-v1')
     expect(page).toContain('Claim amount')
     expect(page).toContain('3,930')
+    expect(page).toContain('Possible duplicate incident found')
+    expect(page).toContain('Claim #3')
+    expect(page).toContain('Northstar Mutual')
   })
 
   it('clearly labels the form as research test data', () => {

@@ -1,5 +1,5 @@
-"""Versioned fraud-scoring components used by the Week 5 integration."""
+"""Stable fraud-scoring contracts used across application adapters."""
 
-from model.scorer import FraudReason, FraudScore, SyntheticFraudScorer
+from model.contracts import FraudReason, FraudScore
 
-__all__ = ["FraudReason", "FraudScore", "SyntheticFraudScorer"]
+__all__ = ["FraudReason", "FraudScore"]

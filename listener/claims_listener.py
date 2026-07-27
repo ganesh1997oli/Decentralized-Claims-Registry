@@ -16,6 +16,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any, Protocol
 
 from web3 import Web3
 
@@ -78,121 +79,185 @@ def hx(b) -> str:
     return s if s.startswith("0x") else f"0x{s}"
 
 
-CONTRACT_ADDRESS, ABI = load_deployment(IGNITION_DIR, MODULE_ID)
-
-w3 = Web3(Web3.HTTPProvider(RPC_URL))
-# w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0) # If extraData error
-
-if not w3.is_connected():
-    raise SystemExit(f"Could not connect to the RPC endpoint: {RPC_URL}")
-
-contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=ABI)
-ipfs = IPFSClient.from_env()
-claim_event_publisher: ClaimEventPublisher | None = None
+class ClaimPayloadReader(Protocol):
+    def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes: ...
 
 
-def verify_ipfs_payload(claim_id: int, pointer: str, expected_hash) -> bool:
-    """Download the IPFS bytes and check that they match the on-chain hash."""
-    try:
-        payload = ipfs.download_pointer(pointer)
-    except IPFSError as exc:
-        print(f"[IPFSError] claimId={claim_id} pointer={pointer} error={exc}")
-        return False
+class BlockRangeProcessor(Protocol):
+    def process_range(self, from_block: int, to_block: int) -> None: ...
 
-    # Hash the bytes exactly as received. Even a one-character change produces
-    # a different hash and fails this check.
-    actual_hash = Web3.keccak(payload)
-    if actual_hash != expected_hash:
+
+class BlockCheckpoint(Protocol):
+    def save(self, block_number: int) -> None: ...
+
+
+class ClaimEventProcessor:
+    """Verify confirmed claim logs and publish deterministic scoring events."""
+
+    event_names = ("ClaimSubmitted", "ClaimAssessed")
+
+    def __init__(
+        self,
+        *,
+        chain_id: int,
+        contract_address: str,
+        contract: Any,
+        ipfs: ClaimPayloadReader,
+        publisher: ClaimEventPublisher | None,
+    ) -> None:
+        self.chain_id = chain_id
+        self.contract_address = contract_address
+        self.contract = contract
+        self.ipfs = ipfs
+        self.publisher = publisher
+
+    def process_range(self, from_block: int, to_block: int) -> None:
+        """Handle all watched logs in canonical blockchain order."""
+
+        entries = []
+        for name in self.event_names:
+            event_type = getattr(self.contract.events, name)()
+            entries.extend(
+                event_type.get_logs(
+                    from_block=from_block,
+                    to_block=to_block,
+                )
+            )
+        # Separate event queries can return interleaved results. Restore chain
+        # order so a submission is never observed after its later assessment.
+        entries.sort(key=lambda event: (event["blockNumber"], event["logIndex"]))
+        for event in entries:
+            if event["event"] == "ClaimSubmitted":
+                self._handle_claim_submitted(event)
+            elif event["event"] == "ClaimAssessed":
+                self._handle_claim_assessed(event)
+            else:
+                raise ValueError(f"Unsupported claim event: {event['event']}")
+
+    def _verified_payload(
+        self,
+        *,
+        claim_id: int,
+        pointer: str,
+        expected_hash: Any,
+    ) -> bytes:
+        try:
+            payload = self.ipfs.download_pointer(pointer)
+        except IPFSError as exc:
+            print(f"[IPFSError] claimId={claim_id} pointer={pointer} error={exc}")
+            raise RuntimeError(
+                f"IPFS verification failed for claim {claim_id}"
+            ) from exc
+
+        # Hash the exact downloaded bytes. A gateway response that differs by
+        # even one byte must never be published for scoring.
+        actual_hash = Web3.keccak(payload)
+        if actual_hash != expected_hash:
+            print(
+                f"[IPFSVerificationFailed] claimId={claim_id} "
+                f"expected={hx(expected_hash)} actual={hx(actual_hash)}"
+            )
+            raise RuntimeError(f"IPFS verification failed for claim {claim_id}")
+
         print(
-            f"[IPFSVerificationFailed] claimId={claim_id} "
-            f"expected={hx(expected_hash)} actual={hx(actual_hash)}"
+            f"[IPFSVerified] claimId={claim_id} pointer={pointer} "
+            f"bytes={len(payload)} hash={hx(actual_hash)}"
         )
-        return False
+        return payload
 
-    print(
-        f"[IPFSVerified] claimId={claim_id} pointer={pointer} "
-        f"bytes={len(payload)} hash={hx(actual_hash)}"
-    )
-    return True
-
-
-def on_claim_submitted(e):
-    # The event carries the pointer and expected hash, so verification does not
-    # need to trust a separate backend response or local browser state.
-    a = e["args"]
-    print(
-        f"[ClaimSubmitted] claimId={a['claimId']} claimant={a['claimant']} "
-        f"claimHash={hx(a['claimHash'])} dataPointer={a['dataPointer']} "
-        f"block={e['blockNumber']} tx={hx(e['transactionHash'])}"
-    )
-    verified = verify_ipfs_payload(
-        a["claimId"], a["dataPointer"], a["claimHash"]
-    )
-    if not verified:
-        # Do not move the durable block cursor past data we could not verify.
-        # The same event will be retried after the gateway recovers.
-        raise RuntimeError(f"IPFS verification failed for claim {a['claimId']}")
-
-    if claim_event_publisher is not None:
-        # The blockchain log gives this message a deterministic identity. Seeing
-        # the same log after a restart therefore produces the same Kafka event ID.
-        event = ClaimSubmittedEvent.create(
-            chain_id=w3.eth.chain_id,
-            contract_address=CONTRACT_ADDRESS,
-            claim_id=a["claimId"],
-            claimant=a["claimant"],
-            claim_hash=hx(a["claimHash"]),
-            data_pointer=a["dataPointer"],
-            block_number=e["blockNumber"],
-            block_hash=hx(e["blockHash"]),
-            transaction_hash=hx(e["transactionHash"]),
-            log_index=e["logIndex"],
-            event_timestamp=a["timestamp"],
-        )
-        claim_event_publisher.publish(event)
+    def _handle_claim_submitted(self, event: Any) -> None:
+        # The log carries both the pointer and expected hash, so verification
+        # does not trust a browser receipt or a separate backend response.
+        args = event["args"]
         print(
-            f"[KafkaPublished] eventId={event.event_id} "
-            f"topic={claim_event_publisher.topic}"
+            f"[ClaimSubmitted] claimId={args['claimId']} "
+            f"claimant={args['claimant']} claimHash={hx(args['claimHash'])} "
+            f"dataPointer={args['dataPointer']} block={event['blockNumber']} "
+            f"tx={hx(event['transactionHash'])}"
+        )
+        self._verified_payload(
+            claim_id=args["claimId"],
+            pointer=args["dataPointer"],
+            expected_hash=args["claimHash"],
+        )
+
+        if self.publisher is None:
+            return
+
+        # The event ID is derived from the immutable chain log. Replaying the
+        # same confirmed range therefore republishes the same idempotency key.
+        claim_event = ClaimSubmittedEvent.create(
+            chain_id=self.chain_id,
+            contract_address=self.contract_address,
+            claim_id=args["claimId"],
+            claimant=args["claimant"],
+            claim_hash=hx(args["claimHash"]),
+            data_pointer=args["dataPointer"],
+            block_number=event["blockNumber"],
+            block_hash=hx(event["blockHash"]),
+            transaction_hash=hx(event["transactionHash"]),
+            log_index=event["logIndex"],
+            event_timestamp=args["timestamp"],
+        )
+        self.publisher.publish(claim_event)
+        print(
+            f"[KafkaPublished] eventId={claim_event.event_id} "
+            f"topic={self.publisher.topic}"
+        )
+
+    @staticmethod
+    def _handle_claim_assessed(event: Any) -> None:
+        args = event["args"]
+        raw_status = args["newStatus"]
+        status = (
+            STATUS_NAMES[raw_status]
+            if raw_status < len(STATUS_NAMES)
+            else f"?{raw_status}"
+        )
+        print(
+            f"[ClaimAssessed] claimId={args['claimId']} status={status} "
+            f"fraudScore={args['fraudScore']} "
+            f"({args['fraudScore'] / 100:.2f}%) assessor={args['assessor']} "
+            f"block={event['blockNumber']} tx={hx(event['transactionHash'])}"
         )
 
 
-def on_claim_assessed(e):
-    a = e["args"]
-    raw = a["newStatus"]
-    status = STATUS_NAMES[raw] if raw < len(STATUS_NAMES) else f"?{raw}"
+class ConfirmedBlockPoller:
+    """Advance a durable checkpoint only after every safe log succeeds."""
 
-    print(
-        f"[ClaimAssessed]  claimId={a['claimId']} status={status} "
-        f"fraudScore={a['fraudScore']} ({a['fraudScore'] / 100:.2f}%) "
-        f"assessor={a['assessor']} "
-        f"block={e['blockNumber']} tx={hx(e['transactionHash'])}"
-    )
-    # A future production worker could update PostgreSQL or notify a reviewer here.
+    def __init__(
+        self,
+        *,
+        processor: BlockRangeProcessor,
+        checkpoint: BlockCheckpoint,
+        confirmation_blocks: int,
+    ) -> None:
+        if confirmation_blocks < 0:
+            raise ValueError("confirmation_blocks cannot be negative")
+        self.processor = processor
+        self.checkpoint = checkpoint
+        self.confirmation_blocks = confirmation_blocks
 
+    def process_latest(self, *, latest_block: int, last_processed: int) -> int:
+        safe_block = latest_block - self.confirmation_blocks
+        if safe_block <= last_processed:
+            return last_processed
 
-HANDLERS = {
-    "ClaimSubmitted": on_claim_submitted,
-    "ClaimAssessed": on_claim_assessed,
-}
-
-
-def poll_range(from_block: int, to_block: int) -> None:
-    """Read watched events and handle them in the order they happened."""
-    entries = []
-    for name in HANDLERS:
-        ev = getattr(contract.events, name)()
-        entries.extend(ev.get_logs(from_block=from_block, to_block=to_block))
-    # Separate event queries can return interleaved results. Restore blockchain
-    # order before handling them so a submission is never observed after its
-    # later assessment from the same range.
-    entries.sort(key=lambda e: (e["blockNumber"], e["logIndex"]))
-    for e in entries:
-        HANDLERS[e["event"]](e)
+        self.processor.process_range(last_processed + 1, safe_block)
+        # A processing exception exits before this save, guaranteeing that the
+        # failed range is retried from the previous durable checkpoint.
+        self.checkpoint.save(safe_block)
+        return safe_block
 
 
 def main():
-    global claim_event_publisher
-
+    contract_address, abi = load_deployment(IGNITION_DIR, MODULE_ID)
+    w3 = Web3(Web3.HTTPProvider(RPC_URL))
+    # If Sepolia reports an extraData validation error, inject
+    # ExtraDataToPOAMiddleware here before the connection check.
+    if not w3.is_connected():
+        raise SystemExit(f"Could not connect to the RPC endpoint: {RPC_URL}")
+    contract = w3.eth.contract(address=contract_address, abi=abi)
     kafka_settings = KafkaSettings.from_env()
     claim_event_publisher = create_publisher(kafka_settings)
     chain_id = w3.eth.chain_id
@@ -200,13 +265,26 @@ def main():
         os.environ.get(
             "LISTENER_STATE_FILE",
             Path(__file__).with_name(".state")
-            / f"claims-{chain_id}-{CONTRACT_ADDRESS.lower()}.json",
+            / f"claims-{chain_id}-{contract_address.lower()}.json",
         )
     )
-    cursor = BlockCursor(state_path, chain_id, CONTRACT_ADDRESS)
+    cursor = BlockCursor(state_path, chain_id, contract_address)
+    processor = ClaimEventProcessor(
+        chain_id=chain_id,
+        contract_address=contract_address,
+        contract=contract,
+        ipfs=IPFSClient.from_env(),
+        publisher=claim_event_publisher,
+    )
+    poller = ConfirmedBlockPoller(
+        processor=processor,
+        checkpoint=cursor,
+        confirmation_blocks=CONFIRMATION_BLOCKS,
+    )
 
     print(
-        f"Listening for {', '.join(HANDLERS)} on {CONTRACT_ADDRESS} via {RPC_URL}"
+        f"Listening for {', '.join(processor.event_names)} "
+        f"on {contract_address} via {RPC_URL}"
     )
     if claim_event_publisher is not None:
         print(
@@ -224,14 +302,10 @@ def main():
         while True:
             try:
                 latest = w3.eth.block_number
-                # Wait for a few newer blocks before processing an event. This lowers
-                # the chance of acting on a block that Sepolia later replaces.
-                safe_block = latest - CONFIRMATION_BLOCKS
-                if safe_block > last_processed:
-                    poll_range(last_processed + 1, safe_block)
-                    # Save only after every event in the range reached Kafka.
-                    cursor.save(safe_block)
-                    last_processed = safe_block
+                last_processed = poller.process_latest(
+                    latest_block=latest,
+                    last_processed=last_processed,
+                )
             except Exception as exc:
                 # RPC, IPFS and Kafka failures all retry from the saved checkpoint.
                 print(f"Polling error (will retry): {exc}")

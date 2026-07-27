@@ -1,6 +1,4 @@
 from backend.app.blockchain import (
-    BlockchainSubmissionError,
-    ChainAssessment,
     ChainClaim,
     ChainSubmission,
 )
@@ -10,12 +8,12 @@ from backend.app.service import (
     ClaimSubmissionServiceError,
     canonical_claim_bytes,
 )
-from model.scorer import FraudReason, FraudScore
 
 
 def claim_model() -> ClaimSubmission:
     return ClaimSubmission.model_validate(
         {
+            "insurerId": "northstar-mutual",
             "claimReference": "synthetic-claim-api-1",
             "policyReference": "synthetic-policy-42",
             "claimType": "collision",
@@ -51,10 +49,8 @@ class FakeIPFS:
 
 
 class FakeRegistry:
-    def __init__(self, *, fail_assessment: bool = False):
+    def __init__(self):
         self.submission = None
-        self.assessment = None
-        self.fail_assessment = fail_assessment
 
     def submit_claim(self, claim_hash, data_pointer):
         self.submission = (claim_hash, data_pointer)
@@ -62,17 +58,6 @@ class FakeRegistry:
             claim_id=3,
             transaction_hash="0xtransaction",
             block_number=100,
-        )
-
-    def assess_claim(self, claim_id, status, fraud_score):
-        self.assessment = (claim_id, status, fraud_score)
-        if self.fail_assessment:
-            raise BlockchainSubmissionError("temporary RPC failure")
-        return ChainAssessment(
-            transaction_hash="0xassessment",
-            block_number=101,
-            status=status,
-            fraud_score=fraud_score,
         )
 
     def list_claims(self, *, page, page_size):
@@ -95,22 +80,6 @@ class FakeRegistry:
         )
 
 
-class FakeScorer:
-    def __init__(self, *, flagged: bool = True):
-        self.flagged = flagged
-
-    def score(self, claim):
-        assert claim.claim_reference == "synthetic-claim-api-1"
-        return FraudScore(
-            probability=0.85 if self.flagged else 0.12,
-            score_basis_points=8500 if self.flagged else 1200,
-            threshold=0.3,
-            flagged=self.flagged,
-            model_version="test-model-v1",
-            reasons=(FraudReason("amount_ratio", "Claim amount", 0.5),),
-        )
-
-
 def test_canonical_serialization_is_stable():
     payload = canonical_claim_bytes(claim_model())
 
@@ -118,8 +87,9 @@ def test_canonical_serialization_is_stable():
         b'{"claimAmountUsd":2500.0,"claimReference":"synthetic-claim-api-1",'
         b'"claimType":"collision","country":"Nigeria","description":"Synthetic '
         b'bumper damage for API testing","evidence":[],"incidentDate":"2026-07-13",'
-        b'"policyPremiumUsd":480.0,"policyReference":"synthetic-policy-42",'
-        b'"regionType":"urban","schemaVersion":2,"thirdPartyInjuryFlag":false,'
+        b'"insurerId":"northstar-mutual","policyPremiumUsd":480.0,'
+        b'"policyReference":"synthetic-policy-42","regionType":"urban",'
+        b'"schemaVersion":3,"thirdPartyInjuryFlag":false,'
         b'"totalLossFlag":false,"vehicleAge":6,"vehicleType":"sedan"}'
     )
 
@@ -127,9 +97,7 @@ def test_canonical_serialization_is_stable():
 def test_service_uploads_verifies_and_submits_exact_payload():
     ipfs = FakeIPFS()
     registry = FakeRegistry()
-    service = ClaimSubmissionService(
-        ipfs=ipfs, registry=registry, scorer=FakeScorer()
-    )
+    service = ClaimSubmissionService(ipfs=ipfs, registry=registry)
 
     result = service.submit(claim_model())
 
@@ -138,10 +106,7 @@ def test_service_uploads_verifies_and_submits_exact_payload():
     assert result.claim_id == 3
     assert result.data_pointer == submitted_pointer
     assert result.claim_hash == submitted_hash.hex()
-    assert registry.assessment == (3, 4, 8500)
-    assert result.assessment.status == "Flagged"
-    assert result.assessment.on_chain is True
-    assert result.assessment.transaction_hash == "0xassessment"
+    assert result.assessment is None
 
 
 def test_service_refuses_to_anchor_corrupt_ipfs_round_trip():
@@ -149,7 +114,6 @@ def test_service_refuses_to_anchor_corrupt_ipfs_round_trip():
     service = ClaimSubmissionService(
         ipfs=FakeIPFS(corrupt_download=True),
         registry=registry,
-        scorer=FakeScorer(),
     )
 
     try:
@@ -162,44 +126,10 @@ def test_service_refuses_to_anchor_corrupt_ipfs_round_trip():
     assert registry.submission is None
 
 
-def test_service_returns_anchor_when_assessment_transaction_is_pending():
-    registry = FakeRegistry(fail_assessment=True)
-    service = ClaimSubmissionService(
-        ipfs=FakeIPFS(),
-        registry=registry,
-        scorer=FakeScorer(flagged=False),
-    )
-
-    result = service.submit(claim_model())
-
-    assert result.claim_id == 3
-    assert registry.assessment == (3, 1, 1200)
-    assert result.assessment.status == "UnderReview"
-    assert result.assessment.on_chain is False
-    assert "pending" in result.assessment.error
-
-
-def test_async_service_anchors_without_running_inline_assessment():
-    registry = FakeRegistry()
-    service = ClaimSubmissionService(
-        ipfs=FakeIPFS(),
-        registry=registry,
-        scorer=FakeScorer(),
-        assess_inline=False,
-    )
-
-    result = service.submit(claim_model())
-
-    assert result.claim_id == 3
-    assert result.assessment is None
-    assert registry.assessment is None
-
-
 def test_service_lists_current_claim_state():
     service = ClaimSubmissionService(
         ipfs=FakeIPFS(),
         registry=FakeRegistry(),
-        scorer=FakeScorer(),
     )
 
     claims = service.list_claims(page=1, page_size=10)

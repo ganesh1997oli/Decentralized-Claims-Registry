@@ -36,15 +36,18 @@ When a user submits a fictional test claim:
    `ClaimsRegistry` contract on Ethereum Sepolia.
 4. The listener verifies the claim and publishes its deterministic event to
    Kafka.
-5. The scoring worker verifies the IPFS bytes again, runs XGBoost, creates
-   claim-specific SHAP reasons, and saves the result in PostgreSQL.
-6. The worker writes `UnderReview` or `Flagged` and the score to Sepolia.
-7. The React interface polls FastAPI for the assessment and displays the score,
-   reasons, transaction, and paginated contract state.
+5. The scoring worker verifies the IPFS bytes again, creates a private keyed
+   incident fingerprint, and checks PostgreSQL for matching claims submitted by
+   another synthetic insurer.
+6. The worker runs XGBoost, creates claim-specific SHAP reasons, and saves the
+   result in PostgreSQL.
+7. The worker writes `UnderReview` or `Flagged` and the score to Sepolia.
+8. The React interface polls FastAPI for the assessment and displays the score,
+   duplicate-review result, reasons, transaction, and paginated contract state.
 
-The recommended mode is `CLAIM_SCORING_MODE="async_xgboost"`. The older
-`inline_demo` mode remains available for comparing the original synchronous
-logistic-regression demonstration without Kafka.
+The application has one scoring path: the listener and Kafka worker perform
+duplicate detection, XGBoost inference, persistence, and assessment after the
+claim anchor has succeeded.
 
 ```text
 React ──► FastAPI ──► IPFS + Sepolia claim anchor
@@ -53,7 +56,7 @@ React ──► FastAPI ──► IPFS + Sepolia claim anchor
                  listener ──► Kafka
                                 │
                                 ▼
-                         XGBoost + SHAP
+                    duplicate check + XGBoost + SHAP
                                 │
                          PostgreSQL audit
                                 │
@@ -68,7 +71,8 @@ React ──► FastAPI ──► IPFS + Sepolia claim anchor
 | `contract/` | Solidity contract, tests and Ignition deployments | [Contract guide](contract/README.md) |
 | `backend/` | FastAPI validation, scoring, IPFS and Sepolia workflow | [Backend guide](backend/README.md) |
 | `frontend/` | React claim form, receipt and claims dashboard | [Frontend guide](frontend/README.md) |
-| `model/` | Demonstration scoring plus XGBoost/SHAP research evaluation | [Model guide](model/README.md) |
+| `duplicates/` | Private cross-insurer incident fingerprinting | This guide |
+| `model/` | XGBoost/SHAP training, evaluation, and scoring | [Model guide](model/README.md) |
 | `listener/` | Blockchain event polling, verification and checkpoints | [Listener guide](listener/README.md) |
 | `integrations/ipfs/` | Shared Pinata and IPFS adapter | [IPFS guide](integrations/ipfs/README.md) |
 | `integrations/kafka/` | Kafka messages, producer, consumer and local broker | [Kafka guide](integrations/kafka/README.md) |
@@ -145,9 +149,11 @@ Open `.env.local` and add:
 - `SEPOLIA_PRIVATE_KEY`: a fresh testnet-only wallet key;
 - `PINATA_JWT`: a server-side Pinata upload token.
 
-Keep the remaining defaults unless your local ports differ. `.env.local` is
-ignored by Git. If either secret has appeared in a screenshot, chat, or commit,
-rotate it rather than continuing to use it.
+The example contains a fictional-data-only `DUPLICATE_FINGERPRINT_KEY`. Replace
+it with a secret value of at least 32 bytes before hosting the worker. Keep the
+remaining defaults unless your local ports differ. `.env.local` is ignored by
+Git. If a secret has appeared in a screenshot, chat, or commit, rotate it rather
+than continuing to use it.
 
 ### 4. Prepare the XGBoost artifact
 
@@ -251,9 +257,11 @@ You should see this sequence:
 
 1. The browser shows the Sepolia submission transaction, IPFS pointer, and hash.
 2. The listener prints `IPFSVerified` followed by `KafkaPublished`.
-3. The worker prints `ClaimAssessed`.
-4. The browser replaces the pending message with the XGBoost probability, SHAP
-   indicators, on-chain score, assessment transaction, and lifecycle status.
+3. The worker prints `ClaimAssessed`, including the number of cross-insurer
+   incident matches.
+4. The browser replaces the pending message with the XGBoost probability,
+   duplicate-review result, SHAP indicators, on-chain score, assessment
+   transaction, and lifecycle status.
 5. The newest row appears in **All submitted claims**.
 
 Click **View details →** on any row to reopen that claim. The page keeps the
@@ -265,11 +273,15 @@ browser storage is empty.
 After the first-time installation, run the checks from the repository root:
 
 ```bash
-# Python: backend, model, listener and integrations
+# Python unit tests and the enforced branch-coverage threshold
 source backend/.venv/bin/activate
-python -m pytest \
-  listener/test_*.py integrations/ipfs/tests integrations/kafka/tests \
-  integrations/postgres/tests backend/tests model/tests -q
+python -m pip install -r requirements-dev.txt
+python -m pytest -m "not integration" \
+  --cov=backend.app --cov=duplicates \
+  --cov=integrations.ipfs --cov=integrations.kafka \
+  --cov=integrations.postgres --cov=listener.block_cursor \
+  --cov=listener.claims_listener \
+  --cov=model.xgboost_scorer --cov-report=term-missing
 
 # Smart contract
 cd contract
@@ -282,15 +294,25 @@ npm ci
 npm test
 npm run lint
 npm run build
+npx playwright install chromium
+npm run test:e2e
 ```
 
-The live Kafka producer/consumer smoke test is deliberately opt-in:
+The infrastructure-backed suite uses disposable PostgreSQL schemas and isolated
+Kafka topics. Start the local services, then run:
 
 ```bash
-KAFKA_INTEGRATION_TEST=true \
-  backend/.venv/bin/python -m pytest \
-  integrations/kafka/tests/test_integration.py -q
+docker compose -f integrations/kafka/compose.yml up -d --wait postgres kafka
+docker compose -f integrations/kafka/compose.yml run --rm kafka-init
+
+TEST_DATABASE_URL=postgresql://claims:claims-local@127.0.0.1:5432/claims_registry \
+TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
+  backend/.venv/bin/python -m pytest -m integration
 ```
+
+GitHub Actions runs the Python coverage, infrastructure integration, frontend
+browser and smart-contract jobs independently on every feature branch and pull
+request.
 
 ## Contract lifecycle
 
@@ -330,6 +352,25 @@ Older claims can show a score without current XGBoost/SHAP details if they were
 created before the PostgreSQL assessment history. The interface says so rather
 than inventing missing model information.
 
+## Understanding duplicate detection
+
+Claim schema v3 includes a fictional insurer ID. The worker canonicalizes only
+incident attributes that should remain stable across insurers, then calculates
+an HMAC-SHA256 fingerprint with `DUPLICATE_FINGERPRINT_KEY`. Claim references,
+policy references, premiums and free-text descriptions are excluded because
+different insurers can legitimately record them differently.
+
+PostgreSQL stores the keyed fingerprint, not the canonical incident fields or
+the HMAC key. A match is reported only when the same fingerprint appears under
+a different insurer ID. It is always labelled as a possible duplicate for human
+review; it does not change the model score and never approves or rejects either
+claim.
+
+To demonstrate the feature, submit the pre-filled incident through Northstar
+Mutual, change the insurer to Harbour Shield, assign different claim and policy
+references, and submit again without changing the incident fields. The second
+receipt will reference the first claim.
+
 ## Common local problems
 
 ### The worker shows `Coordinator load in progress`
@@ -341,9 +382,10 @@ the process running. If it continues, check:
 docker compose -f integrations/kafka/compose.yml ps
 ```
 
-### The worker fails on `schemaVersion: 1`
+### The worker fails on an older `schemaVersion`
 
-The local Kafka volume contains an older message from before claim schema v2.
+The local Kafka volume contains a message from before claim schema v3 introduced
+the synthetic insurer ID.
 Stop the worker and, only if those old local test messages are no longer needed,
 move this development consumer group to the latest offsets:
 

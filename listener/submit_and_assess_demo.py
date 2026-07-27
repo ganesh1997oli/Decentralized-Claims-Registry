@@ -132,7 +132,8 @@ def send(fn):
 if args.assess_existing is None:
     claim_id = contract.functions.claimCount().call()  # next id == current count
     claim_document = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
+        "insurerId": "northstar-mutual",
         "claimReference": f"synthetic-claim-{claim_id}",
         "policyReference": "synthetic-policy-42",
         "claimType": "collision",
