@@ -79,6 +79,53 @@ file. It loads the pipeline and SHAP explainer once, enriches each claim with
 the reviewed country reference value, and returns the stable `FraudScore`
 interface with five claim-specific SHAP reasons.
 
+In plain language, one claim moves through the scorer like this:
+
+1. The scorer looks up the reviewed market claim frequency for the submitted
+   country. This value comes from the model artifact, not from the browser.
+2. `ClaimFeaturesV1.from_claim` combines that reference value with the submitted
+   claim and converts the two yes/no flags into the numeric form used in
+   training.
+3. `ClaimFeaturesV1.as_frame` creates a one-row table in the exact column order
+   expected by the saved pipeline.
+4. The pipeline preprocesses that row and XGBoost produces a risk probability.
+5. SHAP calculates how much each transformed feature moved this individual
+   prediction. The scorer ranks those effects by absolute size and returns the
+   strongest five without losing whether each effect was positive or negative.
+6. The probability is also converted to an integer out of `10,000` so it can be
+   stored by the Solidity contract.
+
+### Scorer function guide
+
+The code is deliberately split into small functions so each safety or
+translation step has one clear responsibility:
+
+| Function or method | What it does in everyday language |
+| --- | --- |
+| `ClaimFeaturesV1.from_claim` | Builds the model-ready claim from submitted values and the trusted country reference value. |
+| `ClaimFeaturesV1.as_frame` | Places one claim into the ordered table format expected by scikit-learn. |
+| `file_sha256` | Creates a fingerprint of the saved model so the application can detect an unexpected or tampered file before loading it. |
+| `_reason_label` | Converts machine names such as `country_Ghana` into wording an investigator can understand. |
+| `XGBoostFraudScorer.__init__` | Checks the artifact schema, feature list, threshold and reference data, then prepares the model and SHAP explainer for repeated use. |
+| `XGBoostFraudScorer.from_directory` | Reads an artifact directory, verifies the model fingerprint and only then loads the joblib pipeline. |
+| `XGBoostFraudScorer.from_env` | Reads the artifact location and optional approved fingerprint from deployment environment variables. |
+| `XGBoostFraudScorer.score` | Enriches one claim, predicts its probability, selects five local SHAP reasons and returns the complete application result. |
+
+### Reading the five SHAP reasons
+
+Each reason contains a readable label and a signed contribution:
+
+- a positive contribution moved the prediction toward higher modelled risk;
+- a negative contribution moved it toward lower modelled risk;
+- the absolute size shows how strongly that feature influenced this claim
+  relative to its other features.
+
+The reasons are local to one prediction. They are not a statement that a field
+is always risky, and they do not prove cause, fraud or innocence. Categorical
+values can be worded as either `Country: Ghana` or `Country is not Kenya`
+because the preprocessing pipeline represents each possible category as a
+separate yes/no column.
+
 The artifact location and optional checksum live in the shared root
 configuration:
 

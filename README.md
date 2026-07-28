@@ -337,18 +337,41 @@ reserved for a future authenticated human-review workflow.
 
 ## Understanding the model result
 
-XGBoost returns a probability between `0` and `1`. Solidity has no floating-point
-type, so the worker multiplies the probability by `10,000` and stores a whole
-number:
+It helps to think of the model result as two connected answers:
+
+1. **The score asks, “How closely does this claim resemble the higher-risk
+   patterns learned from the synthetic training data?”**
+2. **The SHAP reasons ask, “Which parts of this particular claim moved the
+   model toward or away from that score?”**
+
+XGBoost returns the first answer as a probability between `0` and `1`. Solidity
+has no floating-point type, so the worker multiplies the probability by `10,000`
+and stores a whole number:
 
 ```text
 probability 0.2466 = 24.66% = on-chain score 2,466 / 10,000
 threshold   0.4700 = 47.00% = threshold score 4,700 / 10,000
 ```
 
-The five displayed SHAP indicators are the features that moved that individual
-prediction most. They explain the model's behaviour; they do not prove fraud or
-show that a feature caused fraud.
+For the second answer, SHAP gives every transformed model feature a signed
+contribution. The scorer orders those contributions by absolute size and keeps
+the strongest five. It keeps the original sign so the dashboard can show the
+direction as well as the importance:
+
+- a **positive** contribution pushed this claim's score toward higher risk;
+- a **negative** contribution pushed it toward lower risk;
+- a larger absolute number had more influence on this prediction than a smaller
+  one.
+
+These are local explanations, meaning they describe this one claim rather than
+the model as a whole. A categorical field may appear as `Country: Ghana` or
+`Country is not Kenya` because the training pipeline turns categories into
+yes/no model columns before making a prediction.
+
+The five reasons explain the model's behaviour; they do not prove fraud, show
+that a feature caused fraud, or replace an investigator's judgement. Likewise,
+a negative contribution is not proof that a claim is genuine. The model only
+helps decide what may deserve closer human review.
 
 Older claims can show a score without current XGBoost/SHAP details if they were
 created before the PostgreSQL assessment history. The interface says so rather
