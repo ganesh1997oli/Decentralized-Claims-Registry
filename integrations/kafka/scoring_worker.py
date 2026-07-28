@@ -20,7 +20,12 @@ from backend.app.blockchain import (
 from backend.app.models import StoredClaimDocument
 from duplicates import CrossInsurerDuplicateDetector, DuplicateCheck
 from integrations.ipfs import IPFSClient
-from integrations.postgres import AssessmentRecord, PostgresAssessmentRepository
+from integrations.postgres import (
+    AssessmentRecord,
+    ClaimFeatureProcessor,
+    ClaimFeatureSnapshot,
+    PostgresAssessmentRepository,
+)
 from model.contracts import FraudScore
 from model.xgboost_scorer import XGBoostFraudScorer
 
@@ -41,6 +46,15 @@ class DuplicateDetector(Protocol):
         event: ClaimSubmittedEvent,
         claim: StoredClaimDocument,
     ) -> DuplicateCheck: ...
+
+
+class FeatureProcessor(Protocol):
+    def process(
+        self,
+        event: ClaimSubmittedEvent,
+        claim: StoredClaimDocument,
+        duplicate_check: DuplicateCheck,
+    ) -> ClaimFeatureSnapshot: ...
 
 
 class AssessmentStore(Protocol):
@@ -88,12 +102,14 @@ class ClaimScoringHandler:
         ipfs: ClaimReader,
         scorer: ClaimScorer,
         duplicate_detector: DuplicateDetector,
+        feature_processor: FeatureProcessor,
         repository: AssessmentStore,
         registry: AssessmentRegistry,
     ) -> None:
         self.ipfs = ipfs
         self.scorer = scorer
         self.duplicate_detector = duplicate_detector
+        self.feature_processor = feature_processor
         self.repository = repository
         self.registry = registry
 
@@ -114,6 +130,11 @@ class ClaimScoringHandler:
         # the same external URL from ever reaching feature extraction.
         claim = StoredClaimDocument.model_validate_json(payload)
         duplicate_check = self.duplicate_detector.check(event, claim)
+        feature_snapshot = self.feature_processor.process(
+            event,
+            claim,
+            duplicate_check,
+        )
 
         record = existing
         if record is None:
@@ -171,6 +192,7 @@ class ClaimScoringHandler:
         print(
             f"[ClaimAssessed] eventId={event.event_id} claimId={event.claim_id} "
             f"model={record.model_version} score={record.fraud_score} "
+            f"features={feature_snapshot.feature_version} "
             f"crossInsurerMatches={len(duplicate_check.matches)}"
         )
 
@@ -186,6 +208,7 @@ def main() -> None:
         ipfs=IPFSClient.from_env(),
         scorer=XGBoostFraudScorer.from_env(),
         duplicate_detector=CrossInsurerDuplicateDetector.from_env(repository),
+        feature_processor=ClaimFeatureProcessor.from_env(repository),
         repository=repository,
         registry=SepoliaClaimsRegistry.from_env(),
     )

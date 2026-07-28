@@ -1,6 +1,7 @@
 """Broker-and-database integration test for the asynchronous scoring workflow."""
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import json
 import os
 import time
@@ -20,6 +21,7 @@ from integrations.kafka import (
     KafkaSettings,
 )
 from integrations.kafka.scoring_worker import ClaimScoringHandler
+from integrations.postgres import ClaimFeatureProcessor
 from model.contracts import FraudReason, FraudScore
 
 
@@ -149,6 +151,7 @@ def claim_payload(insurer_id: str) -> bytes:
 
 def submitted_event(claim_id: int, payload: bytes) -> ClaimSubmittedEvent:
     transaction_hash = f"0x{claim_id:064x}"
+    event_timestamp = int(datetime(2026, 7, 20, tzinfo=UTC).timestamp())
     return ClaimSubmittedEvent.create(
         chain_id=11_155_111,
         contract_address="0x1111111111111111111111111111111111111111",
@@ -160,7 +163,7 @@ def submitted_event(claim_id: int, payload: bytes) -> ClaimSubmittedEvent:
         block_hash=f"0x{(100 + claim_id):064x}",
         transaction_hash=transaction_hash,
         log_index=0,
-        event_timestamp=1_750_000_000 + claim_id,
+        event_timestamp=event_timestamp + claim_id,
     )
 
 
@@ -177,6 +180,10 @@ def test_broker_events_are_scored_and_matched_across_insurers(
         ipfs=PayloadStore(payloads),
         scorer=DeterministicScorer(),
         duplicate_detector=CrossInsurerDuplicateDetector(
+            b"kafka-integration-key-" * 2,
+            postgres_repository,
+        ),
+        feature_processor=ClaimFeatureProcessor(
             b"kafka-integration-key-" * 2,
             postgres_repository,
         ),
@@ -208,6 +215,20 @@ def test_broker_events_are_scored_and_matched_across_insurers(
     assert second_record is not None
     assert first_record.processing_status == "completed"
     assert second_record.processing_status == "completed"
+
+    first_features = postgres_repository.get_feature_snapshot(events[0].event_id)
+    second_features = postgres_repository.get_feature_snapshot(events[1].event_id)
+    assert first_features is not None
+    assert second_features is not None
+    assert first_features.report_delay_days == 7
+    # These claims can land on different Kafka partitions, so either may be
+    # processed first. Exactly the later processed snapshot observes the match.
+    assert sorted(
+        [
+            first_features.cross_insurer_duplicate_match_count,
+            second_features.cross_insurer_duplicate_match_count,
+        ]
+    ) == [0, 1]
 
     first = postgres_repository.get_duplicate_check_for_claim(7)
     second = postgres_repository.get_duplicate_check_for_claim(8)

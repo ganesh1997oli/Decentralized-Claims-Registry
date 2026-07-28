@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from web3 import Web3
@@ -99,6 +100,21 @@ class FakeDuplicateDetector:
         )
 
 
+class FakeFeatureProcessor:
+    def __init__(self):
+        self.calls = []
+
+    def process(self, event, claim, duplicate_check):
+        self.calls.append(
+            (
+                event.claim_id,
+                claim.insurer_id,
+                len(duplicate_check.matches),
+            )
+        )
+        return SimpleNamespace(feature_version="claim-processing-v1")
+
+
 class FakeRepository:
     def __init__(self, record: AssessmentRecord | None = None):
         self.record = record
@@ -165,11 +181,13 @@ def test_worker_scores_persists_and_assesses_one_verified_claim():
     repository = FakeRepository()
     scorer = FakeScorer()
     duplicate_detector = FakeDuplicateDetector()
+    feature_processor = FakeFeatureProcessor()
     registry = FakeRegistry()
     handler = ClaimScoringHandler(
         ipfs=FakeIPFS(payload),
         scorer=scorer,
         duplicate_detector=duplicate_detector,
+        feature_processor=feature_processor,
         repository=repository,
         registry=registry,
     )
@@ -178,6 +196,7 @@ def test_worker_scores_persists_and_assesses_one_verified_claim():
 
     assert scorer.calls == 1
     assert duplicate_detector.calls == [(7, "northstar-mutual")]
+    assert feature_processor.calls == [(7, "northstar-mutual", 0)]
     assert repository.record.processing_status == "completed"
     assert registry.assessments == [(7, 4, 6800)]
     assert repository.completed == (event.event_id, "0xassessment", 101)
@@ -200,10 +219,12 @@ def test_worker_commits_a_duplicate_without_scoring_again():
     )
     ipfs = FakeIPFS(claim_payload())
     scorer = FakeScorer()
+    feature_processor = FakeFeatureProcessor()
     handler = ClaimScoringHandler(
         ipfs=ipfs,
         scorer=scorer,
         duplicate_detector=FakeDuplicateDetector(),
+        feature_processor=feature_processor,
         repository=FakeRepository(record),
         registry=FakeRegistry(status=4, fraud_score=6800),
     )
@@ -212,6 +233,7 @@ def test_worker_commits_a_duplicate_without_scoring_again():
 
     assert ipfs.downloads == 0
     assert scorer.calls == 0
+    assert feature_processor.calls == []
 
 
 def test_worker_recovers_when_chain_write_finished_before_database_update():
@@ -236,6 +258,7 @@ def test_worker_recovers_when_chain_write_finished_before_database_update():
         ipfs=FakeIPFS(payload),
         scorer=FakeScorer(),
         duplicate_detector=FakeDuplicateDetector(),
+        feature_processor=FakeFeatureProcessor(),
         repository=repository,
         registry=registry,
     )
@@ -249,11 +272,13 @@ def test_worker_recovers_when_chain_write_finished_before_database_update():
 def test_worker_rejects_changed_ipfs_bytes_before_scoring():
     payload = claim_payload()
     scorer = FakeScorer()
+    feature_processor = FakeFeatureProcessor()
     repository = FakeRepository()
     handler = ClaimScoringHandler(
         ipfs=FakeIPFS(b"changed"),
         scorer=scorer,
         duplicate_detector=FakeDuplicateDetector(),
+        feature_processor=feature_processor,
         repository=repository,
         registry=FakeRegistry(),
     )
@@ -262,4 +287,5 @@ def test_worker_rejects_changed_ipfs_bytes_before_scoring():
         handler(claim_event(payload))
 
     assert scorer.calls == 0
+    assert feature_processor.calls == []
     assert repository.record is None

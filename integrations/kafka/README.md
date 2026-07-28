@@ -155,8 +155,11 @@ set +a
 python listener/claims_listener.py
 ```
 
-Submit through the React form or `POST /claims`. A successful flow prints
-`KafkaPublished` in the listener and `ClaimAssessed` in the worker.
+Submit through the React form or `POST /claims`. The worker verifies the
+document, performs duplicate screening, saves a versioned PostgreSQL feature
+snapshot, runs XGBoost/SHAP, and writes the assessment. A successful flow prints
+`KafkaPublished` in the listener and `ClaimAssessed` in the worker; the latter
+includes `features=claim-processing-v1`.
 
 The older verification-only consumer remains useful for inspecting events. Do
 not run it with the scorer's consumer-group ID because members of the same Kafka

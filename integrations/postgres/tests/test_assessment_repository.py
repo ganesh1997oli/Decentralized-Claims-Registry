@@ -1,7 +1,11 @@
+from datetime import date
+
 import pytest
 
 from integrations.postgres import (
     AssessmentRecord,
+    ClaimFeatureInput,
+    ClaimFeatureSnapshot,
     DuplicateCheck,
     DuplicateMatch,
     PostgresAssessmentRepository,
@@ -71,6 +75,44 @@ def assessment_record() -> AssessmentRecord:
     )
 
 
+def feature_input() -> ClaimFeatureInput:
+    return ClaimFeatureInput(
+        event_id="11155111:0xtransaction:0",
+        chain_id=11_155_111,
+        contract_address="0xABCDEF",
+        claim_id=7,
+        feature_version="claim-processing-v1",
+        insurer_id="northstar-mutual",
+        policy_fingerprint_version="policy-hmac-sha256-v1",
+        policy_reference_fingerprint="private-policy-hmac",
+        event_timestamp=1_752_969_600,
+        incident_date=date(2026, 7, 13),
+        claim_type="collision",
+        claim_amount_usd=2500.0,
+        policy_premium_usd=500.0,
+        claim_to_premium_ratio=5.0,
+        vehicle_age=6,
+        vehicle_type="sedan",
+        country="Nigeria",
+        region_type="urban",
+        third_party_injury_flag=False,
+        total_loss_flag=False,
+        report_delay_days=7,
+        cross_insurer_duplicate_match_count=1,
+    )
+
+
+def feature_row() -> dict:
+    return {
+        **feature_input().__dict__,
+        "contract_address": "0xabcdef",
+        "prior_policy_claim_count": 2,
+        "prior_insurer_claim_count": 4,
+        "prior_insurer_average_claim_amount_usd": 2000.0,
+        "claim_to_prior_insurer_average_ratio": 1.25,
+    }
+
+
 def test_repository_creates_table_and_index_as_separate_statements():
     connect = FakeConnect()
     repository = PostgresAssessmentRepository(
@@ -80,7 +122,7 @@ def test_repository_creates_table_and_index_as_separate_statements():
 
     repository.ensure_schema()
 
-    assert len(connect.cursor.executions) == 4
+    assert len(connect.cursor.executions) == 6
     assert "CREATE TABLE IF NOT EXISTS claim_assessments" in (
         connect.cursor.executions[0][0]
     )
@@ -90,6 +132,12 @@ def test_repository_creates_table_and_index_as_separate_statements():
     )
     assert "claim_incident_fingerprint_match_idx" in (
         connect.cursor.executions[3][0]
+    )
+    assert "CREATE TABLE IF NOT EXISTS claim_feature_snapshots" in (
+        connect.cursor.executions[4][0]
+    )
+    assert "claim_feature_snapshots_history_idx" in (
+        connect.cursor.executions[5][0]
     )
 
 
@@ -216,6 +264,50 @@ def test_repository_rebuilds_dynamic_duplicate_result_for_a_claim():
     )
     assert connect.cursor.executions[0][1] == (7,)
     assert connect.cursor.executions[1][1][-2:] == (7, "harbour-shield")
+
+
+def test_repository_records_and_returns_a_typed_feature_snapshot():
+    connect = FakeConnect(row=feature_row())
+    repository = PostgresAssessmentRepository(
+        "postgresql://test",
+        connect=connect,
+    )
+
+    snapshot = repository.record_feature_snapshot(feature_input())
+
+    assert snapshot == ClaimFeatureSnapshot(**feature_row())
+    assert len(connect.cursor.executions) == 2
+    assert "pg_advisory_xact_lock" in connect.cursor.executions[0][0]
+    statement, parameters = connect.cursor.executions[1]
+    assert "ON CONFLICT (event_id) DO NOTHING" in statement
+    assert parameters[2] == "0xabcdef"
+    assert parameters[7] == "private-policy-hmac"
+
+
+def test_repository_gets_a_feature_snapshot_by_event_id():
+    connect = FakeConnect(row=feature_row())
+    repository = PostgresAssessmentRepository(
+        "postgresql://test",
+        connect=connect,
+    )
+
+    snapshot = repository.get_feature_snapshot("11155111:0xtransaction:0")
+
+    assert snapshot == ClaimFeatureSnapshot(**feature_row())
+    assert connect.cursor.executions[0][1] == (
+        "11155111:0xtransaction:0",
+    )
+
+
+def test_repository_rejects_a_missing_feature_snapshot_result():
+    connect = FakeConnect()
+    repository = PostgresAssessmentRepository(
+        "postgresql://test",
+        connect=connect,
+    )
+
+    with pytest.raises(PostgresStorageError, match="did not return"):
+        repository.record_feature_snapshot(feature_input())
 
 
 def test_repository_hides_driver_errors_behind_its_interface():
