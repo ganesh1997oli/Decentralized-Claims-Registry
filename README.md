@@ -18,8 +18,8 @@ guides explain both what it does and why it is present.
 - The full claim document does not need to be stored on Ethereum.
 - A Keccak-256 hash can prove whether later IPFS bytes match the submitted claim.
 - Kafka can separate user submission from slower model processing.
-- PostgreSQL can retain detailed model and SHAP context that is unsuitable for a
-  smart contract.
+- PostgreSQL can retain versioned engineered features, model results, and SHAP
+  context that are unsuitable for a smart contract.
 - Sepolia can hold a compact, independently visible lifecycle record.
 
 It does **not** demonstrate a production fraud decision. The model supports
@@ -39,10 +39,12 @@ When a user submits a fictional test claim:
 5. The scoring worker verifies the IPFS bytes again, creates a private keyed
    incident fingerprint, and checks PostgreSQL for matching claims submitted by
    another synthetic insurer.
-6. The worker runs XGBoost, creates claim-specific SHAP reasons, and saves the
+6. The worker derives and saves a versioned PostgreSQL feature snapshot,
+   including report delay, ratios, historical counts, and prior averages.
+7. The worker runs XGBoost, creates claim-specific SHAP reasons, and saves the
    result in PostgreSQL.
-7. The worker writes `UnderReview` or `Flagged` and the score to Sepolia.
-8. The React interface polls FastAPI for the assessment and displays the score,
+8. The worker writes `UnderReview` or `Flagged` and the score to Sepolia.
+9. The React interface polls FastAPI for the assessment and displays the score,
    duplicate-review result, reasons, transaction, and paginated contract state.
 
 The application has one scoring path: the listener and Kafka worker perform
@@ -56,7 +58,7 @@ React ──► FastAPI ──► IPFS + Sepolia claim anchor
                  listener ──► Kafka
                                 │
                                 ▼
-                    duplicate check + XGBoost + SHAP
+              duplicate check + feature processing + XGBoost/SHAP
                                 │
                          PostgreSQL audit
                                 │
@@ -76,7 +78,7 @@ React ──► FastAPI ──► IPFS + Sepolia claim anchor
 | `listener/` | Blockchain event polling, verification and checkpoints | [Listener guide](listener/README.md) |
 | `integrations/ipfs/` | Shared Pinata and IPFS adapter | [IPFS guide](integrations/ipfs/README.md) |
 | `integrations/kafka/` | Kafka messages, producer, consumer and local broker | [Kafka guide](integrations/kafka/README.md) |
-| `integrations/postgres/` | Idempotent assessment and explanation storage | [PostgreSQL guide](integrations/postgres/README.md) |
+| `integrations/postgres/` | Versioned feature, duplicate, and assessment storage | [PostgreSQL guide](integrations/postgres/README.md) |
 
 ## Current Sepolia deployment
 
