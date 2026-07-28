@@ -3,11 +3,8 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
-import os
 import time
-from uuid import uuid4
 
-from confluent_kafka.admin import AdminClient, NewTopic
 import pytest
 from web3 import Web3
 
@@ -18,7 +15,6 @@ from integrations.kafka import (
     ClaimSubmittedEvent,
     KafkaClaimEventConsumer,
     KafkaClaimEventPublisher,
-    KafkaSettings,
 )
 from integrations.kafka.scoring_worker import ClaimScoringHandler
 from integrations.postgres import ClaimFeatureProcessor
@@ -26,43 +22,6 @@ from model.contracts import FraudReason, FraudScore
 
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture
-def kafka_settings():
-    """Create an isolated topic and consumer group on an explicit test broker."""
-
-    bootstrap_servers = os.environ.get(
-        "TEST_KAFKA_BOOTSTRAP_SERVERS",
-        "",
-    ).strip()
-    if not bootstrap_servers:
-        pytest.skip(
-            "set TEST_KAFKA_BOOTSTRAP_SERVERS to run Kafka integration tests"
-        )
-
-    identity = uuid4().hex
-    topic = f"claims.integration.{identity}"
-    admin = AdminClient({"bootstrap.servers": bootstrap_servers})
-    create_future = admin.create_topics(
-        [NewTopic(topic, num_partitions=2, replication_factor=1)]
-    )[topic]
-    create_future.result(timeout=15)
-    settings = KafkaSettings.from_mapping(
-        {
-            "KAFKA_ENABLED": "true",
-            "KAFKA_BOOTSTRAP_SERVERS": bootstrap_servers,
-            "KAFKA_CLAIM_SUBMITTED_TOPIC": topic,
-            "KAFKA_CONSUMER_GROUP_ID": f"claims-integration-{identity}",
-            "KAFKA_DELIVERY_TIMEOUT_MS": "10000",
-            "KAFKA_CONSUMER_POLL_SECONDS": "0.5",
-        }
-    )
-    try:
-        yield settings
-    finally:
-        delete_future = admin.delete_topics([topic], operation_timeout=10)[topic]
-        delete_future.result(timeout=15)
 
 
 class PayloadStore:
