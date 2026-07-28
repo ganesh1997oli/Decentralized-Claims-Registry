@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+
+FROM node:24-alpine AS build
+
+WORKDIR /frontend
+
+# Installing from the lock file produces the same frontend dependencies on the
+# VM and in CI. Copying it separately also improves Docker's build cache.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+
+# The browser calls the same public host under /api. Nginx privately forwards
+# those requests to FastAPI, so port 8000 never needs to face the internet.
+ARG VITE_API_BASE_URL=/api
+ARG VITE_IPFS_GATEWAY=https://gateway.pinata.cloud/ipfs
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL} \
+    VITE_IPFS_GATEWAY=${VITE_IPFS_GATEWAY}
+
+RUN npm run build
+
+FROM nginx:1.29-alpine
+
+COPY deploy/gcp/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /frontend/dist /usr/share/nginx/html
+
+EXPOSE 8080
+
+# The health check uses a page that does not contact FastAPI, Sepolia or IPFS.
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD wget --quiet --spider http://127.0.0.1:8080/healthz || exit 1

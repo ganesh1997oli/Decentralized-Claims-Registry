@@ -4,6 +4,7 @@ from backend.app.blockchain import (
 )
 from backend.app.models import ClaimSubmission
 from backend.app.service import (
+    ClaimQueryService,
     ClaimSubmissionService,
     ClaimSubmissionServiceError,
     canonical_claim_bytes,
@@ -127,10 +128,7 @@ def test_service_refuses_to_anchor_corrupt_ipfs_round_trip():
 
 
 def test_service_lists_current_claim_state():
-    service = ClaimSubmissionService(
-        ipfs=FakeIPFS(),
-        registry=FakeRegistry(),
-    )
+    service = ClaimQueryService(registry=FakeRegistry())
 
     claims = service.list_claims(page=1, page_size=10)
 

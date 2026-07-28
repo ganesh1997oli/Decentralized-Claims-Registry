@@ -14,7 +14,6 @@ on an in-memory event filter. Configuration and run instructions live in
 import json
 import os
 import sys
-import time
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -37,6 +36,7 @@ from integrations.kafka import (
     KafkaSettings,
     create_publisher,
 )
+from observability import ListenerMetrics, ShutdownSignal
 
 # If you hit an "extraData" validation error on Sepolia, uncomment these:
 # from web3.middleware import ExtraDataToPOAMiddleware
@@ -104,12 +104,20 @@ class ClaimEventProcessor:
         contract: Any,
         ipfs: ClaimPayloadReader,
         publisher: ClaimEventPublisher | None,
+        metrics: ListenerMetrics | None = None,
     ) -> None:
+        """Keep the external adapters needed to process confirmed logs.
+
+        Metrics are optional so the same processor stays lightweight in local
+        scripts and tests. The cloud entry point supplies them explicitly.
+        """
+
         self.chain_id = chain_id
         self.contract_address = contract_address
         self.contract = contract
         self.ipfs = ipfs
         self.publisher = publisher
+        self.metrics = metrics
 
     def process_range(self, from_block: int, to_block: int) -> None:
         """Handle all watched logs in canonical blockchain order."""
@@ -182,6 +190,8 @@ class ClaimEventProcessor:
         )
 
         if self.publisher is None:
+            if self.metrics is not None:
+                self.metrics.observe_event("claim_submitted")
             return
 
         # The event ID is derived from the immutable chain log. Replaying the
@@ -200,13 +210,18 @@ class ClaimEventProcessor:
             event_timestamp=args["timestamp"],
         )
         self.publisher.publish(claim_event)
+        # Count this event only after the producer has received Kafka's
+        # acknowledgement. A failed attempt remains visible through the poll
+        # error metric and will be retried from the durable block checkpoint.
+        if self.metrics is not None:
+            self.metrics.observe_event("claim_submitted")
+            self.metrics.observe_kafka_publication()
         print(
             f"[KafkaPublished] eventId={claim_event.event_id} "
             f"topic={self.publisher.topic}"
         )
 
-    @staticmethod
-    def _handle_claim_assessed(event: Any) -> None:
+    def _handle_claim_assessed(self, event: Any) -> None:
         args = event["args"]
         raw_status = args["newStatus"]
         status = (
@@ -220,6 +235,8 @@ class ClaimEventProcessor:
             f"({args['fraudScore'] / 100:.2f}%) assessor={args['assessor']} "
             f"block={event['blockNumber']} tx={hx(event['transactionHash'])}"
         )
+        if self.metrics is not None:
+            self.metrics.observe_event("claim_assessed")
 
 
 class ConfirmedBlockPoller:
@@ -251,6 +268,12 @@ class ConfirmedBlockPoller:
 
 
 def main():
+    # Metrics contain no claimant data. The Ops Agent reads this private
+    # endpoint on the VM and forwards the samples to Cloud Monitoring.
+    metrics = ListenerMetrics.start_from_env()
+    shutdown = ShutdownSignal()
+    shutdown.install()
+
     contract_address, abi = load_deployment(IGNITION_DIR, MODULE_ID)
     w3 = Web3(Web3.HTTPProvider(RPC_URL))
     # If Sepolia reports an extraData validation error, inject
@@ -275,6 +298,7 @@ def main():
         contract=contract,
         ipfs=IPFSClient.from_env(),
         publisher=claim_event_publisher,
+        metrics=metrics,
     )
     poller = ConfirmedBlockPoller(
         processor=processor,
@@ -299,17 +323,25 @@ def main():
     print(f"Listener checkpoint: {state_path} (last block {last_processed})")
 
     try:
-        while True:
+        while not shutdown.is_set():
             try:
                 latest = w3.eth.block_number
                 last_processed = poller.process_latest(
                     latest_block=latest,
                     last_processed=last_processed,
                 )
+                metrics.observe_poll(
+                    latest_block=latest,
+                    last_processed_block=last_processed,
+                    confirmation_blocks=CONFIRMATION_BLOCKS,
+                )
             except Exception as exc:
                 # RPC, IPFS and Kafka failures all retry from the saved checkpoint.
+                metrics.observe_poll_error()
                 print(f"Polling error (will retry): {exc}")
-            time.sleep(POLL_INTERVAL)
+            # Unlike time.sleep, this returns immediately when Docker asks the
+            # container to stop, making normal deployments quick and predictable.
+            shutdown.wait(POLL_INTERVAL)
     finally:
         if claim_event_publisher is not None:
             claim_event_publisher.close()

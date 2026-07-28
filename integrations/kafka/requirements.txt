@@ -1,2 +1,4 @@
 # Confluent's maintained Python client includes the librdkafka runtime.
+-r ../../observability/requirements.txt
+
 confluent-kafka>=2.15,<3.0

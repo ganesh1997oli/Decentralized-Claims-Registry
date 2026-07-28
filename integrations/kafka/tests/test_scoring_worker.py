@@ -4,14 +4,21 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from prometheus_client import generate_latest
 from web3 import Web3
 
 from backend.app.blockchain import ChainAssessment, ChainClaim
+from backend.app.models import StoredClaimDocument
 from duplicates import DuplicateCheck
 from integrations.kafka import ClaimSubmittedEvent
-from integrations.kafka.scoring_worker import ClaimScoringHandler
+from integrations.kafka.scoring_worker import (
+    ClaimScoringHandler,
+    MonitoredClaimHandler,
+    MonitoredScorer,
+)
 from integrations.postgres import AssessmentRecord
 from model.contracts import FraudReason, FraudScore
+from observability import ScoringMetrics
 
 
 def claim_payload() -> bytes:
@@ -289,3 +296,59 @@ def test_worker_rejects_changed_ipfs_bytes_before_scoring():
     assert scorer.calls == 0
     assert feature_processor.calls == []
     assert repository.record is None
+
+
+def test_monitored_scorer_records_only_model_work(monkeypatch):
+    monkeypatch.delenv("METRICS_PORT", raising=False)
+    metrics = ScoringMetrics.start_from_env()
+    # Two deterministic clock values make the test independent of machine speed.
+    clock_values = iter((10.0, 10.25))
+    scorer = MonitoredScorer(
+        FakeScorer(),
+        metrics,
+        clock=lambda: next(clock_values),
+    )
+
+    score = scorer.score(
+        # Use the real schema parser so the wrapper is tested with the object it
+        # receives in the running worker.
+        StoredClaimDocument.model_validate_json(claim_payload())
+    )
+
+    output = generate_latest(metrics.registry).decode("utf-8")
+    assert score.probability == 0.68
+    assert "claims_scoring_model_inference_seconds_sum 0.25" in output
+    assert "claims_scoring_last_probability 0.68" in output
+
+
+def test_monitored_handler_records_success_and_failure(monkeypatch):
+    monkeypatch.delenv("METRICS_PORT", raising=False)
+    metrics = ScoringMetrics.start_from_env()
+    successful_clock = iter((20.0, 20.5))
+    seen = []
+    handler = MonitoredClaimHandler(
+        lambda event: seen.append(event.event_id),
+        metrics,
+        clock=lambda: next(successful_clock),
+    )
+
+    event = claim_event()
+    handler(event)
+
+    failing_clock = iter((30.0, 31.0))
+
+    def fail(_event):
+        raise RuntimeError("temporary dependency failure")
+
+    failing_handler = MonitoredClaimHandler(
+        fail,
+        metrics,
+        clock=lambda: next(failing_clock),
+    )
+    with pytest.raises(RuntimeError, match="temporary dependency"):
+        failing_handler(event)
+
+    output = generate_latest(metrics.registry).decode("utf-8")
+    assert seen == [event.event_id]
+    assert 'claims_scoring_events_total{outcome="completed"} 1.0' in output
+    assert 'claims_scoring_events_total{outcome="failed"} 1.0' in output

@@ -57,7 +57,7 @@ Backend settings:
 | Variable | Required | Purpose |
 | --- | :---: | --- |
 | `SEPOLIA_RPC_URL` | Yes | RPC endpoint for Ethereum Sepolia |
-| `SEPOLIA_PRIVATE_KEY` | Yes | Fresh Sepolia-only signer authorized as an assessor |
+| `SEPOLIA_PRIVATE_KEY` | Writes | Fresh Sepolia-only signer used for claim submission |
 | `MODULE_ID` | No | Ignition artifact ID; defaults to `ClaimsRegistryModule#ClaimsRegistry` |
 | `IGNITION_DIR` | No | Alternative Ignition deployment directory |
 | `RECEIPT_TIMEOUT` | No | Seconds to wait for a transaction receipt |
@@ -69,8 +69,14 @@ IPFS settings:
 
 | Variable | Required | Purpose |
 | --- | :---: | --- |
-| `PINATA_JWT` | Yes | Server-side Pinata upload credential |
+| `PINATA_JWT` | Writes | Server-side Pinata upload credential |
 | `IPFS_GATEWAY` | No | Gateway used for the upload round-trip check |
+
+The claims list is a public blockchain read. It needs the Sepolia RPC URL and
+deployment artifact, but deliberately does not load the wallet key or Pinata
+token. Submitting a new claim still requires both write credentials. If required
+configuration is missing, FastAPI returns a structured JSON `503` response
+instead of an unexplained plain `500`.
 
 Never commit `.env.local`. The signer must contain test ETH. The worker signer
 must also have assessor permission in the deployed contract.

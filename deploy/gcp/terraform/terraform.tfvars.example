@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars and set the ID of a dedicated Free Trial project.
+project_id = "CHANGE_ME_FREE_TRIAL_PROJECT_ID"
+
+# These defaults are repeated here so the deployment decision is visible during
+# review. e2-standard-2 is intentionally not an always-free VM; run it only
+# under the non-billable Free Trial and destroy it after collecting evidence.
+region       = "us-central1"
+zone         = "us-central1-a"
+machine_type = "e2-standard-2"

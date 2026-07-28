@@ -1,0 +1,20 @@
+# Keep Docker's build context small and, more importantly, keep local secrets
+# and machine-specific state out of image layers.
+.git
+.github
+.env*
+!.env.example
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.coverage
+**/coverage-html
+frontend/dist
+contract/cache
+contract/artifacts
+model/artifacts
+model/data
+model/notebooks
+deploy/gcp/evidence
+*.docx

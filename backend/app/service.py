@@ -32,6 +32,10 @@ class ClaimSubmissionServiceError(RuntimeError):
     """Raised when the complete IPFS and blockchain operation cannot finish."""
 
 
+class ClaimQueryServiceError(RuntimeError):
+    """Raised when the public claims registry cannot be read."""
+
+
 class IPFSStore(Protocol):
     def upload_bytes(
         self, payload: bytes, *, filename: str, content_type: str
@@ -40,9 +44,11 @@ class IPFSStore(Protocol):
     def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes: ...
 
 
-class ClaimsRegistry(Protocol):
+class ClaimsRegistryWriter(Protocol):
     def submit_claim(self, claim_hash: bytes, data_pointer: str) -> ChainSubmission: ...
 
+
+class ClaimsRegistryReader(Protocol):
     def list_claims(
         self, *, page: int, page_size: int
     ) -> tuple[list[ChainClaim], int]: ...
@@ -59,6 +65,76 @@ def canonical_claim_bytes(claim: ClaimSubmission) -> bytes:
     ).encode("utf-8")
 
 
+class ClaimQueryService:
+    """Read public claim history without receiving upload or wallet credentials.
+
+    A blockchain registry is public by design. Keeping this small read service
+    separate from submission means opening the dashboard cannot accidentally
+    gain access to the Pinata token or transaction-signing account.
+    """
+
+    def __init__(self, *, registry: ClaimsRegistryReader) -> None:
+        self.registry = registry
+
+    @classmethod
+    def from_env(cls) -> "ClaimQueryService":
+        """Build the read-only Sepolia client from public configuration."""
+
+        try:
+            return cls(
+                registry=SepoliaClaimsRegistry.from_env(require_private_key=False)
+            )
+        except (BlockchainSubmissionError, ValueError) as exc:
+            raise ClaimQueryServiceError(str(exc)) from exc
+
+    def list_claims(self, *, page: int, page_size: int) -> ClaimPageResponse:
+        """Build one browser page from the current public contract state."""
+
+        # Solidity stores statuses as compact enum numbers. Translate them at
+        # this boundary so the browser works with understandable domain words.
+        status_names = [
+            "Submitted",
+            "UnderReview",
+            "Approved",
+            "Rejected",
+            "Flagged",
+        ]
+        try:
+            claims, total_items = self.registry.list_claims(
+                page=page, page_size=page_size
+            )
+        except BlockchainSubmissionError as exc:
+            raise ClaimQueryServiceError(str(exc)) from exc
+
+        items = [
+            ClaimListItemResponse(
+                claim_id=claim.claim_id,
+                claimant=claim.claimant,
+                claim_hash=claim.claim_hash,
+                data_pointer=claim.data_pointer,
+                status=(
+                    status_names[claim.status]
+                    if 0 <= claim.status < len(status_names)
+                    else f"Unknown({claim.status})"
+                ),
+                fraud_score=claim.fraud_score,
+                submitted_at=claim.submitted_at,
+                updated_at=claim.updated_at,
+            )
+            for claim in claims
+        ]
+        # Integer division rounds down. Adding page_size - 1 accounts for a
+        # partially filled final page without using floating-point arithmetic.
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+        return ClaimPageResponse(
+            items=items,
+            page=page,
+            page_size=page_size,
+            total_items=total_items,
+            total_pages=total_pages,
+        )
+
+
 class ClaimSubmissionService:
     """Store and anchor a claim before asynchronous assessment begins."""
 
@@ -66,7 +142,7 @@ class ClaimSubmissionService:
         self,
         *,
         ipfs: IPFSStore,
-        registry: ClaimsRegistry,
+        registry: ClaimsRegistryWriter,
     ) -> None:
         self.ipfs = ipfs
         self.registry = registry
@@ -121,51 +197,4 @@ class ClaimSubmissionService:
             data_pointer=data_pointer,
             claim_hash=claim_hash.hex(),
             assessment=None,
-        )
-
-    def list_claims(self, *, page: int, page_size: int) -> ClaimPageResponse:
-        """Build one dashboard page from the current contract state."""
-
-        # The contract stores compact enum numbers. Translate them here so the
-        # browser receives domain words rather than Solidity implementation data.
-        status_names = [
-            "Submitted",
-            "UnderReview",
-            "Approved",
-            "Rejected",
-            "Flagged",
-        ]
-        try:
-            claims, total_items = self.registry.list_claims(
-                page=page, page_size=page_size
-            )
-        except BlockchainSubmissionError as exc:
-            raise ClaimSubmissionServiceError(str(exc)) from exc
-
-        items = [
-            ClaimListItemResponse(
-                claim_id=claim.claim_id,
-                claimant=claim.claimant,
-                claim_hash=claim.claim_hash,
-                data_pointer=claim.data_pointer,
-                status=(
-                    status_names[claim.status]
-                    if 0 <= claim.status < len(status_names)
-                    else f"Unknown({claim.status})"
-                ),
-                fraud_score=claim.fraud_score,
-                submitted_at=claim.submitted_at,
-                updated_at=claim.updated_at,
-            )
-            for claim in claims
-        ]
-        # Integer division rounds down, so adding page_size - 1 gives us the
-        # correct page count when the final page is only partly full.
-        total_pages = max(1, (total_items + page_size - 1) // page_size)
-        return ClaimPageResponse(
-            items=items,
-            page=page,
-            page_size=page_size,
-            total_items=total_items,
-            total_pages=total_pages,
         )

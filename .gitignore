@@ -8,3 +8,16 @@ coverage-html/
 .env
 .env.*
 !.env.example
+!deploy/gcp/.env.gcp.example
+
+# Terraform state can contain infrastructure details and is specific to one
+# Google Cloud project. Keep only the human-readable example variables in Git.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+# Evidence bundles contain run-specific host names and transaction identifiers.
+# Review them before deliberately copying selected results into the dissertation.
+deploy/gcp/evidence/

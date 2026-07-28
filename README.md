@@ -79,6 +79,7 @@ React ──► FastAPI ──► IPFS + Sepolia claim anchor
 | `integrations/ipfs/` | Shared Pinata and IPFS adapter | [IPFS guide](integrations/ipfs/README.md) |
 | `integrations/kafka/` | Kafka messages, producer, consumer and local broker | [Kafka guide](integrations/kafka/README.md) |
 | `integrations/postgres/` | Versioned feature, duplicate, and assessment storage | [PostgreSQL guide](integrations/postgres/README.md) |
+| `deploy/gcp/` | Single-VM Google Cloud research deployment and monitoring | [Google Cloud guide](deploy/gcp/README.md) |
 
 ## Current Sepolia deployment
 
@@ -150,6 +151,10 @@ Open `.env.local` and add:
 
 - `SEPOLIA_PRIVATE_KEY`: a fresh testnet-only wallet key;
 - `PINATA_JWT`: a server-side Pinata upload token.
+
+Those two credentials are needed for submission, not for browsing the public
+claims list. The read-only API path intentionally creates a client without
+loading either secret.
 
 The example contains a fictional-data-only `DUPLICATE_FINGERPRINT_KEY`. Replace
 it with a secret value of at least 32 bytes before hosting the worker. Keep the
