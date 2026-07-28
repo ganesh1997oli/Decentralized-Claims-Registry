@@ -45,6 +45,11 @@ CATEGORY_LABELS = {
     "region_type_": "Region type",
 }
 
+# The dissertation proposal commits to showing five claim-specific reasons to
+# an investigator. Keeping the limit named makes any future change to that
+# user-facing contract deliberate and easy to find.
+SHAP_REASON_LIMIT = 5
+
 
 class ScorableMotorClaim(Protocol):
     """The small claim interface required by the research scorer."""
@@ -225,7 +230,9 @@ class XGBoostFraudScorer:
         # Absolute magnitude finds the features that moved this particular result
         # most. A contribution may push risk up or down; SHAP explains the model,
         # not whether fraud actually occurred.
-        strongest = np.argsort(np.abs(contributions))[::-1][:3]
+        # NumPy slicing returns all available features if an older artifact
+        # happens to contain fewer than SHAP_REASON_LIMIT features.
+        strongest = np.argsort(np.abs(contributions))[::-1][:SHAP_REASON_LIMIT]
         reasons = tuple(
             FraudReason(
                 feature=str(self.feature_names[index]),

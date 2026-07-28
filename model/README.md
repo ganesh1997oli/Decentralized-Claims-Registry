@@ -77,7 +77,7 @@ Training now saves an artifact schema containing:
 `XGBoostFraudScorer` verifies the checksum before loading the trusted joblib
 file. It loads the pipeline and SHAP explainer once, enriches each claim with
 the reviewed country reference value, and returns the stable `FraudScore`
-interface with three claim-specific SHAP reasons.
+interface with five claim-specific SHAP reasons.
 
 The artifact location and optional checksum live in the shared root
 configuration:

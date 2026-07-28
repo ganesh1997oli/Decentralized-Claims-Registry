@@ -346,7 +346,7 @@ probability 0.2466 = 24.66% = on-chain score 2,466 / 10,000
 threshold   0.4700 = 47.00% = threshold score 4,700 / 10,000
 ```
 
-The three displayed SHAP indicators are the features that moved that individual
+The five displayed SHAP indicators are the features that moved that individual
 prediction most. They explain the model's behaviour; they do not prove fraud or
 show that a feature caused fraud.
 

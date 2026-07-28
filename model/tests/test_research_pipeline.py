@@ -147,7 +147,10 @@ def test_saved_artifact_scores_one_claim_with_local_shap(tmp_path: Path):
     assert metadata["market_claim_frequency_by_country"]["Ghana"] == 35
     assert 0 <= result.probability <= 1
     assert result.model_version == "african-motor-xgboost-v1"
-    assert len(result.reasons) == 3
+    # The proposal promises five investigator-facing explanations for every
+    # score.  Keep that observable contract explicit so a presentation-only
+    # change cannot silently reduce the research deliverable again.
+    assert len(result.reasons) == 5
 
 
 def test_scorer_refuses_a_model_that_changed_after_review(tmp_path: Path):
