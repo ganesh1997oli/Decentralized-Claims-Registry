@@ -183,6 +183,17 @@ TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
   python -m pytest -m integration
 ```
 
+The integration suite covers three distinct boundaries:
+
+- a Kafka producer/consumer schema round trip;
+- the Week 5 bridge from a simulated confirmed blockchain log, through the real
+  `ClaimEventProcessor`, into a real Kafka topic; and
+- the downstream Kafka/PostgreSQL scoring and cross-insurer matching workflow.
+
+The listener bridge keeps Sepolia and IPFS deterministic so CI does not depend
+on public services, but it uses the production listener processor, publisher,
+message schema and consumer unchanged.
+
 ## Stop local infrastructure
 
 ```bash
