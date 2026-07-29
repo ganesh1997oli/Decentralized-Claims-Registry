@@ -127,6 +127,7 @@ def test_read_only_factory_does_not_require_or_load_a_private_key(monkeypatch):
             ignition_dir,
             module_id,
             receipt_timeout,
+            private_key_env,
         ):
             captured.update(
                 rpc_url=rpc_url,
@@ -134,10 +135,11 @@ def test_read_only_factory_does_not_require_or_load_a_private_key(monkeypatch):
                 ignition_dir=ignition_dir,
                 module_id=module_id,
                 receipt_timeout=receipt_timeout,
+                private_key_env=private_key_env,
             )
 
     monkeypatch.setenv("SEPOLIA_RPC_URL", "https://rpc.example.test")
-    monkeypatch.delenv("SEPOLIA_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("SEPOLIA_SUBMITTER_PRIVATE_KEY", raising=False)
 
     registry = ReadOnlyProbe.from_env(require_private_key=False)
 
@@ -150,12 +152,12 @@ def test_write_factory_still_requires_a_private_key(monkeypatch):
     """Transaction-capable clients must fail closed when no signer is supplied."""
 
     monkeypatch.setenv("SEPOLIA_RPC_URL", "https://rpc.example.test")
-    monkeypatch.delenv("SEPOLIA_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("SEPOLIA_SUBMITTER_PRIVATE_KEY", raising=False)
 
     try:
         SepoliaClaimsRegistry.from_env()
     except BlockchainSubmissionError as exc:
-        assert "SEPOLIA_PRIVATE_KEY" in str(exc)
+        assert "SEPOLIA_SUBMITTER_PRIVATE_KEY" in str(exc)
     else:
         raise AssertionError("Expected the write-capable factory to require a key")
 

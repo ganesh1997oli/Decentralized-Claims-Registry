@@ -1,16 +1,15 @@
 """Drive the full IPFS-backed claim loop from Python.
 
-Play both roles for demonstration:
+Exercise both least-privilege roles for demonstration:
 
-1. claimant: upload a synthetic claim to IPFS, then submitClaim(hash, pointer)
+1. submitter: upload a synthetic claim to IPFS, then submitClaim(hash, pointer)
 2. assessor: assessClaim(claimId, status, fraudScore) <- the write-back
 
-The script signs raw transactions with SEPOLIA_PRIVATE_KEY. On Sepolia the key
-must hold test ETH and must be authorized as an assessor. The Ignition module
-authorizes the deployer, so the deploying key works for this demo.
+The two transactions are deliberately signed by different role accounts.
 
 Env vars:
-SEPOLIA_PRIVATE_KEY required. NEVER commit or hardcode it.
+SEPOLIA_SUBMITTER_PRIVATE_KEY required when submitting a new claim.
+SEPOLIA_ASSESSOR_PRIVATE_KEY required for assessment.
 PINATA_JWT required. Pinata token with public Files write access.
 SEPOLIA_RPC_URL defaults to http://127.0.0.1:8545.
 IPFS_GATEWAY defaults to https://gateway.pinata.cloud/ipfs.
@@ -79,48 +78,63 @@ if not w3.is_connected():
 CONTRACT_ADDRESS, ABI = load_deployment(IGNITION_DIR, MODULE_ID)
 contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=ABI)
 
-private_key = os.environ.get("SEPOLIA_PRIVATE_KEY")
-if not private_key:
-    raise SystemExit("SEPOLIA_PRIVATE_KEY is required to sign the demo transactions")
+assessor_private_key = os.environ.get("SEPOLIA_ASSESSOR_PRIVATE_KEY")
+if not assessor_private_key:
+    raise SystemExit(
+        "SEPOLIA_ASSESSOR_PRIVATE_KEY is required to sign the assessment"
+    )
+assessor_account = w3.eth.account.from_key(assessor_private_key)
 
-acct = w3.eth.account.from_key(private_key)
-print(f"Using account {acct.address} against {CONTRACT_ADDRESS} via {RPC_URL}")
+submitter_account = None
+if args.assess_existing is None:
+    submitter_private_key = os.environ.get("SEPOLIA_SUBMITTER_PRIVATE_KEY")
+    if not submitter_private_key:
+        raise SystemExit(
+            "SEPOLIA_SUBMITTER_PRIVATE_KEY is required to submit a new claim"
+        )
+    submitter_account = w3.eth.account.from_key(submitter_private_key)
 
-next_nonce: int | None = None
+print(f"Contract {CONTRACT_ADDRESS} via {RPC_URL}")
+if submitter_account is not None:
+    print(f"Submitter account: {submitter_account.address}")
+print(f"Assessor account: {assessor_account.address}")
+
+next_nonces: dict[str, int] = {}
 
 
-def send(fn):
+def send(fn, account):
     """Sign one contract call, send it, and wait for its receipt."""
-    global next_nonce
 
     # Public RPC services can briefly return an old transaction count. Read the
-    # pending nonce once, then keep track of the next value in this script.
-    if next_nonce is None:
-        next_nonce = w3.eth.get_transaction_count(acct.address, "pending")
+    # pending nonce once per role, then keep track of each account independently.
+    if account.address not in next_nonces:
+        next_nonces[account.address] = w3.eth.get_transaction_count(
+            account.address, "pending"
+        )
 
     for attempt in range(2):
-        nonce = next_nonce
+        nonce = next_nonces[account.address]
         tx = fn.build_transaction(
             {
-                "from": acct.address,
+                "from": account.address,
                 "nonce": nonce,
                 "chainId": w3.eth.chain_id,
             }
         )
-        signed = acct.sign_transaction(tx)
+        signed = account.sign_transaction(tx)
         try:
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
         except Web3RPCError as exc:
             match = re.search(r"next nonce\s+(\d+)", str(exc), re.IGNORECASE)
             if attempt == 0 and match and int(match.group(1)) > nonce:
-                next_nonce = int(match.group(1))
+                next_nonces[account.address] = int(match.group(1))
                 print(
                     f"RPC nonce was stale ({nonce}); retrying with "
-                    f"nonce {next_nonce} ..."
+                    f"nonce {next_nonces[account.address]} ..."
                 )
                 continue
             raise
-        next_nonce = nonce + 1
+        next_nonces[account.address] = nonce + 1
         break
 
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
@@ -176,7 +190,10 @@ if args.assess_existing is None:
     print(f"IPFS round-trip: PASSED ({len(payload)} bytes)")
 
     print(f"Submitting claim #{claim_id} ...")
-    r1 = send(contract.functions.submitClaim(claim_hash, data_pointer))
+    r1 = send(
+        contract.functions.submitClaim(claim_hash, data_pointer),
+        submitter_account,
+    )
     print(f" mined in block {r1['blockNumber']}")
 
     # Ask the contract to confirm that these exact bytes produce its saved hash.
@@ -202,7 +219,10 @@ else:
 # Step 2: write a fixed demonstration assessment to the contract.
 fraud_score = 8500  # basis points = 85.00%
 print(f"Assessing claim #{claim_id} as Flagged with score {fraud_score} ...")
-r2 = send(contract.functions.assessClaim(claim_id, FLAGGED, fraud_score))
+r2 = send(
+    contract.functions.assessClaim(claim_id, FLAGGED, fraud_score),
+    assessor_account,
+)
 print(f" mined in block {r2['blockNumber']}")
 
 # Step 3: read the claim again to show its final saved state.

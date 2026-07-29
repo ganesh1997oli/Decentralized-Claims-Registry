@@ -5,6 +5,7 @@ from .client import (
     PINATA_UPLOAD_URL,
     IPFSClient,
     IPFSError,
+    InvalidIPFSPointer,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "PINATA_UPLOAD_URL",
     "IPFSClient",
     "IPFSError",
+    "InvalidIPFSPointer",
 ]

@@ -152,7 +152,9 @@ class ClaimSubmissionService:
         try:
             return cls(
                 ipfs=IPFSClient.from_env(require_upload=True),
-                registry=SepoliaClaimsRegistry.from_env(),
+                registry=SepoliaClaimsRegistry.from_env(
+                    private_key_env="SEPOLIA_SUBMITTER_PRIVATE_KEY"
+                ),
             )
         except (IPFSError, BlockchainSubmissionError, ValueError) as exc:
             raise ClaimSubmissionServiceError(str(exc)) from exc

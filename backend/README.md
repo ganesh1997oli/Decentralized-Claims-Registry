@@ -43,8 +43,8 @@ Create the shared local file from the repository root:
 cp .env.example .env.local
 ```
 
-Add the Sepolia private key and Pinata JWT, then load that same file before
-running FastAPI:
+Add the separate Sepolia submitter and assessor keys plus the Pinata JWT, then
+load that same file before running FastAPI and the worker:
 
 ```bash
 set -a
@@ -57,7 +57,8 @@ Backend settings:
 | Variable | Required | Purpose |
 | --- | :---: | --- |
 | `SEPOLIA_RPC_URL` | Yes | RPC endpoint for Ethereum Sepolia |
-| `SEPOLIA_PRIVATE_KEY` | Writes | Fresh Sepolia-only signer used for claim submission |
+| `SEPOLIA_SUBMITTER_PRIVATE_KEY` | Writes | Sepolia-only account granted `SUBMITTER_ROLE` |
+| `SEPOLIA_ASSESSOR_PRIVATE_KEY` | Worker | Separate Sepolia-only account granted `ASSESSOR_ROLE` for that submitter |
 | `MODULE_ID` | No | Ignition artifact ID; defaults to `ClaimsRegistryModule#ClaimsRegistry` |
 | `IGNITION_DIR` | No | Alternative Ignition deployment directory |
 | `RECEIPT_TIMEOUT` | No | Seconds to wait for a transaction receipt |
@@ -78,8 +79,8 @@ token. Submitting a new claim still requires both write credentials. If required
 configuration is missing, FastAPI returns a structured JSON `503` response
 instead of an unexplained plain `500`.
 
-Never commit `.env.local`. The signer must contain test ETH. The worker signer
-must also have assessor permission in the deployed contract.
+Never commit `.env.local`. Write accounts need test ETH and only their intended
+contract role. The deployment/admin key is not an application setting.
 
 ## Run
 
@@ -157,7 +158,8 @@ python -m pytest backend/tests -q
 
 - The claims list reads contract state directly and is suitable only for this
   small testnet demonstration.
-- One process-level wallet submits and assesses every claim.
+- The prototype uses process-level wallets rather than a managed signing
+  service; submission and assessment are nevertheless separated.
 - IPFS content is public and unencrypted.
 - The XGBoost model is trained on synthetic data, not real insurance records.
 - Duplicate detection uses exact normalized incident fields. It produces review

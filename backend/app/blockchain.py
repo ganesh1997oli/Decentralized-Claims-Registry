@@ -92,6 +92,7 @@ class SepoliaClaimsRegistry:
         ignition_dir: Path = DEFAULT_IGNITION_DIR,
         module_id: str = DEFAULT_MODULE_ID,
         receipt_timeout: int = 180,
+        private_key_env: str = "SEPOLIA_SUBMITTER_PRIVATE_KEY",
     ) -> None:
         self.w3 = Web3(Web3.HTTPProvider(rpc_url))
 
@@ -113,12 +114,13 @@ class SepoliaClaimsRegistry:
         # The query-only FastAPI dependency deliberately passes no key, keeping
         # signing authority out of a code path that can never submit a write.
         self.account = None
+        self.private_key_env = private_key_env
         if private_key is not None:
             try:
                 self.account = self.w3.eth.account.from_key(private_key)
             except Exception as exc:
                 raise BlockchainSubmissionError(
-                    "SEPOLIA_PRIVATE_KEY is not a valid Ethereum private key"
+                    f"{private_key_env} is not a valid Ethereum private key"
                 ) from exc
         self.receipt_timeout = receipt_timeout
         # Ethereum accepts each wallet nonce only once. FastAPI and the worker can
@@ -129,7 +131,10 @@ class SepoliaClaimsRegistry:
 
     @classmethod
     def from_env(
-        cls, *, require_private_key: bool = True
+        cls,
+        *,
+        require_private_key: bool = True,
+        private_key_env: str = "SEPOLIA_SUBMITTER_PRIVATE_KEY",
     ) -> "SepoliaClaimsRegistry":
         """Create either a read-only client or a transaction-capable client.
 
@@ -140,14 +145,14 @@ class SepoliaClaimsRegistry:
 
         rpc_url = os.environ.get("SEPOLIA_RPC_URL") or os.environ.get("RPC_URL")
         private_key = (
-            os.environ.get("SEPOLIA_PRIVATE_KEY") if require_private_key else None
+            os.environ.get(private_key_env) if require_private_key else None
         )
         missing = [
             name
             for name, value in (
                 ("SEPOLIA_RPC_URL", rpc_url),
                 (
-                    "SEPOLIA_PRIVATE_KEY",
+                    private_key_env,
                     private_key if require_private_key else "not-required",
                 ),
             )
@@ -166,6 +171,7 @@ class SepoliaClaimsRegistry:
             ),
             module_id=os.environ.get("MODULE_ID", DEFAULT_MODULE_ID),
             receipt_timeout=int(os.environ.get("RECEIPT_TIMEOUT", "180")),
+            private_key_env=private_key_env,
         )
 
     def _signing_account(self):
@@ -173,7 +179,7 @@ class SepoliaClaimsRegistry:
 
         if self.account is None:
             raise BlockchainSubmissionError(
-                "SEPOLIA_PRIVATE_KEY is required for blockchain writes"
+                f"{self.private_key_env} is required for blockchain writes"
             )
         return self.account
 

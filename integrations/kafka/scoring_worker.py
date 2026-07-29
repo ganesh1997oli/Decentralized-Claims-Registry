@@ -286,7 +286,9 @@ def main() -> None:
         duplicate_detector=CrossInsurerDuplicateDetector.from_env(repository),
         feature_processor=ClaimFeatureProcessor.from_env(repository),
         repository=repository,
-        registry=SepoliaClaimsRegistry.from_env(),
+        registry=SepoliaClaimsRegistry.from_env(
+            private_key_env="SEPOLIA_ASSESSOR_PRIVATE_KEY"
+        ),
     )
     monitored_handler = MonitoredClaimHandler(handler, metrics)
     consumer = KafkaClaimEventConsumer(settings)

@@ -370,7 +370,9 @@ def test_submit_claim_reports_missing_write_configuration_as_json_503(monkeypatc
     """Missing wallet or Pinata settings must not escape as a plain HTTP 500."""
 
     def unavailable(_service_class):
-        raise ClaimSubmissionServiceError("SEPOLIA_PRIVATE_KEY is not configured")
+        raise ClaimSubmissionServiceError(
+            "SEPOLIA_SUBMITTER_PRIVATE_KEY is not configured"
+        )
 
     get_claim_submission_service.cache_clear()
     monkeypatch.setattr(
@@ -387,6 +389,6 @@ def test_submit_claim_reports_missing_write_configuration_as_json_503(monkeypatc
     assert response.json() == {
         "detail": (
             "Claim submission is unavailable: "
-            "SEPOLIA_PRIVATE_KEY is not configured"
+            "SEPOLIA_SUBMITTER_PRIVATE_KEY is not configured"
         )
     }

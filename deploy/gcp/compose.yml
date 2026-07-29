@@ -191,7 +191,7 @@ services:
       <<: *chain-read-environment
       # Only the API uploads new claim documents, so only this service receives
       # the Pinata token.
-      SEPOLIA_PRIVATE_KEY: ${SEPOLIA_PRIVATE_KEY:?Set SEPOLIA_PRIVATE_KEY in .env.gcp}
+      SEPOLIA_SUBMITTER_PRIVATE_KEY: ${SEPOLIA_SUBMITTER_PRIVATE_KEY:?Set SEPOLIA_SUBMITTER_PRIVATE_KEY in .env.gcp}
       PINATA_JWT: ${PINATA_JWT:?Set PINATA_JWT in .env.gcp}
       IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
       FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:?Set FRONTEND_ORIGINS in .env.gcp}
@@ -221,9 +221,11 @@ services:
       # cannot submit transactions because it receives no wallet private key.
       IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
       LISTENER_STATE_FILE: ${LISTENER_STATE_FILE:-/var/lib/claims-listener/checkpoint.json}
+      LISTENER_DEAD_LETTER_FILE: ${LISTENER_DEAD_LETTER_FILE:-/var/lib/claims-listener/dead-letter.jsonl}
       LISTENER_START_BLOCK: ${LISTENER_START_BLOCK:-}
       POLL_INTERVAL: ${POLL_INTERVAL:-5}
       CONFIRMATION_BLOCKS: ${CONFIRMATION_BLOCKS:-2}
+      MAX_BLOCK_RANGE: ${MAX_BLOCK_RANGE:-50}
       METRICS_PORT: "9101"
     depends_on:
       kafka-init:
@@ -241,7 +243,7 @@ services:
     command: ["python", "-m", "integrations.kafka.scoring_worker"]
     environment:
       <<: [*chain-read-environment, *kafka-environment]
-      SEPOLIA_PRIVATE_KEY: ${SEPOLIA_PRIVATE_KEY:?Set SEPOLIA_PRIVATE_KEY in .env.gcp}
+      SEPOLIA_ASSESSOR_PRIVATE_KEY: ${SEPOLIA_ASSESSOR_PRIVATE_KEY:?Set SEPOLIA_ASSESSOR_PRIVATE_KEY in .env.gcp}
       IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
       DUPLICATE_FINGERPRINT_KEY: ${DUPLICATE_FINGERPRINT_KEY:?Set DUPLICATE_FINGERPRINT_KEY in .env.gcp}
       DATABASE_URL: "postgresql://claims:${POSTGRES_PASSWORD}@postgres:5432/claims_registry"

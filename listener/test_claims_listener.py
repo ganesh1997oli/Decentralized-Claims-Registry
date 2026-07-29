@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from web3 import Web3
 
-from integrations.ipfs import IPFSError
+from integrations.ipfs import IPFSClient, IPFSError
 from listener.claims_listener import (
     ClaimEventProcessor,
     ConfirmedBlockPoller,
@@ -32,6 +32,23 @@ class FakePublisher:
 
     def publish(self, event) -> None:
         self.events.append(event)
+
+
+class FakeDeadLetter:
+    def __init__(self) -> None:
+        self.entries = []
+
+    def record(self, event, error) -> None:
+        self.entries.append((event, error))
+
+
+class PointerValidatingIPFS:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def download_pointer(self, pointer: str) -> bytes:
+        IPFSClient.target_from_pointer(pointer)
+        return self.payload
 
 
 class FailingIPFS:
@@ -127,7 +144,7 @@ def test_processor_rejects_tampered_ipfs_bytes_before_kafka_publish():
         publisher=publisher,
     )
 
-    with pytest.raises(RuntimeError, match="IPFS verification failed"):
+    with pytest.raises(RuntimeError, match="IPFS hash mismatch"):
         processor.process_range(100, 102)
 
     assert publisher.events == []
@@ -174,6 +191,37 @@ def test_processor_can_verify_without_kafka_when_publishing_is_disabled():
     )
 
     processor.process_range(100, 102)
+
+
+def test_processor_quarantines_permanent_bad_event_and_continues(capsys):
+    payload = b'{"schemaVersion":3,"claimReference":"verified"}'
+    invalid = submission_event(payload)
+    invalid["args"] = {**invalid["args"], "dataPointer": "https://invalid.test"}
+    invalid["logIndex"] = 0
+    valid = submission_event(payload)
+    publisher = FakePublisher()
+    dead_letter = FakeDeadLetter()
+    contract = SimpleNamespace(
+        events=SimpleNamespace(
+            ClaimSubmitted=FakeEventType([invalid, valid]),
+            ClaimAssessed=FakeEventType([]),
+        )
+    )
+    processor = ClaimEventProcessor(
+        chain_id=11_155_111,
+        contract_address="0x1111111111111111111111111111111111111111",
+        contract=contract,
+        ipfs=PointerValidatingIPFS(payload),
+        publisher=publisher,
+        dead_letter=dead_letter,
+    )
+
+    processor.process_range(100, 102)
+
+    assert len(dead_letter.entries) == 1
+    assert dead_letter.entries[0][0]["args"]["dataPointer"].startswith("https://")
+    assert len(publisher.events) == 1
+    assert "[ClaimQuarantined]" in capsys.readouterr().out
 
 
 class RecordingRangeProcessor:
@@ -230,6 +278,26 @@ def test_poller_preserves_checkpoint_when_processing_fails():
     assert checkpoint.saved == []
 
 
+def test_poller_limits_each_rpc_log_query_while_catching_up():
+    processor = RecordingRangeProcessor()
+    checkpoint = RecordingCheckpoint()
+    poller = ConfirmedBlockPoller(
+        processor=processor,
+        checkpoint=checkpoint,
+        confirmation_blocks=2,
+        max_block_range=50,
+    )
+
+    last_processed = poller.process_latest(
+        latest_block=1000,
+        last_processed=99,
+    )
+
+    assert last_processed == 149
+    assert processor.ranges == [(100, 149)]
+    assert checkpoint.saved == [149]
+
+
 def test_poller_waits_for_confirmation_depth_and_rejects_invalid_configuration():
     processor = RecordingRangeProcessor()
     checkpoint = RecordingCheckpoint()
@@ -252,6 +320,13 @@ def test_poller_waits_for_confirmation_depth_and_rejects_invalid_configuration()
             processor=processor,
             checkpoint=checkpoint,
             confirmation_blocks=-1,
+        )
+    with pytest.raises(ValueError, match="at least 1"):
+        ConfirmedBlockPoller(
+            processor=processor,
+            checkpoint=checkpoint,
+            confirmation_blocks=2,
+            max_block_range=0,
         )
 
 

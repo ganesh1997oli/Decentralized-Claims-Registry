@@ -52,7 +52,8 @@ insurance deployment:
 - PostgreSQL has one instance on one VM disk.
 - HTTP is used for the short-lived fictional-data demonstration.
 - The VM is one failure domain and is manually sized.
-- A Sepolia-only process wallet is still supplied to application containers.
+- Separate Sepolia-only submission and assessment wallets are supplied to their
+  respective application containers.
 - Model training data is suitable for research, not a real fraud decision.
 
 The value of this setup is reproducible integration and measurable behaviour,
@@ -198,13 +199,15 @@ openssl rand -hex 32
 Use only:
 
 - fictional claim data;
-- a Sepolia-only wallet with test ETH;
+- separate Sepolia-only submitter and assessor wallets with only their intended
+  contract roles and enough test ETH for their writes;
 - a Pinata token intended for this research project;
 - a unique PostgreSQL password;
 - a unique duplicate-fingerprint HMAC key.
 
-The wallet must have the contract's assessor permission because both claim
-submission and model assessment write to the deployed Sepolia contract.
+Do not put the deployment/admin key on the VM. FastAPI receives only
+`SEPOLIA_SUBMITTER_PRIVATE_KEY`, while the worker receives only
+`SEPOLIA_ASSESSOR_PRIVATE_KEY`.
 
 If the VM's external IP changes, update `FRONTEND_ORIGINS` before rebuilding or
 restarting the API.
