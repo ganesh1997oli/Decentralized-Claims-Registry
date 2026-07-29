@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {ClaimsRegistry} from "./ClaimsRegistry.sol";
 import {Test} from "forge-std/Test.sol";
 
 contract ClaimsRegistryTest is Test {
   ClaimsRegistry registry;
 
-  address claimant = makeAddr("claimant");
+  address admin = makeAddr("admin");
+  address insurer = makeAddr("insurer");
   address assessor = makeAddr("assessor");
+  address otherInsurer = makeAddr("otherInsurer");
+  address otherAssessor = makeAddr("otherAssessor");
 
   bytes32 constant CLAIM_HASH = keccak256("policy-42:incident-2026-07-13");
-  string constant DATA_POINTER = "ipfs://bafy-demo-cid";
+  string constant DATA_POINTER = "ipfs://bafydemocid";
 
-  // Redeclared locally so vm.expectEmit can compare against them.
   event ClaimSubmitted(
     uint256 indexed claimId,
     address indexed claimant,
@@ -30,22 +33,19 @@ contract ClaimsRegistryTest is Test {
   );
 
   function setUp() public {
-    registry = new ClaimsRegistry(); // this test contract becomes owner
-    registry.setAssessor(assessor, true);
+    registry = new ClaimsRegistry(admin, insurer, assessor, 0);
   }
 
   function test_SubmitClaimStoresAndEmits() public {
     vm.warp(1_000_000);
-
     vm.expectEmit(true, true, false, true);
-    emit ClaimSubmitted(0, claimant, CLAIM_HASH, DATA_POINTER, 1_000_000);
+    emit ClaimSubmitted(0, insurer, CLAIM_HASH, DATA_POINTER, 1_000_000);
 
-    vm.prank(claimant);
+    vm.prank(insurer);
     uint256 id = registry.submitClaim(CLAIM_HASH, DATA_POINTER);
 
     assertEq(id, 0);
     assertEq(registry.claimCount(), 1);
-
     (
       address storedClaimant,
       bytes32 storedHash,
@@ -55,8 +55,7 @@ contract ClaimsRegistryTest is Test {
       uint64 submittedAt,
       uint64 updatedAt
     ) = registry.getClaim(0);
-
-    assertEq(storedClaimant, claimant);
+    assertEq(storedClaimant, insurer);
     assertEq(storedHash, CLAIM_HASH);
     assertEq(storedPointer, DATA_POINTER);
     assertEq(uint8(status), uint8(ClaimsRegistry.Status.Submitted));
@@ -65,20 +64,61 @@ contract ClaimsRegistryTest is Test {
     assertEq(updatedAt, 1_000_000);
   }
 
+  function test_RevertWhen_SubmitterIsUnauthorized() public {
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        IAccessControl.AccessControlUnauthorizedAccount.selector,
+        otherInsurer,
+        registry.SUBMITTER_ROLE()
+      )
+    );
+    vm.prank(otherInsurer);
+    registry.submitClaim(CLAIM_HASH, DATA_POINTER);
+  }
+
   function test_RevertWhen_EmptyHash() public {
-    vm.prank(claimant);
+    vm.prank(insurer);
     vm.expectRevert(ClaimsRegistry.EmptyClaimHash.selector);
     registry.submitClaim(bytes32(0), DATA_POINTER);
   }
 
+  function test_RevertWhen_PointerIsNotBareIpfsCid() public {
+    vm.startPrank(insurer);
+    vm.expectRevert(ClaimsRegistry.InvalidDataPointer.selector);
+    registry.submitClaim(CLAIM_HASH, "https://example.test/claim");
+    vm.expectRevert(ClaimsRegistry.InvalidDataPointer.selector);
+    registry.submitClaim(CLAIM_HASH, "ipfs://bad/path");
+    vm.stopPrank();
+  }
+
+  function test_RevertWhen_PointerIsTooLong() public {
+    bytes memory oversized = new bytes(129);
+    for (uint256 index; index < oversized.length; ++index) {
+      oversized[index] = "a";
+    }
+    vm.prank(insurer);
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.DataPointerTooLong.selector,
+        oversized.length
+      )
+    );
+    registry.submitClaim(CLAIM_HASH, string(oversized));
+  }
+
   function test_AssessUpdatesClaimAndEmits() public {
-    vm.prank(claimant);
+    vm.prank(insurer);
     registry.submitClaim(CLAIM_HASH, DATA_POINTER);
 
     vm.warp(2_000_000);
     vm.expectEmit(true, true, true, true);
-    emit ClaimAssessed(0, ClaimsRegistry.Status.Flagged, assessor, 8500, 2_000_000);
-
+    emit ClaimAssessed(
+      0,
+      ClaimsRegistry.Status.Flagged,
+      assessor,
+      8500,
+      2_000_000
+    );
     vm.prank(assessor);
     registry.assessClaim(0, ClaimsRegistry.Status.Flagged, 8500);
 
@@ -89,66 +129,172 @@ contract ClaimsRegistryTest is Test {
     assertEq(updatedAt, 2_000_000);
   }
 
-  function test_RevertWhen_NotAssessor() public {
-    vm.prank(claimant);
+  function test_RevertWhen_AssessorBelongsToAnotherInsurer() public {
+    vm.startPrank(admin);
+    registry.setSubmitter(otherInsurer, true);
+    registry.setAssessor(otherAssessor, otherInsurer, true);
+    vm.stopPrank();
+    vm.prank(insurer);
     registry.submitClaim(CLAIM_HASH, DATA_POINTER);
 
-    vm.prank(claimant);
-    vm.expectRevert(ClaimsRegistry.NotAssessor.selector);
-    registry.assessClaim(0, ClaimsRegistry.Status.Approved, 0);
+    vm.prank(otherAssessor);
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.AssessorScopeMismatch.selector,
+        otherAssessor,
+        insurer
+      )
+    );
+    registry.assessClaim(0, ClaimsRegistry.Status.Flagged, 5000);
+  }
+
+  function test_LifecycleIsMonotonicAndScoreIsImmutable() public {
+    vm.prank(insurer);
+    registry.submitClaim(CLAIM_HASH, DATA_POINTER);
+    vm.prank(assessor);
+    registry.assessClaim(0, ClaimsRegistry.Status.UnderReview, 4200);
+
+    vm.prank(assessor);
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.InvalidStatusTransition.selector,
+        ClaimsRegistry.Status.UnderReview,
+        ClaimsRegistry.Status.Submitted
+      )
+    );
+    registry.assessClaim(0, ClaimsRegistry.Status.Submitted, 4200);
+
+    vm.prank(assessor);
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.FraudScoreCannotChange.selector,
+        4200,
+        5000
+      )
+    );
+    registry.assessClaim(0, ClaimsRegistry.Status.Approved, 5000);
+
+    vm.prank(assessor);
+    registry.assessClaim(0, ClaimsRegistry.Status.Approved, 4200);
+    vm.prank(assessor);
+    vm.expectRevert();
+    registry.assessClaim(0, ClaimsRegistry.Status.Rejected, 4200);
   }
 
   function test_RevertWhen_UnknownClaim() public {
     vm.prank(assessor);
-    vm.expectRevert(abi.encodeWithSelector(ClaimsRegistry.UnknownClaim.selector, 99));
-    registry.assessClaim(99, ClaimsRegistry.Status.Approved, 0);
+    vm.expectRevert(
+      abi.encodeWithSelector(ClaimsRegistry.UnknownClaim.selector, 99)
+    );
+    registry.assessClaim(99, ClaimsRegistry.Status.Flagged, 0);
   }
 
-  function test_RevertWhen_AlreadyFinalized() public {
-    vm.prank(claimant);
+  function test_RevertWhen_ScoreExceedsBasisPointLimit() public {
+    vm.prank(insurer);
     registry.submitClaim(CLAIM_HASH, DATA_POINTER);
-
     vm.prank(assessor);
-    registry.assessClaim(0, ClaimsRegistry.Status.Approved, 100);
-
-    vm.prank(assessor);
-    vm.expectRevert(abi.encodeWithSelector(ClaimsRegistry.ClaimAlreadyFinalized.selector, 0));
-    registry.assessClaim(0, ClaimsRegistry.Status.Rejected, 200);
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.InvalidFraudScore.selector,
+        10001
+      )
+    );
+    registry.assessClaim(0, ClaimsRegistry.Status.Flagged, 10001);
   }
 
-  function test_RevertWhen_NonOwnerSetsAssessor() public {
-    vm.prank(claimant);
-    vm.expectRevert(ClaimsRegistry.NotOwner.selector);
-    registry.setAssessor(claimant, true);
+  function test_AdminTransferRequiresNewAdminAcceptance() public {
+    vm.prank(admin);
+    registry.beginDefaultAdminTransfer(otherInsurer);
+    assertEq(registry.owner(), admin);
+
+    vm.warp(block.timestamp + 1);
+    vm.prank(otherInsurer);
+    registry.acceptDefaultAdminTransfer();
+    assertEq(registry.owner(), otherInsurer);
+  }
+
+  function test_PrivilegedRolesMustUseDifferentAccounts() public {
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.RoleSeparationRequired.selector,
+        admin
+      )
+    );
+    vm.prank(admin);
+    registry.setSubmitter(admin, true);
+
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.RoleSeparationRequired.selector,
+        insurer
+      )
+    );
+    vm.prank(admin);
+    registry.setAssessor(insurer, insurer, true);
+
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.RoleSeparationRequired.selector,
+        insurer
+      )
+    );
+    vm.prank(admin);
+    registry.beginDefaultAdminTransfer(insurer);
+
+    vm.prank(admin);
+    registry.beginDefaultAdminTransfer(otherInsurer);
+    vm.prank(admin);
+    registry.setSubmitter(otherInsurer, true);
+    vm.warp(block.timestamp + 1);
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.RoleSeparationRequired.selector,
+        otherInsurer
+      )
+    );
+    vm.prank(otherInsurer);
+    registry.acceptDefaultAdminTransfer();
+  }
+
+  function test_RoleInvariantsCannotBeBypassedThroughGrantRole() public {
+    bytes32 assessorRole = registry.ASSESSOR_ROLE();
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.UseRoleConfigurationFunction.selector,
+        assessorRole
+      )
+    );
+    vm.prank(admin);
+    registry.grantRole(assessorRole, otherAssessor);
   }
 
   function test_VerifyClaimData() public {
     bytes memory payload = "the canonical off-chain claim payload";
-    vm.prank(claimant);
+    vm.prank(insurer);
     registry.submitClaim(keccak256(payload), DATA_POINTER);
-
     assertTrue(registry.verifyClaimData(0, payload));
     assertFalse(registry.verifyClaimData(0, "tampered payload"));
   }
 
-  // Fuzz: every score above the 10000 bps cap must revert, whatever it is.
   function testFuzz_RejectsScoresAbove10000(uint16 score) public {
     vm.assume(score > 10000);
-    vm.prank(claimant);
+    vm.prank(insurer);
     registry.submitClaim(CLAIM_HASH, DATA_POINTER);
-
     vm.prank(assessor);
-    vm.expectRevert(abi.encodeWithSelector(ClaimsRegistry.InvalidFraudScore.selector, score));
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.InvalidFraudScore.selector,
+        score
+      )
+    );
     registry.assessClaim(0, ClaimsRegistry.Status.Flagged, score);
   }
 
-  // Fuzz: any non-zero hash round-trips through storage unchanged.
-  function testFuzz_SubmitAnyNonZeroHash(bytes32 h) public {
-    vm.assume(h != bytes32(0));
-    vm.prank(claimant);
-    uint256 id = registry.submitClaim(h, DATA_POINTER);
-
-    (, bytes32 stored, , , , , ) = registry.getClaim(id);
-    assertEq(stored, h);
+  function testFuzz_SubmitAnyNonZeroHash(bytes32 hash) public {
+    vm.assume(hash != bytes32(0));
+    vm.prank(insurer);
+    uint256 id = registry.submitClaim(hash, DATA_POINTER);
+    (, bytes32 storedHash, , , , , ) = registry.getClaim(id);
+    assertEq(storedHash, hash);
   }
 }

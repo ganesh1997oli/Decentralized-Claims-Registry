@@ -1,56 +1,41 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-/// ClaimRegistry
-/// On-Chain registry that anchors insurance claims to an immutable,
-/// verifiable ledger while keeping the sensitive claim data OFF-chain.
-/// Only a cryptographic hash of the off-chain payload plus a small set
-/// of non-sensitive metadata are stored here. Authorized assessors
-/// (e.g. an insurer backend or a fraud-detection oracle) write
-/// assessment results back to a claim; downstream systems observe the whole
-/// lifecycle through the emitted events.
-///
-/// Access control here is intentionally minimal and self-contained so
-/// the contract here is intentionally minimal and selff-contained so
-/// prefer OpenZeppelin's audited `Ownable` / `AccessControl` over the
-/// hand-rolled owner+assessor logic below.
+import {
+    AccessControlDefaultAdminRules
+} from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 
-contract ClaimsRegistry {
-    //
-    // Types
-    //
+/// @title ClaimsRegistry
+/// @notice Anchors synthetic insurance claims while keeping their payloads
+///         off-chain. The pointer and hash are public; they must never reference
+///         personal, confidential, or unencrypted real-claim data.
+contract ClaimsRegistry is AccessControlDefaultAdminRules {
+    bytes32 public constant SUBMITTER_ROLE = keccak256("SUBMITTER_ROLE");
+    bytes32 public constant ASSESSOR_ROLE = keccak256("ASSESSOR_ROLE");
+    uint256 public constant MAX_DATA_POINTER_LENGTH = 128;
 
     enum Status {
-        Submitted, // 0 - recorded, awaiting review
-        UnderReview, // 1 - being assessed
-        Approved, // 2 - final: accepted
-        Rejected, // 3 - final: denied
-        Flagged // 4 - suspected fraud
+        Submitted,
+        UnderReview,
+        Approved,
+        Rejected,
+        Flagged
     }
 
     struct Claim {
-        address claimant; // who submitted the claim
-        bytes32 claimHash; // keccak256 of the canonical off-chain payload
-        string dataPointer; // off-chain location (e.g. IPFS CID or URL)
-        Status status; // current lifecycle state
-        uint16 fraudScore; // model output in basis points (0.10000); 0 until assessed
-        uint64 submittedAt; // block timestamp at submission
-        uint64 updatedAt; // block timestamp of last status change
-        bool exists; // distinguishes a real claim from an unset slot
+        address claimant;
+        bytes32 claimHash;
+        string dataPointer;
+        Status status;
+        uint16 fraudScore;
+        uint64 submittedAt;
+        uint64 updatedAt;
+        bool exists;
     }
 
-    //
-    // Storage
-    //
-
-    address public owner;
-    uint256 public claimCount; // also the id of the next claim
-    mapping(uint256 => Claim) private _claims;
-    mapping(address => bool) public isAssessor;
-
-    //
-    // Events (indexed fields chosen so off-chain listeners can filter cheaply)
-    //
+    uint256 public claimCount;
+    mapping(uint256 claimId => Claim claim) private _claims;
+    mapping(address assessor => address insurer) private _assessorInsurer;
 
     event ClaimSubmitted(
         uint256 indexed claimId,
@@ -59,7 +44,6 @@ contract ClaimsRegistry {
         string dataPointer,
         uint256 timestamp
     );
-
     event ClaimAssessed(
         uint256 indexed claimId,
         Status indexed newStatus,
@@ -67,62 +51,66 @@ contract ClaimsRegistry {
         uint16 fraudScore,
         uint256 timestamp
     );
-
-    event AssessorUpdated(address indexed assessor, bool authorized);
-
-    event OwnershipTransferred(
-        address indexed previousOwner,
-        address indexed newOwner
+    event SubmitterUpdated(address indexed submitter, bool authorized);
+    event AssessorUpdated(
+        address indexed assessor,
+        address indexed insurer,
+        bool authorized
     );
 
-    //
-    // Errors
-    //
-
-    error NotOwner();
-    error NotAssessor();
     error ZeroAddress();
     error EmptyClaimHash();
+    error InvalidDataPointer();
+    error DataPointerTooLong(uint256 suppliedLength);
     error UnknownClaim(uint256 claimId);
-    error ClaimAlreadyFinalized(uint256 claimId);
     error InvalidFraudScore(uint16 fraudScore);
+    error InvalidStatusTransition(Status currentStatus, Status requestedStatus);
+    error FraudScoreCannotChange(uint16 currentScore, uint16 suppliedScore);
+    error AssessorScopeMismatch(address assessor, address claimSubmitter);
+    error InsurerNotAuthorized(address insurer);
+    error RoleSeparationRequired(address account);
+    error UseRoleConfigurationFunction(bytes32 role);
 
-    //
-    // Modifiers
-    //
+    /// @param initialAdmin Account that controls role assignment and starts
+    ///        delayed, two-step admin transfers.
+    /// @param initialSubmitter Insurer service account permitted to submit.
+    /// @param initialAssessor Scoring account scoped to initialSubmitter.
+    /// @param adminTransferDelay Delay in seconds before an admin transfer can
+    ///        be accepted. Production deployments should use a non-zero delay.
+    constructor(
+        address initialAdmin,
+        address initialSubmitter,
+        address initialAssessor,
+        uint48 adminTransferDelay
+    ) AccessControlDefaultAdminRules(adminTransferDelay, initialAdmin) {
+        if (initialSubmitter == address(0) || initialAssessor == address(0)) {
+            revert ZeroAddress();
+        }
+        if (
+            initialAdmin == initialSubmitter ||
+            initialAdmin == initialAssessor
+        ) {
+            revert RoleSeparationRequired(initialAdmin);
+        }
+        if (initialSubmitter == initialAssessor) {
+            revert RoleSeparationRequired(initialSubmitter);
+        }
 
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
-        _;
+        _grantRole(SUBMITTER_ROLE, initialSubmitter);
+        _grantRole(ASSESSOR_ROLE, initialAssessor);
+        _assessorInsurer[initialAssessor] = initialSubmitter;
+
+        emit SubmitterUpdated(initialSubmitter, true);
+        emit AssessorUpdated(initialAssessor, initialSubmitter, true);
     }
 
-    modifier onlyAssessor() {
-        if (!isAssessor[msg.sender]) revert NotAssessor();
-        _;
-    }
-
-    //
-    // Constructor
-    //
-
-    constructor() {
-        owner = msg.sender;
-        emit OwnershipTransferred(address(0), msg.sender);
-    }
-
-    //
-    // Claim lifecycle
-    //
-
-    /// Record a new claim on-chain
-    /// claimHash keccak256 hash of the full off-chain claim payload.
-    /// dataPointer off-chain location of the payload (e.g. an IPFS CID).
-    /// claimId The id assigned to this claim.
+    /// @notice Record a synthetic claim and its public IPFS CID.
     function submitClaim(
         bytes32 claimHash,
         string calldata dataPointer
-    ) external returns (uint256 claimId) {
+    ) external onlyRole(SUBMITTER_ROLE) returns (uint256 claimId) {
         if (claimHash == bytes32(0)) revert EmptyClaimHash();
+        _validateDataPointer(dataPointer);
 
         claimId = claimCount;
         _claims[claimId] = Claim({
@@ -149,24 +137,29 @@ contract ClaimsRegistry {
         );
     }
 
-    /// Write an assessment result back to a claim. Intended for the
-    /// fraud-detection oracle / insurer backend.
-    /// claimId The claim to update.
-    /// newStatus New lifecycle status.
-    /// fraudScore Model score in basis points (0-10000).
+    /// @notice Advance a claim through its allowed lifecycle.
+    /// @dev The first assessment fixes the fraud score. Later status changes
+    ///      must carry the same score, preserving the original model output.
     function assessClaim(
         uint256 claimId,
         Status newStatus,
         uint16 fraudScore
-    ) external onlyAssessor {
+    ) external onlyRole(ASSESSOR_ROLE) {
         Claim storage claim = _claims[claimId];
         if (!claim.exists) revert UnknownClaim(claimId);
-        if (
-            claim.status == Status.Approved || claim.status == Status.Rejected
-        ) {
-            revert ClaimAlreadyFinalized(claimId);
+        if (_assessorInsurer[msg.sender] != claim.claimant) {
+            revert AssessorScopeMismatch(msg.sender, claim.claimant);
         }
         if (fraudScore > 10000) revert InvalidFraudScore(fraudScore);
+        if (!_isAllowedTransition(claim.status, newStatus)) {
+            revert InvalidStatusTransition(claim.status, newStatus);
+        }
+        if (
+            claim.status != Status.Submitted &&
+            fraudScore != claim.fraudScore
+        ) {
+            revert FraudScoreCannotChange(claim.fraudScore, fraudScore);
+        }
 
         claim.status = newStatus;
         claim.fraudScore = fraudScore;
@@ -181,11 +174,6 @@ contract ClaimsRegistry {
         );
     }
 
-    //
-    // Views
-    //
-
-    /// Read a claim by id. Reverts if the claim does not exists.
     function getClaim(
         uint256 claimId
     )
@@ -214,9 +202,6 @@ contract ClaimsRegistry {
         );
     }
 
-    /// Confirm that an off-chain payload matches the stored hash.
-    /// The payload must be hashed the same way it was before submission
-    /// (keccak256 over the exact canonical bytes).
     function verifyClaimData(
         uint256 claimId,
         bytes calldata payload
@@ -226,20 +211,170 @@ contract ClaimsRegistry {
         return keccak256(payload) == claim.claimHash;
     }
 
-    //
-    // Access control admin
-    //
-
-    /// Grant or revoke assessor rights rights (who may call `assessClaim).
-    function setAssessor(address assessor, bool authorized) external onlyOwner {
-        if (assessor == address(0)) revert ZeroAddress();
-        isAssessor[assessor] = authorized;
-        emit AssessorUpdated(assessor, authorized);
+    function isSubmitter(address account) external view returns (bool) {
+        return hasRole(SUBMITTER_ROLE, account);
     }
 
-    function transferOwnership(address newOwner) external onlyOwner {
-        if (newOwner == address(0)) revert ZeroAddress();
-        emit OwnershipTransferred(owner, newOwner);
-        owner = newOwner;
+    function isAssessor(address account) external view returns (bool) {
+        return hasRole(ASSESSOR_ROLE, account);
+    }
+
+    function assessorInsurer(
+        address assessor
+    ) external view returns (address insurer) {
+        if (hasRole(ASSESSOR_ROLE, assessor)) {
+            return _assessorInsurer[assessor];
+        }
+        return address(0);
+    }
+
+    function setSubmitter(
+        address submitter,
+        bool authorized
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (submitter == address(0)) revert ZeroAddress();
+        if (authorized) {
+            if (
+                submitter == defaultAdmin() ||
+                hasRole(ASSESSOR_ROLE, submitter)
+            ) {
+                revert RoleSeparationRequired(submitter);
+            }
+            _grantRole(SUBMITTER_ROLE, submitter);
+        } else {
+            _revokeRole(SUBMITTER_ROLE, submitter);
+        }
+        emit SubmitterUpdated(submitter, authorized);
+    }
+
+    function setAssessor(
+        address assessor,
+        address insurer,
+        bool authorized
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (assessor == address(0)) revert ZeroAddress();
+        if (authorized) {
+            if (
+                insurer == address(0) ||
+                !hasRole(SUBMITTER_ROLE, insurer)
+            ) {
+                revert InsurerNotAuthorized(insurer);
+            }
+            if (
+                assessor == defaultAdmin() ||
+                hasRole(SUBMITTER_ROLE, assessor)
+            ) {
+                revert RoleSeparationRequired(assessor);
+            }
+            _assessorInsurer[assessor] = insurer;
+            _grantRole(ASSESSOR_ROLE, assessor);
+        } else {
+            insurer = _assessorInsurer[assessor];
+            _revokeRole(ASSESSOR_ROLE, assessor);
+            delete _assessorInsurer[assessor];
+        }
+        emit AssessorUpdated(assessor, insurer, authorized);
+    }
+
+    function beginDefaultAdminTransfer(
+        address newAdmin
+    ) public override onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (
+            newAdmin != address(0) &&
+            (
+                hasRole(SUBMITTER_ROLE, newAdmin) ||
+                hasRole(ASSESSOR_ROLE, newAdmin)
+            )
+        ) {
+            revert RoleSeparationRequired(newAdmin);
+        }
+        super.beginDefaultAdminTransfer(newAdmin);
+    }
+
+    function acceptDefaultAdminTransfer() public override {
+        if (
+            hasRole(SUBMITTER_ROLE, msg.sender) ||
+            hasRole(ASSESSOR_ROLE, msg.sender)
+        ) {
+            revert RoleSeparationRequired(msg.sender);
+        }
+        super.acceptDefaultAdminTransfer();
+    }
+
+    /// @dev Scoped roles must be configured through setSubmitter/setAssessor so
+    ///      their accompanying security invariants cannot be bypassed.
+    function grantRole(
+        bytes32 role,
+        address account
+    ) public override {
+        if (role == SUBMITTER_ROLE || role == ASSESSOR_ROLE) {
+            revert UseRoleConfigurationFunction(role);
+        }
+        super.grantRole(role, account);
+    }
+
+    function revokeRole(
+        bytes32 role,
+        address account
+    ) public override {
+        if (role == SUBMITTER_ROLE || role == ASSESSOR_ROLE) {
+            revert UseRoleConfigurationFunction(role);
+        }
+        super.revokeRole(role, account);
+    }
+
+    function _isAllowedTransition(
+        Status currentStatus,
+        Status requestedStatus
+    ) private pure returns (bool) {
+        if (currentStatus == Status.Submitted) {
+            return
+                requestedStatus == Status.UnderReview ||
+                requestedStatus == Status.Flagged;
+        }
+        if (currentStatus == Status.UnderReview) {
+            return
+                requestedStatus == Status.Approved ||
+                requestedStatus == Status.Rejected ||
+                requestedStatus == Status.Flagged;
+        }
+        if (currentStatus == Status.Flagged) {
+            return
+                requestedStatus == Status.Approved ||
+                requestedStatus == Status.Rejected;
+        }
+        return false;
+    }
+
+    /// @dev This prototype stores a bare IPFS CID only. Requiring an
+    ///      alphanumeric target prevents malformed paths, query strings and
+    ///      unsupported URL schemes from becoming permanent poison events.
+    function _validateDataPointer(string calldata dataPointer) private pure {
+        bytes calldata pointer = bytes(dataPointer);
+        if (pointer.length > MAX_DATA_POINTER_LENGTH) {
+            revert DataPointerTooLong(pointer.length);
+        }
+        if (
+            pointer.length <= 7 ||
+            pointer[0] != "i" ||
+            pointer[1] != "p" ||
+            pointer[2] != "f" ||
+            pointer[3] != "s" ||
+            pointer[4] != ":" ||
+            pointer[5] != "/" ||
+            pointer[6] != "/"
+        ) {
+            revert InvalidDataPointer();
+        }
+
+        for (uint256 index = 7; index < pointer.length; ++index) {
+            bytes1 character = pointer[index];
+            bool isNumber = character >= "0" && character <= "9";
+            bool isUppercase = character >= "A" && character <= "Z";
+            bool isLowercase = character >= "a" && character <= "z";
+            if (!isNumber && !isUppercase && !isLowercase) {
+                revert InvalidDataPointer();
+            }
+        }
     }
 }

@@ -24,6 +24,10 @@
 # Hardhat coverage reports
 /coverage
 
+# Deployment parameters contain role addresses and may become machine-specific.
+/ignition/parameters/*.json
+!/ignition/parameters/*.json.example
+
 # Gas snapshot files
 /.gas-snapshot
 
