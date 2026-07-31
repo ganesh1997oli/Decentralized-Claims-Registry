@@ -1,0 +1,68 @@
+# The Google Cloud Ops Agent reads this file on the VM.
+#
+# Application metrics use the Prometheus standard, but the agent forwards them
+# into Cloud Monitoring. A 60-second scrape interval keeps the dissertation
+# dashboard useful without creating unnecessary free-trial telemetry volume.
+metrics:
+  receivers:
+    claims_pipeline:
+      type: prometheus
+      config:
+        scrape_configs:
+          - job_name: claims_listener
+            scrape_interval: 60s
+            static_configs:
+              - targets: ["127.0.0.1:9101"]
+            metric_relabel_configs:
+              # Keep only purpose-built listener metrics plus Prometheus's `up`
+              # signal. Dropping library noise keeps cost and dashboard clutter low.
+              - source_labels: [__name__]
+                regex: "claims_listener_.*|up"
+                action: keep
+
+          - job_name: claims_scoring_worker
+            scrape_interval: 60s
+            static_configs:
+              - targets: ["127.0.0.1:9102"]
+            metric_relabel_configs:
+              - source_labels: [__name__]
+                regex: "claims_scoring_.*|up"
+                action: keep
+
+          - job_name: claims_kafka
+            scrape_interval: 60s
+            static_configs:
+              - targets: ["127.0.0.1:9308"]
+            metric_relabel_configs:
+              # Consumer lag is the most useful Kafka signal for this pipeline.
+              # Broker and topic counts help distinguish "idle" from "broken".
+              - source_labels: [__name__]
+                regex: "kafka_brokers|kafka_topic_partitions|kafka_consumergroup_lag|kafka_consumergroup_current_offset|up"
+                action: keep
+
+  service:
+    pipelines:
+      claims_prometheus:
+        receivers: [claims_pipeline]
+
+logging:
+  receivers:
+    docker_containers:
+      type: files
+      include_paths:
+        - /var/lib/docker/containers/*/*-json.log
+      record_log_file_path: true
+
+  processors:
+    parse_docker_envelope:
+      # Docker wraps each stdout line with time and stream fields. Parsing that
+      # small envelope makes both the original application line and timestamp
+      # searchable in Cloud Logging.
+      type: parse_json
+      field: message
+
+  service:
+    pipelines:
+      claims_docker_logs:
+        receivers: [docker_containers]
+        processors: [parse_docker_envelope]

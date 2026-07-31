@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from web3.exceptions import Web3RPCError
 
-from backend.app.blockchain import SepoliaClaimsRegistry
+from backend.app.blockchain import BlockchainSubmissionError, SepoliaClaimsRegistry
 
 
 class FakeFunction:
@@ -111,6 +111,55 @@ class StaleNonceEth:
     def wait_for_transaction_receipt(_transaction_hash, *, timeout):
         assert timeout == 180
         return {"status": 1, "blockNumber": 100}
+
+
+def test_read_only_factory_does_not_require_or_load_a_private_key(monkeypatch):
+    """Browsing public contract state must not need access to a wallet."""
+
+    captured = {}
+
+    class ReadOnlyProbe(SepoliaClaimsRegistry):
+        def __init__(
+            self,
+            *,
+            rpc_url,
+            private_key,
+            ignition_dir,
+            module_id,
+            receipt_timeout,
+            private_key_env,
+        ):
+            captured.update(
+                rpc_url=rpc_url,
+                private_key=private_key,
+                ignition_dir=ignition_dir,
+                module_id=module_id,
+                receipt_timeout=receipt_timeout,
+                private_key_env=private_key_env,
+            )
+
+    monkeypatch.setenv("SEPOLIA_RPC_URL", "https://rpc.example.test")
+    monkeypatch.delenv("SEPOLIA_SUBMITTER_PRIVATE_KEY", raising=False)
+
+    registry = ReadOnlyProbe.from_env(require_private_key=False)
+
+    assert isinstance(registry, ReadOnlyProbe)
+    assert captured["rpc_url"] == "https://rpc.example.test"
+    assert captured["private_key"] is None
+
+
+def test_write_factory_still_requires_a_private_key(monkeypatch):
+    """Transaction-capable clients must fail closed when no signer is supplied."""
+
+    monkeypatch.setenv("SEPOLIA_RPC_URL", "https://rpc.example.test")
+    monkeypatch.delenv("SEPOLIA_SUBMITTER_PRIVATE_KEY", raising=False)
+
+    try:
+        SepoliaClaimsRegistry.from_env()
+    except BlockchainSubmissionError as exc:
+        assert "SEPOLIA_SUBMITTER_PRIVATE_KEY" in str(exc)
+    else:
+        raise AssertionError("Expected the write-capable factory to require a key")
 
 
 def test_registry_retries_nonce_reported_by_rpc():

@@ -25,6 +25,10 @@ class IPFSError(RuntimeError):
     """Raised when IPFS configuration or an IPFS request fails."""
 
 
+class InvalidIPFSPointer(IPFSError):
+    """Raised when a pointer is structurally invalid and retrying cannot help."""
+
+
 class IPFSClient:
     """Upload public bytes and safely resolve the resulting IPFS pointer."""
 
@@ -87,13 +91,20 @@ class IPFSClient:
     @staticmethod
     def target_from_pointer(pointer: str) -> str:
         """Take the CID and optional subpath from a safe ipfs:// pointer."""
-        parsed = urlsplit(pointer)
+        try:
+            parsed = urlsplit(pointer)
+        except ValueError as exc:
+            raise InvalidIPFSPointer(
+                f"Invalid IPFS data pointer: {pointer!r}"
+            ) from exc
         if parsed.scheme != "ipfs":
-            raise IPFSError(f"Unsupported data pointer: {pointer!r}")
+            raise InvalidIPFSPointer(f"Unsupported data pointer: {pointer!r}")
+        if parsed.query or parsed.fragment or parsed.username or parsed.password:
+            raise InvalidIPFSPointer(f"Invalid IPFS data pointer: {pointer!r}")
 
         target = f"{parsed.netloc}{parsed.path}".lstrip("/")
         if not target or target.startswith(".") or "/../" in f"/{target}/":
-            raise IPFSError(f"Invalid IPFS data pointer: {pointer!r}")
+            raise InvalidIPFSPointer(f"Invalid IPFS data pointer: {pointer!r}")
         return target
 
     def gateway_url(self, pointer: str) -> str:

@@ -82,16 +82,17 @@ def load_deployment(
 
 
 class SepoliaClaimsRegistry:
-    """Read the registry and sign testnet transactions with one service wallet."""
+    """Read the registry and optionally sign writes with a testnet wallet."""
 
     def __init__(
         self,
         *,
         rpc_url: str,
-        private_key: str,
+        private_key: str | None,
         ignition_dir: Path = DEFAULT_IGNITION_DIR,
         module_id: str = DEFAULT_MODULE_ID,
         receipt_timeout: int = 180,
+        private_key_env: str = "SEPOLIA_SUBMITTER_PRIVATE_KEY",
     ) -> None:
         self.w3 = Web3(Web3.HTTPProvider(rpc_url))
 
@@ -108,12 +109,19 @@ class SepoliaClaimsRegistry:
 
         address, abi = load_deployment(ignition_dir, module_id)
         self.contract = self.w3.eth.contract(address=address, abi=abi)
-        try:
-            self.account = self.w3.eth.account.from_key(private_key)
-        except Exception as exc:
-            raise BlockchainSubmissionError(
-                "SEPOLIA_PRIVATE_KEY is not a valid Ethereum private key"
-            ) from exc
+
+        # Public reads need only the RPC endpoint and deployed contract address.
+        # The query-only FastAPI dependency deliberately passes no key, keeping
+        # signing authority out of a code path that can never submit a write.
+        self.account = None
+        self.private_key_env = private_key_env
+        if private_key is not None:
+            try:
+                self.account = self.w3.eth.account.from_key(private_key)
+            except Exception as exc:
+                raise BlockchainSubmissionError(
+                    f"{private_key_env} is not a valid Ethereum private key"
+                ) from exc
         self.receipt_timeout = receipt_timeout
         # Ethereum accepts each wallet nonce only once. FastAPI and the worker can
         # issue writes close together, so keep nonce allocation inside one lock
@@ -122,14 +130,31 @@ class SepoliaClaimsRegistry:
         self._next_nonce: int | None = None
 
     @classmethod
-    def from_env(cls) -> "SepoliaClaimsRegistry":
+    def from_env(
+        cls,
+        *,
+        require_private_key: bool = True,
+        private_key_env: str = "SEPOLIA_SUBMITTER_PRIVATE_KEY",
+    ) -> "SepoliaClaimsRegistry":
+        """Create either a read-only client or a transaction-capable client.
+
+        Write callers use the safe default and must provide a wallet. Public
+        query callers explicitly opt out, and the environment key is not even
+        loaded into that client.
+        """
+
         rpc_url = os.environ.get("SEPOLIA_RPC_URL") or os.environ.get("RPC_URL")
-        private_key = os.environ.get("SEPOLIA_PRIVATE_KEY")
+        private_key = (
+            os.environ.get(private_key_env) if require_private_key else None
+        )
         missing = [
             name
             for name, value in (
                 ("SEPOLIA_RPC_URL", rpc_url),
-                ("SEPOLIA_PRIVATE_KEY", private_key),
+                (
+                    private_key_env,
+                    private_key if require_private_key else "not-required",
+                ),
             )
             if not value
         ]
@@ -146,16 +171,27 @@ class SepoliaClaimsRegistry:
             ),
             module_id=os.environ.get("MODULE_ID", DEFAULT_MODULE_ID),
             receipt_timeout=int(os.environ.get("RECEIPT_TIMEOUT", "180")),
+            private_key_env=private_key_env,
         )
+
+    def _signing_account(self):
+        """Return the configured signer or fail before constructing a write."""
+
+        if self.account is None:
+            raise BlockchainSubmissionError(
+                f"{self.private_key_env} is required for blockchain writes"
+            )
+        return self.account
 
     def submit_claim(self, claim_hash: bytes, data_pointer: str) -> ChainSubmission:
         """Submit a claim and read its new ID from the contract event."""
 
         try:
+            account = self._signing_account()
             with self._submission_lock:
                 if self._next_nonce is None:
                     self._next_nonce = self.w3.eth.get_transaction_count(
-                        self.account.address, "pending"
+                        account.address, "pending"
                     )
 
                 for attempt in range(2):
@@ -164,12 +200,12 @@ class SepoliaClaimsRegistry:
                         claim_hash, data_pointer
                     ).build_transaction(
                         {
-                            "from": self.account.address,
+                            "from": account.address,
                             "nonce": nonce,
                             "chainId": SEPOLIA_CHAIN_ID,
                         }
                     )
-                    signed = self.account.sign_transaction(transaction)
+                    signed = account.sign_transaction(transaction)
                     try:
                         transaction_hash = self.w3.eth.send_raw_transaction(
                             signed.raw_transaction
@@ -232,10 +268,11 @@ class SepoliaClaimsRegistry:
             )
 
         try:
+            account = self._signing_account()
             with self._submission_lock:
                 if self._next_nonce is None:
                     self._next_nonce = self.w3.eth.get_transaction_count(
-                        self.account.address, "pending"
+                        account.address, "pending"
                     )
 
                 for attempt in range(2):
@@ -244,12 +281,12 @@ class SepoliaClaimsRegistry:
                         claim_id, status, fraud_score
                     ).build_transaction(
                         {
-                            "from": self.account.address,
+                            "from": account.address,
                             "nonce": nonce,
                             "chainId": SEPOLIA_CHAIN_ID,
                         }
                     )
-                    signed = self.account.sign_transaction(transaction)
+                    signed = account.sign_transaction(transaction)
                     try:
                         transaction_hash = self.w3.eth.send_raw_transaction(
                             signed.raw_transaction

@@ -19,7 +19,12 @@ from backend.app.models import (
     DuplicateMatchResponse,
     HealthResponse,
 )
-from backend.app.service import ClaimSubmissionService, ClaimSubmissionServiceError
+from backend.app.service import (
+    ClaimQueryService,
+    ClaimQueryServiceError,
+    ClaimSubmissionService,
+    ClaimSubmissionServiceError,
+)
 from integrations.postgres import (
     PostgresAssessmentRepository,
     PostgresConfigurationError,
@@ -56,13 +61,39 @@ app.add_middleware(
 
 @lru_cache
 def get_claim_submission_service() -> ClaimSubmissionService:
-    """Create the external clients once and reuse them for later requests."""
+    """Create write clients once and explain missing configuration as JSON."""
 
-    return ClaimSubmissionService.from_env()
+    try:
+        return ClaimSubmissionService.from_env()
+    except ClaimSubmissionServiceError as exc:
+        # Dependency construction happens before the route function. Translating
+        # the error here prevents FastAPI from returning an unexplained plain 500.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Claim submission is unavailable: {exc}",
+        ) from exc
 
 
 ClaimServiceDependency = Annotated[
     ClaimSubmissionService, Depends(get_claim_submission_service)
+]
+
+
+@lru_cache
+def get_claim_query_service() -> ClaimQueryService:
+    """Create a public read client with no wallet or Pinata credential."""
+
+    try:
+        return ClaimQueryService.from_env()
+    except ClaimQueryServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Claims registry is unavailable: {exc}",
+        ) from exc
+
+
+ClaimQueryDependency = Annotated[
+    ClaimQueryService, Depends(get_claim_query_service)
 ]
 
 
@@ -94,14 +125,14 @@ def health() -> HealthResponse:
 
 @app.get("/claims", response_model=ClaimPageResponse, tags=["claims"])
 def list_claims(
-    service: ClaimServiceDependency,
+    service: ClaimQueryDependency,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> ClaimPageResponse:
     # FastAPI checks the page values before this function is called.
     try:
         return service.list_claims(page=page, page_size=page_size)
-    except ClaimSubmissionServiceError as exc:
+    except ClaimQueryServiceError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),

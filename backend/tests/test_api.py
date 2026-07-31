@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from backend.app.main import (
     app,
     get_assessment_repository,
+    get_claim_query_service,
     get_claim_submission_service,
 )
 from backend.app.models import (
@@ -11,7 +12,12 @@ from backend.app.models import (
     ClaimPageResponse,
     ClaimSubmissionResponse,
 )
-from backend.app.service import ClaimSubmissionServiceError
+from backend.app.service import (
+    ClaimQueryService,
+    ClaimQueryServiceError,
+    ClaimSubmissionService,
+    ClaimSubmissionServiceError,
+)
 from duplicates import DuplicateCheck, DuplicateMatch
 from integrations.postgres import AssessmentRecord
 from model.contracts import FraudReason
@@ -209,7 +215,7 @@ def test_submit_claim_returns_anchor_while_async_assessment_is_pending():
 
 
 def test_list_claims_returns_current_on_chain_state():
-    app.dependency_overrides[get_claim_submission_service] = SuccessfulService
+    app.dependency_overrides[get_claim_query_service] = SuccessfulService
     try:
         response = TestClient(app).get("/claims?page=2&page_size=5")
     finally:
@@ -289,7 +295,7 @@ def test_get_claim_assessment_returns_not_found_while_pending():
 
 
 def test_list_claims_validates_pagination_parameters():
-    app.dependency_overrides[get_claim_submission_service] = SuccessfulService
+    app.dependency_overrides[get_claim_query_service] = SuccessfulService
     try:
         response = TestClient(app).get("/claims?page=0&page_size=100")
     finally:
@@ -331,3 +337,58 @@ def test_submit_claim_reports_upstream_failure():
 
     assert response.status_code == 502
     assert response.json() == {"detail": "upstream unavailable"}
+
+
+def test_list_claims_reports_missing_read_configuration_as_json_503(monkeypatch):
+    """A missing public RPC should be understandable to the browser and user."""
+
+    def unavailable(_service_class):
+        raise ClaimQueryServiceError("SEPOLIA_RPC_URL is not configured")
+
+    # This test exercises the real FastAPI dependency instead of replacing it.
+    # Clearing the small process cache ensures the patched factory is called.
+    get_claim_query_service.cache_clear()
+    monkeypatch.setattr(
+        ClaimQueryService,
+        "from_env",
+        classmethod(unavailable),
+    )
+    try:
+        response = TestClient(app).get("/claims")
+    finally:
+        get_claim_query_service.cache_clear()
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": (
+            "Claims registry is unavailable: SEPOLIA_RPC_URL is not configured"
+        )
+    }
+
+
+def test_submit_claim_reports_missing_write_configuration_as_json_503(monkeypatch):
+    """Missing wallet or Pinata settings must not escape as a plain HTTP 500."""
+
+    def unavailable(_service_class):
+        raise ClaimSubmissionServiceError(
+            "SEPOLIA_SUBMITTER_PRIVATE_KEY is not configured"
+        )
+
+    get_claim_submission_service.cache_clear()
+    monkeypatch.setattr(
+        ClaimSubmissionService,
+        "from_env",
+        classmethod(unavailable),
+    )
+    try:
+        response = TestClient(app).post("/claims", json=VALID_CLAIM)
+    finally:
+        get_claim_submission_service.cache_clear()
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": (
+            "Claim submission is unavailable: "
+            "SEPOLIA_SUBMITTER_PRIVATE_KEY is not configured"
+        )
+    }

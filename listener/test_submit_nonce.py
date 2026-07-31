@@ -23,8 +23,7 @@ def load_send_function(w3, acct):
     )
     namespace = {
         "w3": w3,
-        "acct": acct,
-        "next_nonce": None,
+        "next_nonces": {},
         "re": re,
         "Web3RPCError": Web3RPCError,
     }
@@ -32,7 +31,8 @@ def load_send_function(w3, acct):
         compile(ast.Module(body=[send_node], type_ignores=[]), str(SCRIPT), "exec"),
         namespace,
     )
-    return namespace["send"]
+    send = namespace["send"]
+    return lambda function: send(function, acct)
 
 
 class FakeFunction:

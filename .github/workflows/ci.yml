@@ -36,7 +36,7 @@ jobs:
       - name: Run Python correctness lint
         run: >-
           ruff check --select E4,E7,E9,F
-          backend duplicates integrations listener model
+          backend duplicates integrations listener model observability
           --exclude model/notebooks
       - name: Run isolated tests with branch coverage
         run: >-
@@ -49,6 +49,7 @@ jobs:
           --cov=listener.block_cursor
           --cov=listener.claims_listener
           --cov=model.xgboost_scorer
+          --cov=observability
           --cov-report=term-missing
 
   integration:
@@ -122,3 +123,38 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       - run: npx hardhat test
       - run: npx hardhat build --build-profile production
+
+  cloud-deployment:
+    name: Google Cloud deployment configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      # Compose needs the referenced file to exist while resolving services.
+      # Placeholder values are safe here because no containers are started.
+      - name: Validate the single-VM Compose model
+        run: |
+          cp deploy/gcp/.env.gcp.example deploy/gcp/.env.gcp
+          docker compose \
+            --env-file deploy/gcp/.env.gcp \
+            --file deploy/gcp/compose.yml \
+            --profile training \
+            config --quiet
+
+      # The official Terraform image keeps the runner setup small. Init only
+      # downloads the locked Google provider; validate never creates cloud state.
+      - name: Validate the Compute Engine infrastructure
+        run: |
+          docker run --rm \
+            -v "$PWD/deploy/gcp:/workspace" \
+            -w /workspace/terraform \
+            hashicorp/terraform:1.13.5 fmt -check -recursive
+          docker run --rm \
+            -v "$PWD/deploy/gcp:/workspace" \
+            -w /workspace/terraform \
+            hashicorp/terraform:1.13.5 init -backend=false
+          docker run --rm \
+            -v "$PWD/deploy/gcp:/workspace" \
+            -w /workspace/terraform \
+            hashicorp/terraform:1.13.5 validate

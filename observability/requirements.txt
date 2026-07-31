@@ -1,0 +1,4 @@
+# The applications expose a small Prometheus endpoint. On the Google Cloud VM,
+# the Ops Agent scrapes this endpoint and forwards the samples to Cloud
+# Monitoring, so the application does not need a Google-specific metrics SDK.
+prometheus-client>=0.22,<1.0

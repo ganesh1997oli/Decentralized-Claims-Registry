@@ -14,7 +14,7 @@ on an in-memory event filter. Configuration and run instructions live in
 import json
 import os
 import sys
-import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -30,13 +30,14 @@ else:
         sys.path.insert(0, repository_root)
     from block_cursor import BlockCursor
 
-from integrations.ipfs import IPFSClient, IPFSError
+from integrations.ipfs import IPFSClient, IPFSError, InvalidIPFSPointer
 from integrations.kafka import (
     ClaimEventPublisher,
     ClaimSubmittedEvent,
     KafkaSettings,
     create_publisher,
 )
+from observability import ListenerMetrics, ShutdownSignal
 
 # If you hit an "extraData" validation error on Sepolia, uncomment these:
 # from web3.middleware import ExtraDataToPOAMiddleware
@@ -44,7 +45,7 @@ from integrations.kafka import (
 RPC_URL = (
     os.environ.get("RPC_URL")
     or os.environ.get("SEPOLIA_RPC_URL")
-    or "https://ethereum-sepolia-rpc.publicnode.com"
+    or "https://ethereum-sepolia.publicnode.com"
 )
 
 DEFAULT_IGNITION_DIR = (
@@ -60,6 +61,7 @@ IGNITION_DIR = Path(os.environ.get("IGNITION_DIR", DEFAULT_IGNITION_DIR))
 MODULE_ID = os.environ.get("MODULE_ID", "ClaimsRegistryModule#ClaimsRegistry")
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 CONFIRMATION_BLOCKS = int(os.environ.get("CONFIRMATION_BLOCKS", "2"))
+MAX_BLOCK_RANGE = int(os.environ.get("MAX_BLOCK_RANGE", "50"))
 
 # Keep this order the same as the Status enum in the Solidity contract.
 STATUS_NAMES = ["Submitted", "UnderReview", "Approved", "Rejected", "Flagged"]
@@ -91,6 +93,41 @@ class BlockCheckpoint(Protocol):
     def save(self, block_number: int) -> None: ...
 
 
+class PermanentClaimEventError(RuntimeError):
+    """An invalid immutable event that cannot become valid on a later retry."""
+
+
+class DeadLetterSink(Protocol):
+    def record(self, event: Any, error: PermanentClaimEventError) -> None: ...
+
+
+class JsonlDeadLetterSink:
+    """Durably record rejected public chain events for operator review."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def record(self, event: Any, error: PermanentClaimEventError) -> None:
+        args = event["args"]
+        transaction_hash = hx(event["transactionHash"])
+        entry = {
+            "recordedAt": datetime.now(timezone.utc).isoformat(),
+            "eventId": f"{transaction_hash}:{event['logIndex']}",
+            "event": event["event"],
+            "claimId": args["claimId"],
+            "blockNumber": event["blockNumber"],
+            "transactionHash": transaction_hash,
+            "logIndex": event["logIndex"],
+            "dataPointer": args["dataPointer"],
+            "reason": str(error),
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as dead_letter_file:
+            dead_letter_file.write(
+                json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n"
+            )
+
+
 class ClaimEventProcessor:
     """Verify confirmed claim logs and publish deterministic scoring events."""
 
@@ -104,12 +141,22 @@ class ClaimEventProcessor:
         contract: Any,
         ipfs: ClaimPayloadReader,
         publisher: ClaimEventPublisher | None,
+        metrics: ListenerMetrics | None = None,
+        dead_letter: DeadLetterSink | None = None,
     ) -> None:
+        """Keep the external adapters needed to process confirmed logs.
+
+        Metrics are optional so the same processor stays lightweight in local
+        scripts and tests. The cloud entry point supplies them explicitly.
+        """
+
         self.chain_id = chain_id
         self.contract_address = contract_address
         self.contract = contract
         self.ipfs = ipfs
         self.publisher = publisher
+        self.metrics = metrics
+        self.dead_letter = dead_letter
 
     def process_range(self, from_block: int, to_block: int) -> None:
         """Handle all watched logs in canonical blockchain order."""
@@ -127,12 +174,26 @@ class ClaimEventProcessor:
         # order so a submission is never observed after its later assessment.
         entries.sort(key=lambda event: (event["blockNumber"], event["logIndex"]))
         for event in entries:
-            if event["event"] == "ClaimSubmitted":
-                self._handle_claim_submitted(event)
-            elif event["event"] == "ClaimAssessed":
-                self._handle_claim_assessed(event)
-            else:
-                raise ValueError(f"Unsupported claim event: {event['event']}")
+            try:
+                if event["event"] == "ClaimSubmitted":
+                    self._handle_claim_submitted(event)
+                elif event["event"] == "ClaimAssessed":
+                    self._handle_claim_assessed(event)
+                else:
+                    raise ValueError(
+                        f"Unsupported claim event: {event['event']}"
+                    )
+            except PermanentClaimEventError as exc:
+                # The event is already immutable on-chain. Reprocessing the same
+                # malformed pointer or hash can never fix it, so record it
+                # durably and allow later claims in the range to make progress.
+                if self.dead_letter is None:
+                    raise
+                self.dead_letter.record(event, exc)
+                print(
+                    f"[ClaimQuarantined] claimId={event['args']['claimId']} "
+                    f"block={event['blockNumber']} reason={exc}"
+                )
 
     def _verified_payload(
         self,
@@ -143,6 +204,11 @@ class ClaimEventProcessor:
     ) -> bytes:
         try:
             payload = self.ipfs.download_pointer(pointer)
+        except InvalidIPFSPointer as exc:
+            print(f"[InvalidIPFSPointer] claimId={claim_id} error={exc}")
+            raise PermanentClaimEventError(
+                f"Invalid IPFS pointer for claim {claim_id}: {exc}"
+            ) from exc
         except IPFSError as exc:
             print(f"[IPFSError] claimId={claim_id} pointer={pointer} error={exc}")
             raise RuntimeError(
@@ -157,7 +223,9 @@ class ClaimEventProcessor:
                 f"[IPFSVerificationFailed] claimId={claim_id} "
                 f"expected={hx(expected_hash)} actual={hx(actual_hash)}"
             )
-            raise RuntimeError(f"IPFS verification failed for claim {claim_id}")
+            raise PermanentClaimEventError(
+                f"IPFS hash mismatch for claim {claim_id}"
+            )
 
         print(
             f"[IPFSVerified] claimId={claim_id} pointer={pointer} "
@@ -182,6 +250,8 @@ class ClaimEventProcessor:
         )
 
         if self.publisher is None:
+            if self.metrics is not None:
+                self.metrics.observe_event("claim_submitted")
             return
 
         # The event ID is derived from the immutable chain log. Replaying the
@@ -200,13 +270,18 @@ class ClaimEventProcessor:
             event_timestamp=args["timestamp"],
         )
         self.publisher.publish(claim_event)
+        # Count this event only after the producer has received Kafka's
+        # acknowledgement. A failed attempt remains visible through the poll
+        # error metric and will be retried from the durable block checkpoint.
+        if self.metrics is not None:
+            self.metrics.observe_event("claim_submitted")
+            self.metrics.observe_kafka_publication()
         print(
             f"[KafkaPublished] eventId={claim_event.event_id} "
             f"topic={self.publisher.topic}"
         )
 
-    @staticmethod
-    def _handle_claim_assessed(event: Any) -> None:
+    def _handle_claim_assessed(self, event: Any) -> None:
         args = event["args"]
         raw_status = args["newStatus"]
         status = (
@@ -220,6 +295,8 @@ class ClaimEventProcessor:
             f"({args['fraudScore'] / 100:.2f}%) assessor={args['assessor']} "
             f"block={event['blockNumber']} tx={hx(event['transactionHash'])}"
         )
+        if self.metrics is not None:
+            self.metrics.observe_event("claim_assessed")
 
 
 class ConfirmedBlockPoller:
@@ -231,26 +308,43 @@ class ConfirmedBlockPoller:
         processor: BlockRangeProcessor,
         checkpoint: BlockCheckpoint,
         confirmation_blocks: int,
+        max_block_range: int | None = None,
     ) -> None:
         if confirmation_blocks < 0:
             raise ValueError("confirmation_blocks cannot be negative")
+        if max_block_range is not None and max_block_range < 1:
+            raise ValueError("max_block_range must be at least 1")
         self.processor = processor
         self.checkpoint = checkpoint
         self.confirmation_blocks = confirmation_blocks
+        self.max_block_range = max_block_range
 
     def process_latest(self, *, latest_block: int, last_processed: int) -> int:
         safe_block = latest_block - self.confirmation_blocks
         if safe_block <= last_processed:
             return last_processed
 
-        self.processor.process_range(last_processed + 1, safe_block)
+        range_end = safe_block
+        if self.max_block_range is not None:
+            range_end = min(
+                range_end,
+                last_processed + self.max_block_range,
+            )
+
+        self.processor.process_range(last_processed + 1, range_end)
         # A processing exception exits before this save, guaranteeing that the
         # failed range is retried from the previous durable checkpoint.
-        self.checkpoint.save(safe_block)
-        return safe_block
+        self.checkpoint.save(range_end)
+        return range_end
 
 
 def main():
+    # Metrics contain no claimant data. The Ops Agent reads this private
+    # endpoint on the VM and forwards the samples to Cloud Monitoring.
+    metrics = ListenerMetrics.start_from_env()
+    shutdown = ShutdownSignal()
+    shutdown.install()
+
     contract_address, abi = load_deployment(IGNITION_DIR, MODULE_ID)
     w3 = Web3(Web3.HTTPProvider(RPC_URL))
     # If Sepolia reports an extraData validation error, inject
@@ -269,17 +363,26 @@ def main():
         )
     )
     cursor = BlockCursor(state_path, chain_id, contract_address)
+    dead_letter_path = Path(
+        os.environ.get(
+            "LISTENER_DEAD_LETTER_FILE",
+            state_path.with_name("dead-letter.jsonl"),
+        )
+    )
     processor = ClaimEventProcessor(
         chain_id=chain_id,
         contract_address=contract_address,
         contract=contract,
         ipfs=IPFSClient.from_env(),
         publisher=claim_event_publisher,
+        metrics=metrics,
+        dead_letter=JsonlDeadLetterSink(dead_letter_path),
     )
     poller = ConfirmedBlockPoller(
         processor=processor,
         checkpoint=cursor,
         confirmation_blocks=CONFIRMATION_BLOCKS,
+        max_block_range=MAX_BLOCK_RANGE,
     )
 
     print(
@@ -297,19 +400,28 @@ def main():
     first_run_default = int(start_block) - 1 if start_block else first_safe_block
     last_processed = cursor.load(default=first_run_default)
     print(f"Listener checkpoint: {state_path} (last block {last_processed})")
+    print(f"Listener dead-letter file: {dead_letter_path}")
 
     try:
-        while True:
+        while not shutdown.is_set():
             try:
                 latest = w3.eth.block_number
                 last_processed = poller.process_latest(
                     latest_block=latest,
                     last_processed=last_processed,
                 )
+                metrics.observe_poll(
+                    latest_block=latest,
+                    last_processed_block=last_processed,
+                    confirmation_blocks=CONFIRMATION_BLOCKS,
+                )
             except Exception as exc:
                 # RPC, IPFS and Kafka failures all retry from the saved checkpoint.
+                metrics.observe_poll_error()
                 print(f"Polling error (will retry): {exc}")
-            time.sleep(POLL_INTERVAL)
+            # Unlike time.sleep, this returns immediately when Docker asks the
+            # container to stop, making normal deployments quick and predictable.
+            shutdown.wait(POLL_INTERVAL)
     finally:
         if claim_event_publisher is not None:
             claim_event_publisher.close()

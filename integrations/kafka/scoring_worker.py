@@ -8,7 +8,8 @@ committed only after this handler returns successfully.
 
 from __future__ import annotations
 
-from typing import Protocol
+import time
+from typing import Callable, Protocol
 
 from web3 import Web3
 
@@ -28,6 +29,7 @@ from integrations.postgres import (
 )
 from model.contracts import FraudScore
 from model.xgboost_scorer import XGBoostFraudScorer
+from observability import ScoringMetrics, ShutdownSignal
 
 from .events import ClaimSubmittedEvent, KafkaClaimEventConsumer, KafkaSettings
 
@@ -38,6 +40,10 @@ class ClaimReader(Protocol):
 
 class ClaimScorer(Protocol):
     def score(self, claim: StoredClaimDocument) -> FraudScore: ...
+
+
+class ClaimEventHandler(Protocol):
+    def __call__(self, event: ClaimSubmittedEvent) -> None: ...
 
 
 class DuplicateDetector(Protocol):
@@ -91,6 +97,68 @@ def verify_claim_payload(event: ClaimSubmittedEvent, payload: bytes) -> None:
     expected_hash = event.claim_hash.removeprefix("0x").lower()
     if actual_hash != expected_hash:
         raise ValueError(f"IPFS hash does not match for Kafka event {event.event_id}")
+
+
+class MonitoredScorer:
+    """Measure model work while preserving the scorer's small public interface."""
+
+    def __init__(
+        self,
+        scorer: ClaimScorer,
+        metrics: ScoringMetrics,
+        *,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> None:
+        self.scorer = scorer
+        self.metrics = metrics
+        self.clock = clock
+
+    def score(self, claim: StoredClaimDocument) -> FraudScore:
+        """Run XGBoost and SHAP, then record timing and non-sensitive results."""
+
+        started_at = self.clock()
+        result = self.scorer.score(claim)
+        self.metrics.observe_inference(
+            duration_seconds=self.clock() - started_at,
+            probability=result.probability,
+            fraud_score=result.score_basis_points,
+        )
+        return result
+
+
+class MonitoredClaimHandler:
+    """Count completed and failed Kafka handler calls in one reliable place."""
+
+    def __init__(
+        self,
+        handler: ClaimEventHandler,
+        metrics: ScoringMetrics,
+        *,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> None:
+        self.handler = handler
+        self.metrics = metrics
+        self.clock = clock
+
+    def __call__(self, event: ClaimSubmittedEvent) -> None:
+        """Measure the whole operation, including database and Sepolia work."""
+
+        started_at = self.clock()
+        try:
+            self.handler(event)
+        except Exception:
+            self.metrics.observe_handled(
+                outcome="failed",
+                duration_seconds=self.clock() - started_at,
+            )
+            raise
+
+        # A previously completed, replayed event is also a successful outcome:
+        # the idempotency protection handled it exactly as designed.
+        self.metrics.observe_handled(
+            outcome="completed",
+            duration_seconds=self.clock() - started_at,
+        )
 
 
 class ClaimScoringHandler:
@@ -198,29 +266,42 @@ class ClaimScoringHandler:
 
 
 def main() -> None:
+    metrics = ScoringMetrics.start_from_env()
+    shutdown = ShutdownSignal()
+    shutdown.install()
+
     settings = KafkaSettings.from_env()
     if not settings.enabled:
         raise SystemExit("Set KAFKA_ENABLED=true before starting the scoring worker")
 
     repository = PostgresAssessmentRepository.from_env()
     repository.ensure_schema()
+    # Keep model-only latency separate from total pipeline time. Blockchain
+    # confirmation can take seconds, so combining both would make a 500 ms
+    # inference target impossible to interpret fairly.
+    scorer = MonitoredScorer(XGBoostFraudScorer.from_env(), metrics)
     handler = ClaimScoringHandler(
         ipfs=IPFSClient.from_env(),
-        scorer=XGBoostFraudScorer.from_env(),
+        scorer=scorer,
         duplicate_detector=CrossInsurerDuplicateDetector.from_env(repository),
         feature_processor=ClaimFeatureProcessor.from_env(repository),
         repository=repository,
-        registry=SepoliaClaimsRegistry.from_env(),
+        registry=SepoliaClaimsRegistry.from_env(
+            private_key_env="SEPOLIA_ASSESSOR_PRIVATE_KEY"
+        ),
     )
+    monitored_handler = MonitoredClaimHandler(handler, metrics)
     consumer = KafkaClaimEventConsumer(settings)
     print(
         f"Scoring {settings.topic} from {settings.bootstrap_servers} "
         f"as group {settings.consumer_group_id}"
     )
     try:
-        while True:
-            consumer.process_next(handler)
+        while not shutdown.is_set():
+            consumer.process_next(monitored_handler)
     except KeyboardInterrupt:
+        # This remains as a defensive fallback for platforms that deliver a
+        # KeyboardInterrupt before our SIGINT handler has been installed.
         print("Stopping scoring worker")
     finally:
         consumer.close()

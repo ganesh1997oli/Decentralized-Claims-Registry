@@ -79,15 +79,21 @@ React ──► FastAPI ──► IPFS + Sepolia claim anchor
 | `integrations/ipfs/` | Shared Pinata and IPFS adapter | [IPFS guide](integrations/ipfs/README.md) |
 | `integrations/kafka/` | Kafka messages, producer, consumer and local broker | [Kafka guide](integrations/kafka/README.md) |
 | `integrations/postgres/` | Versioned feature, duplicate, and assessment storage | [PostgreSQL guide](integrations/postgres/README.md) |
+| `deploy/gcp/` | Single-VM Google Cloud research deployment and monitoring | [Google Cloud guide](deploy/gcp/README.md) |
 
-## Current Sepolia deployment
+## Hardened Sepolia deployment
 
 - Network: Ethereum Sepolia (`11155111`)
-- Contract: `0x57E3203b9427BE41c753bEedD526D81a66bFc2AB`
+- Contract: `0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB`
 - Ignition module: `ClaimsRegistryModule#ClaimsRegistry`
-- Explorer: [view the contract on Sepolia Etherscan](https://sepolia.etherscan.io/address/0x57E3203b9427BE41c753bEedD526D81a66bFc2AB)
+- Ignition deployment: `sepolia-security-audit-v1`
+- Explorer: [view the contract on Sepolia Etherscan](https://sepolia.etherscan.io/address/0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB)
 
-The application reads the address and ABI from
+The earlier contract at `0x57E3203b9427BE41c753bEedD526D81a66bFc2AB`
+is retained only as a legacy research record. It does not contain the hardened
+role and lifecycle rules.
+
+The application reads the selected address and ABI from
 `contract/ignition/deployments/chain-11155111/`; the address is not duplicated in
 the Python source.
 
@@ -96,7 +102,8 @@ the Python source.
 - Node.js 22 or later and npm
 - Python 3.10 or later
 - A Sepolia RPC endpoint
-- A fresh Sepolia-only wallet with test ETH
+- Three separate Sepolia-only wallets for deployment/admin, submission, and
+  assessment; write accounts need test ETH
 - A Pinata JWT with public file-upload permission
 - Docker Desktop for the local Kafka and PostgreSQL environment
 
@@ -106,8 +113,9 @@ the same settings through its secret manager instead of copying that file.
 
 ## First-time local setup
 
-The Sepolia contract is already deployed, so normal application testing does
-not require another contract deployment.
+Unit and integration tests do not require deployment. Running the hardened
+end-to-end flow on Sepolia does require a new user-controlled deployment because
+the checked-in address is the legacy contract.
 
 Run the following commands from the repository root.
 
@@ -148,8 +156,13 @@ cp .env.example .env.local
 
 Open `.env.local` and add:
 
-- `SEPOLIA_PRIVATE_KEY`: a fresh testnet-only wallet key;
+- `SEPOLIA_SUBMITTER_PRIVATE_KEY`: the account granted submission permission;
+- `SEPOLIA_ASSESSOR_PRIVATE_KEY`: the separately granted scoring account;
 - `PINATA_JWT`: a server-side Pinata upload token.
+
+Keep `SEPOLIA_DEPLOYER_PRIVATE_KEY` only on the machine used for a contract
+deployment; the normal API and worker do not need it. Browsing the public claims
+list intentionally loads no wallet or Pinata secret.
 
 The example contains a fictional-data-only `DUPLICATE_FINGERPRINT_KEY`. Replace
 it with a secret value of at least 32 bytes before hosting the worker. Keep the

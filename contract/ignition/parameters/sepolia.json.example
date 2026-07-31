@@ -1,0 +1,8 @@
+{
+  "ClaimsRegistryModule": {
+    "initialAdmin": "0x0000000000000000000000000000000000000001",
+    "initialSubmitter": "0x0000000000000000000000000000000000000002",
+    "initialAssessor": "0x0000000000000000000000000000000000000003",
+    "adminTransferDelaySeconds": 86400
+  }
+}

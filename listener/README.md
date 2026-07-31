@@ -32,7 +32,10 @@ order. For each `ClaimSubmitted` event it:
 6. advances the local block checkpoint only after processing succeeds.
 
 If RPC, IPFS, or Kafka processing fails, the checkpoint does not advance and the
-same range is retried.
+same range is retried. A structurally invalid immutable pointer or a permanent
+hash mismatch is instead written to the durable dead-letter JSONL file and
+skipped, so one bad historical event cannot halt every later claim. Review that
+file before deciding whether to replay or investigate an event.
 
 ## Install
 
@@ -71,20 +74,24 @@ set +a
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SEPOLIA_RPC_URL` | Public Sepolia endpoint in the script | Ethereum RPC endpoint |
-| `SEPOLIA_PRIVATE_KEY` | Empty | Used only by the command-line submission demo |
+| `SEPOLIA_SUBMITTER_PRIVATE_KEY` | Empty | Used only by the command-line submission demo |
+| `SEPOLIA_ASSESSOR_PRIVATE_KEY` | Empty | Used only by the command-line assessment demo |
 | `IGNITION_DIR` | Sepolia Ignition deployment | Address and ABI location |
 | `MODULE_ID` | `ClaimsRegistryModule#ClaimsRegistry` | Ignition artifact ID |
 | `POLL_INTERVAL` | `5` | Seconds between polling attempts |
 | `CONFIRMATION_BLOCKS` | `2` | Blocks held back for basic reorganization safety |
+| `MAX_BLOCK_RANGE` | `50` | Maximum logs query size while catching up on a public RPC |
 | `LISTENER_STATE_FILE` | File under `listener/.state/` | Durable block checkpoint |
+| `LISTENER_DEAD_LETTER_FILE` | Beside the checkpoint | Durable rejected-event audit trail |
 | `LISTENER_START_BLOCK` | Latest confirmed block | First block for a deliberate initial backfill |
 
 IPFS variables are documented in the
 [IPFS guide](../integrations/ipfs/README.md). Kafka variables are documented in
 the [Kafka guide](../integrations/kafka/README.md).
 
-The listener only downloads IPFS data, so it does not require `PINATA_JWT`.
-`SEPOLIA_PRIVATE_KEY` is needed only by `submit_and_assess_demo.py`.
+The listener only downloads IPFS data, so it does not require `PINATA_JWT` or
+any wallet key. The two role keys are needed only by
+`submit_and_assess_demo.py`.
 
 ## Run
 
@@ -114,6 +121,8 @@ Expected output for a complete claim includes:
 ```
 
 With Kafka enabled, a verified submission also prints `[KafkaPublished]`.
+Rejected immutable events print `[ClaimQuarantined]` and are appended to the
+dead-letter file.
 
 ## First run and backfilling
 
@@ -134,7 +143,8 @@ and database consumers should use the event ID for deduplication.
 ## Command-line demonstration
 
 The backend is the recommended submission path. For a smaller terminal-only
-demonstration, load a Pinata JWT and a funded assessor key, then run:
+demonstration, load a Pinata JWT and the separately authorized submitter and
+assessor keys, then run:
 
 ```bash
 set -a
