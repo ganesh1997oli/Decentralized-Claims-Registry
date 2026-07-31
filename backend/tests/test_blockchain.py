@@ -1,6 +1,7 @@
 import threading
 from types import SimpleNamespace
 
+import pytest
 from web3.exceptions import Web3RPCError
 
 from backend.app.blockchain import BlockchainSubmissionError, SepoliaClaimsRegistry
@@ -124,21 +125,24 @@ def test_read_only_factory_does_not_require_or_load_a_private_key(monkeypatch):
             *,
             rpc_url,
             private_key,
-            ignition_dir,
-            module_id,
+            deployment,
+            access,
             receipt_timeout,
             private_key_env,
         ):
             captured.update(
                 rpc_url=rpc_url,
                 private_key=private_key,
-                ignition_dir=ignition_dir,
-                module_id=module_id,
+                deployment=deployment,
+                access=access,
                 receipt_timeout=receipt_timeout,
                 private_key_env=private_key_env,
             )
 
     monkeypatch.setenv("SEPOLIA_RPC_URL", "https://rpc.example.test")
+    monkeypatch.setenv(
+        "CLAIMS_DEPLOYMENT_ID", "sepolia-security-audit-v1"
+    )
     monkeypatch.delenv("SEPOLIA_SUBMITTER_PRIVATE_KEY", raising=False)
 
     registry = ReadOnlyProbe.from_env(require_private_key=False)
@@ -146,6 +150,8 @@ def test_read_only_factory_does_not_require_or_load_a_private_key(monkeypatch):
     assert isinstance(registry, ReadOnlyProbe)
     assert captured["rpc_url"] == "https://rpc.example.test"
     assert captured["private_key"] is None
+    assert captured["access"] == "read"
+    assert captured["deployment"].deployment_id == "sepolia-security-audit-v1"
 
 
 def test_write_factory_still_requires_a_private_key(monkeypatch):
@@ -160,6 +166,29 @@ def test_write_factory_still_requires_a_private_key(monkeypatch):
         assert "SEPOLIA_SUBMITTER_PRIVATE_KEY" in str(exc)
     else:
         raise AssertionError("Expected the write-capable factory to require a key")
+
+
+def test_read_factory_requires_an_explicit_deployment(monkeypatch):
+    monkeypatch.setenv("SEPOLIA_RPC_URL", "https://rpc.example.test")
+    monkeypatch.delenv("CLAIMS_DEPLOYMENT_ID", raising=False)
+
+    with pytest.raises(BlockchainSubmissionError, match="CLAIMS_DEPLOYMENT_ID"):
+        SepoliaClaimsRegistry.from_env(require_private_key=False)
+
+
+def test_submitter_access_fails_closed_when_role_is_missing():
+    registry = SepoliaClaimsRegistry.__new__(SepoliaClaimsRegistry)
+    registry.account = FakeAccount()
+    registry.private_key_env = "SEPOLIA_SUBMITTER_PRIVATE_KEY"
+    registry.deployment = SimpleNamespace(deployment_id="hardened")
+    registry.contract = SimpleNamespace(
+        functions=SimpleNamespace(
+            isSubmitter=lambda _address: FakeReadCall(False)
+        )
+    )
+
+    with pytest.raises(BlockchainSubmissionError, match="not an authorized"):
+        registry._verify_signer_access("submitter")
 
 
 def test_registry_retries_nonce_reported_by_rpc():

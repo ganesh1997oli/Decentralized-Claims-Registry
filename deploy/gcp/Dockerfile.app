@@ -45,8 +45,8 @@ COPY integrations integrations
 COPY listener listener
 COPY model model
 COPY observability observability
-COPY contract/ignition/deployments/chain-11155111 \
-    contract/ignition/deployments/chain-11155111
+COPY contract/ignition/deployments/sepolia-security-audit-v1 \
+    contract/ignition/deployments/sepolia-security-audit-v1
 
 # A compromised web request or claim payload should not obtain root privileges
 # inside the container. The listener's writable checkpoint is prepared by a

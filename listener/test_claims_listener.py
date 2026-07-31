@@ -1,6 +1,5 @@
 """Behavioral tests for confirmed blockchain-event processing."""
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +9,7 @@ from integrations.ipfs import IPFSClient, IPFSError
 from listener.claims_listener import (
     ClaimEventProcessor,
     ConfirmedBlockPoller,
-    load_deployment,
+    deployment_state_paths,
 )
 
 
@@ -22,6 +21,28 @@ class FakeIPFS:
     def download_pointer(self, pointer: str) -> bytes:
         self.pointers.append(pointer)
         return self.payload
+
+
+def test_listener_state_files_are_isolated_by_deployment(tmp_path):
+    settings = {"LISTENER_STATE_DIR": str(tmp_path)}
+
+    hardened = deployment_state_paths(
+        settings,
+        deployment_id="sepolia-security-audit-v1",
+        chain_id=11_155_111,
+        contract_address="0xABCDEF",
+    )
+    replacement = deployment_state_paths(
+        settings,
+        deployment_id="sepolia-security-audit-v2",
+        chain_id=11_155_111,
+        contract_address="0x123456",
+    )
+
+    assert hardened != replacement
+    assert all(path.parent == tmp_path for path in (*hardened, *replacement))
+    assert "sepolia-security-audit-v1" in hardened[0].name
+    assert "0xabcdef" in hardened[0].name
 
 
 class FakePublisher:
@@ -328,23 +349,3 @@ def test_poller_waits_for_confirmation_depth_and_rejects_invalid_configuration()
             confirmation_blocks=2,
             max_block_range=0,
         )
-
-
-def test_load_deployment_reads_the_ignition_contract_interface(tmp_path):
-    module_id = "ClaimsRegistryModule#ClaimsRegistry"
-    contract_address = "0x1111111111111111111111111111111111111111"
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    (tmp_path / "deployed_addresses.json").write_text(
-        json.dumps({module_id: contract_address}),
-        encoding="utf-8",
-    )
-    (artifacts / f"{module_id}.json").write_text(
-        json.dumps({"abi": [{"type": "event", "name": "ClaimSubmitted"}]}),
-        encoding="utf-8",
-    )
-
-    address, abi = load_deployment(tmp_path, module_id)
-
-    assert address == Web3.to_checksum_address(contract_address)
-    assert abi == [{"type": "event", "name": "ClaimSubmitted"}]

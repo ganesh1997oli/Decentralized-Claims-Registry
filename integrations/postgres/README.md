@@ -63,6 +63,10 @@ The duplicate result is rebuilt when FastAPI reads a claim. This means an
 earlier claim can show a match that arrived later. A match remains a review
 candidate only and does not alter the XGBoost score or on-chain status.
 
+Dashboard assessment and duplicate lookups are always scoped by the selected
+`chain_id`, `contract_address`, and `claim_id`. Reusing a numeric claim ID on a
+new deployment therefore cannot expose a record from the old contract.
+
 ## Local setup
 
 PostgreSQL is included with the Kafka Compose environment:

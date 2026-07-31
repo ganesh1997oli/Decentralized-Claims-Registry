@@ -42,6 +42,11 @@ curl --fail --silent --show-error http://127.0.0.1:8000/health
 echo
 
 echo
+echo "Selected ClaimsRegistry deployment"
+"${compose[@]}" exec --no-TTY backend python -c \
+  'import os; from integrations.ethereum import load_claims_deployment; d = load_claims_deployment(os.environ); print(f"deployment={d.deployment_id} chain={d.chain_id} address={d.address}")'
+
+echo
 echo "Listener monitoring endpoint"
 curl --fail --silent --show-error http://127.0.0.1:9101/metrics \
   | grep -E "^claims_listener_(block_lag|last_processed_block|poll_errors_total)"

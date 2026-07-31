@@ -100,8 +100,10 @@ CREATE TABLE IF NOT EXISTS claim_assessments (
 """
 
 INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS claim_assessments_claim_id_idx
-    ON claim_assessments (claim_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS claim_assessments_contract_claim_idx
+    ON claim_assessments (
+        chain_id, contract_address, claim_id, updated_at DESC
+    );
 """
 
 DUPLICATE_TABLE_SQL = """
@@ -348,12 +350,19 @@ class PostgresAssessmentRepository:
             )
             return _record_from_row(cursor.fetchone())
 
-    def get_latest_for_claim(self, claim_id: int) -> AssessmentRecord | None:
+    def get_latest_for_claim(
+        self,
+        *,
+        chain_id: int,
+        contract_address: str,
+        claim_id: int,
+    ) -> AssessmentRecord | None:
         with self._cursor() as cursor:
             cursor.execute(
                 f"SELECT {SELECT_COLUMNS} FROM claim_assessments "
-                "WHERE claim_id = %s ORDER BY updated_at DESC LIMIT 1",
-                (claim_id,),
+                "WHERE chain_id = %s AND contract_address = %s "
+                "AND claim_id = %s ORDER BY updated_at DESC LIMIT 1",
+                (chain_id, contract_address.lower(), claim_id),
             )
             return _record_from_row(cursor.fetchone())
 
@@ -587,6 +596,9 @@ class PostgresAssessmentRepository:
 
     def get_duplicate_check_for_claim(
         self,
+        *,
+        chain_id: int,
+        contract_address: str,
         claim_id: int,
     ) -> DuplicateCheck | None:
         """Rebuild the current match result so earlier claims see later matches."""
@@ -597,11 +609,11 @@ class PostgresAssessmentRepository:
                 SELECT chain_id, contract_address, insurer_id,
                        fingerprint_version, incident_fingerprint
                 FROM claim_incident_fingerprints
-                WHERE claim_id = %s
-                ORDER BY updated_at DESC
-                LIMIT 1
+                WHERE chain_id = %s
+                  AND contract_address = %s
+                  AND claim_id = %s
                 """,
-                (claim_id,),
+                (chain_id, contract_address.lower(), claim_id),
             )
             current = cursor.fetchone()
             if current is None:

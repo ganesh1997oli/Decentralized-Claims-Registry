@@ -72,8 +72,16 @@ def test_concurrent_other_insurer_submissions_become_mutual_matches(
     # observes the earlier one instead of both returning a false negative.
     assert sorted(len(result.matches) for result in initial_results) == [0, 1]
 
-    first = postgres_repository.get_duplicate_check_for_claim(7)
-    second = postgres_repository.get_duplicate_check_for_claim(8)
+    scope = {
+        "chain_id": 11_155_111,
+        "contract_address": "0x1111111111111111111111111111111111111111",
+    }
+    first = postgres_repository.get_duplicate_check_for_claim(
+        **scope, claim_id=7
+    )
+    second = postgres_repository.get_duplicate_check_for_claim(
+        **scope, claim_id=8
+    )
     assert first is not None
     assert second is not None
     assert [(match.claim_id, match.insurer_id) for match in first.matches] == [

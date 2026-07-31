@@ -14,6 +14,7 @@ on an in-memory event filter. Configuration and run instructions live in
 import json
 import os
 import sys
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
@@ -30,7 +31,13 @@ else:
         sys.path.insert(0, repository_root)
     from block_cursor import BlockCursor
 
-from integrations.ipfs import IPFSClient, IPFSError, InvalidIPFSPointer
+from integrations.ethereum import (
+    DeploymentConfigurationError,
+    DeploymentValidationError,
+    connect_claims_deployment,
+    load_claims_deployment,
+)
+from integrations.ipfs import InvalidIPFSPointer, IPFSClient, IPFSError
 from integrations.kafka import (
     ClaimEventPublisher,
     ClaimSubmittedEvent,
@@ -48,17 +55,6 @@ RPC_URL = (
     or "https://ethereum-sepolia.publicnode.com"
 )
 
-DEFAULT_IGNITION_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "contract"
-    / "ignition"
-    / "deployments"
-    / "chain-11155111"
-)
-
-IGNITION_DIR = Path(os.environ.get("IGNITION_DIR", DEFAULT_IGNITION_DIR))
-
-MODULE_ID = os.environ.get("MODULE_ID", "ClaimsRegistryModule#ClaimsRegistry")
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 CONFIRMATION_BLOCKS = int(os.environ.get("CONFIRMATION_BLOCKS", "2"))
 MAX_BLOCK_RANGE = int(os.environ.get("MAX_BLOCK_RANGE", "50"))
@@ -67,18 +63,41 @@ MAX_BLOCK_RANGE = int(os.environ.get("MAX_BLOCK_RANGE", "50"))
 STATUS_NAMES = ["Submitted", "UnderReview", "Approved", "Rejected", "Flagged"]
 
 
-def load_deployment(ignition_dir: Path, module_id: str):
-    """Read the deployed address and ABI produced by Hardhat Ignition."""
-    addresses = json.loads((ignition_dir / "deployed_addresses.json").read_text())
-    artifact_path = ignition_dir / "artifacts" / f"{module_id}.json"
-    artifact = json.loads(artifact_path.read_text())
-    return Web3.to_checksum_address(addresses[module_id]), artifact["abi"]
-
-
 def hx(b) -> str:
     """Hex string with a single 0x prefix, whatever .hex() returns."""
     s = b.hex()
     return s if s.startswith("0x") else f"0x{s}"
+
+
+def deployment_state_paths(
+    settings: Mapping[str, str],
+    *,
+    deployment_id: str,
+    chain_id: int,
+    contract_address: str,
+) -> tuple[Path, Path]:
+    """Derive isolated listener files from the selected deployment identity."""
+
+    state_dir = Path(
+        settings.get(
+            "LISTENER_STATE_DIR",
+            str(Path(__file__).with_name(".state")),
+        )
+    )
+    state_name = f"{deployment_id}-{chain_id}-{contract_address.lower()}"
+    state_path = Path(
+        settings.get(
+            "LISTENER_STATE_FILE",
+            str(state_dir / f"{state_name}-checkpoint.json"),
+        )
+    )
+    dead_letter_path = Path(
+        settings.get(
+            "LISTENER_DEAD_LETTER_FILE",
+            str(state_dir / f"{state_name}-dead-letter.jsonl"),
+        )
+    )
+    return state_path, dead_letter_path
 
 
 class ClaimPayloadReader(Protocol):
@@ -345,30 +364,28 @@ def main():
     shutdown = ShutdownSignal()
     shutdown.install()
 
-    contract_address, abi = load_deployment(IGNITION_DIR, MODULE_ID)
+    try:
+        deployment = load_claims_deployment(os.environ)
+    except DeploymentConfigurationError as exc:
+        raise SystemExit(str(exc)) from exc
     w3 = Web3(Web3.HTTPProvider(RPC_URL))
     # If Sepolia reports an extraData validation error, inject
     # ExtraDataToPOAMiddleware here before the connection check.
-    if not w3.is_connected():
-        raise SystemExit(f"Could not connect to the RPC endpoint: {RPC_URL}")
-    contract = w3.eth.contract(address=contract_address, abi=abi)
+    try:
+        contract = connect_claims_deployment(w3, deployment)
+    except DeploymentValidationError as exc:
+        raise SystemExit(str(exc)) from exc
+    contract_address = deployment.address
     kafka_settings = KafkaSettings.from_env()
     claim_event_publisher = create_publisher(kafka_settings)
-    chain_id = w3.eth.chain_id
-    state_path = Path(
-        os.environ.get(
-            "LISTENER_STATE_FILE",
-            Path(__file__).with_name(".state")
-            / f"claims-{chain_id}-{contract_address.lower()}.json",
-        )
+    chain_id = deployment.chain_id
+    state_path, dead_letter_path = deployment_state_paths(
+        os.environ,
+        deployment_id=deployment.deployment_id,
+        chain_id=chain_id,
+        contract_address=contract_address,
     )
     cursor = BlockCursor(state_path, chain_id, contract_address)
-    dead_letter_path = Path(
-        os.environ.get(
-            "LISTENER_DEAD_LETTER_FILE",
-            state_path.with_name("dead-letter.jsonl"),
-        )
-    )
     processor = ClaimEventProcessor(
         chain_id=chain_id,
         contract_address=contract_address,
@@ -386,8 +403,9 @@ def main():
     )
 
     print(
-        f"Listening for {', '.join(processor.event_names)} "
-        f"on {contract_address} via {RPC_URL}"
+        f"Listening for {', '.join(processor.event_names)} on deployment "
+        f"{deployment.deployment_id} (chain={chain_id}, "
+        f"address={contract_address}) via {RPC_URL}"
     )
     if claim_event_publisher is not None:
         print(
@@ -415,7 +433,7 @@ def main():
                     last_processed_block=last_processed,
                     confirmation_blocks=CONFIRMATION_BLOCKS,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - adapter failures retry safely
                 # RPC, IPFS and Kafka failures all retry from the saved checkpoint.
                 metrics.observe_poll_error()
                 print(f"Polling error (will retry): {exc}")

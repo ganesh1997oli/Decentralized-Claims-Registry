@@ -93,9 +93,12 @@ The earlier contract at `0x57E3203b9427BE41c753bEedD526D81a66bFc2AB`
 is retained only as a legacy research record. It does not contain the hardened
 role and lifecycle rules.
 
-The application reads the selected address and ABI from
-`contract/ignition/deployments/chain-11155111/`; the address is not duplicated in
-the Python source.
+Every runtime process reads the address and ABI selected by
+`CLAIMS_DEPLOYMENT_ID`. The example selection,
+`sepolia-security-audit-v1`, resolves to the hardened address above. Artifact
+loading rejects the legacy interface; each blockchain client then rejects a
+wrong RPC chain, missing bytecode, an incompatible live contract, or an
+unauthorized write wallet.
 
 ## Prerequisites
 
@@ -113,9 +116,11 @@ the same settings through its secret manager instead of copying that file.
 
 ## First-time local setup
 
-Unit and integration tests do not require deployment. Running the hardened
-end-to-end flow on Sepolia does require a new user-controlled deployment because
-the checked-in address is the legacy contract.
+Unit and integration tests do not require a live deployment. Running the
+end-to-end flow uses the checked-in hardened deployment by default; the supplied
+submitter and assessor wallets must already have their intended roles on that
+contract. To use a different hardened deployment, check its Ignition artifact
+into `contract/ignition/deployments/` and select its directory name explicitly.
 
 Run the following commands from the repository root.
 
@@ -159,6 +164,9 @@ Open `.env.local` and add:
 - `SEPOLIA_SUBMITTER_PRIVATE_KEY`: the account granted submission permission;
 - `SEPOLIA_ASSESSOR_PRIVATE_KEY`: the separately granted scoring account;
 - `PINATA_JWT`: a server-side Pinata upload token.
+
+Keep `CLAIMS_DEPLOYMENT_ID="sepolia-security-audit-v1"` unless you have reviewed
+and checked in a different hardened Ignition deployment.
 
 Keep `SEPOLIA_DEPLOYER_PRIVATE_KEY` only on the machine used for a contract
 deployment; the normal API and worker do not need it. Browsing the public claims

@@ -127,6 +127,9 @@ def test_repository_creates_table_and_index_as_separate_statements():
         connect.cursor.executions[0][0]
     )
     assert "CREATE INDEX IF NOT EXISTS" in connect.cursor.executions[1][0]
+    assert "chain_id, contract_address, claim_id" in (
+        " ".join(connect.cursor.executions[1][0].split())
+    )
     assert "CREATE TABLE IF NOT EXISTS claim_incident_fingerprints" in (
         connect.cursor.executions[2][0]
     )
@@ -197,6 +200,24 @@ def test_repository_rebuilds_a_typed_record_from_postgres_row():
     )
 
 
+def test_repository_scopes_latest_claim_to_chain_and_contract():
+    connect = FakeConnect(row=None)
+    repository = PostgresAssessmentRepository(
+        "postgresql://test",
+        connect=connect,
+    )
+
+    repository.get_latest_for_claim(
+        chain_id=11_155_111,
+        contract_address="0xABCDEF",
+        claim_id=7,
+    )
+
+    statement, parameters = connect.cursor.executions[0]
+    assert "chain_id = %s AND contract_address = %s" in statement
+    assert parameters == (11_155_111, "0xabcdef", 7)
+
+
 def test_repository_records_fingerprint_and_returns_other_insurer_matches():
     connect = FakeConnect(
         rows=[
@@ -255,14 +276,22 @@ def test_repository_rebuilds_dynamic_duplicate_result_for_a_claim():
         connect=connect,
     )
 
-    result = repository.get_duplicate_check_for_claim(7)
+    result = repository.get_duplicate_check_for_claim(
+        chain_id=11_155_111,
+        contract_address="0xCONTRACT",
+        claim_id=7,
+    )
 
     assert result == DuplicateCheck(
         insurer_id="harbour-shield",
         fingerprint_version="incident-hmac-sha256-v1",
         matches=(DuplicateMatch(3, "northstar-mutual"),),
     )
-    assert connect.cursor.executions[0][1] == (7,)
+    assert connect.cursor.executions[0][1] == (
+        11_155_111,
+        "0xcontract",
+        7,
+    )
     assert connect.cursor.executions[1][1][-2:] == (7, "harbour-shield")
 
 
