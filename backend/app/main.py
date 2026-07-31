@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Annotated
 
@@ -25,11 +27,51 @@ from backend.app.service import (
     ClaimSubmissionService,
     ClaimSubmissionServiceError,
 )
+from integrations.ethereum import (
+    ClaimsDeployment,
+    DeploymentConfigurationError,
+    load_claims_deployment,
+)
 from integrations.postgres import (
     PostgresAssessmentRepository,
     PostgresConfigurationError,
     PostgresStorageError,
 )
+
+logger = logging.getLogger(__name__)
+
+
+@lru_cache
+def load_active_deployment() -> ClaimsDeployment:
+    """Resolve deployment identity once for this process."""
+
+    return load_claims_deployment(os.environ)
+
+
+def get_active_deployment() -> ClaimsDeployment:
+    """Expose the selected chain and address to deployment-scoped routes."""
+
+    try:
+        return load_active_deployment()
+    except DeploymentConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Artifact selection is local and fast. Refuse to start with a missing,
+    # legacy, or incompatible contract instead of discovering it on first use.
+    deployment = load_active_deployment()
+    logger.info(
+        "Configured ClaimsRegistry deployment=%s chain=%s address=%s",
+        deployment.deployment_id,
+        deployment.chain_id,
+        deployment.address,
+    )
+    yield
 
 
 app = FastAPI(
@@ -39,6 +81,7 @@ app = FastAPI(
         "Synthetic-data demonstration API: validate a claim, upload it to public "
         "IPFS, and anchor its hash and CID on Sepolia."
     ),
+    lifespan=lifespan,
 )
 
 frontend_origins = [
@@ -116,6 +159,10 @@ AssessmentRepositoryDependency = Annotated[
     PostgresAssessmentRepository,
     Depends(get_assessment_repository),
 ]
+ActiveDeploymentDependency = Annotated[
+    ClaimsDeployment,
+    Depends(get_active_deployment),
+]
 
 
 @app.get("/health", response_model=HealthResponse, tags=["operations"])
@@ -147,10 +194,16 @@ def list_claims(
 def get_claim_assessment(
     claim_id: Annotated[int, Path(ge=0)],
     repository: AssessmentRepositoryDependency,
+    deployment: ActiveDeploymentDependency,
 ) -> ClaimAssessmentResponse:
     try:
-        record = repository.get_latest_for_claim(claim_id)
-        duplicate_check = repository.get_duplicate_check_for_claim(claim_id)
+        query = {
+            "chain_id": deployment.chain_id,
+            "contract_address": deployment.address,
+            "claim_id": claim_id,
+        }
+        record = repository.get_latest_for_claim(**query)
+        duplicate_check = repository.get_duplicate_check_for_claim(**query)
     except PostgresStorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

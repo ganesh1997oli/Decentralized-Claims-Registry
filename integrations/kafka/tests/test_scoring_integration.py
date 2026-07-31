@@ -189,8 +189,16 @@ def test_broker_events_are_scored_and_matched_across_insurers(
         ]
     ) == [0, 1]
 
-    first = postgres_repository.get_duplicate_check_for_claim(7)
-    second = postgres_repository.get_duplicate_check_for_claim(8)
+    scope = {
+        "chain_id": 11_155_111,
+        "contract_address": "0x1111111111111111111111111111111111111111",
+    }
+    first = postgres_repository.get_duplicate_check_for_claim(
+        **scope, claim_id=7
+    )
+    second = postgres_repository.get_duplicate_check_for_claim(
+        **scope, claim_id=8
+    )
     assert first is not None
     assert second is not None
     assert [(match.claim_id, match.insurer_id) for match in first.matches] == [

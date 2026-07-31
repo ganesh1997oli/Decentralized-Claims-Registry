@@ -196,6 +196,10 @@ openssl rand -hex 24
 openssl rand -hex 32
 ```
 
+Keep `CLAIMS_DEPLOYMENT_ID="sepolia-security-audit-v1"` for the reviewed
+hardened contract bundled into the image. The API, listener, and worker all use
+this same selector and refuse a legacy or incompatible artifact.
+
 Use only:
 
 - fictional claim data;
@@ -440,4 +444,6 @@ Confirm:
 - the VM external IP matches the URL;
 - port 80 is not occupied by another host process.
 
-Use `verify-deployment.sh` on the VM before debugging the public network.
+Use `verify-deployment.sh` on the VM before debugging the public network. Its
+read-only output includes the selected deployment ID, chain ID, and contract
+address so configuration drift is visible without printing secrets.

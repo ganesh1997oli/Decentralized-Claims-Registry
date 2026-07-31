@@ -76,14 +76,16 @@ set +a
 | `SEPOLIA_RPC_URL` | Public Sepolia endpoint in the script | Ethereum RPC endpoint |
 | `SEPOLIA_SUBMITTER_PRIVATE_KEY` | Empty | Used only by the command-line submission demo |
 | `SEPOLIA_ASSESSOR_PRIVATE_KEY` | Empty | Used only by the command-line assessment demo |
-| `IGNITION_DIR` | Sepolia Ignition deployment | Address and ABI location |
-| `MODULE_ID` | `ClaimsRegistryModule#ClaimsRegistry` | Ignition artifact ID |
+| `CLAIMS_DEPLOYMENT_ID` | Required | Checked-in deployment directory; use `sepolia-security-audit-v1` for the hardened contract |
 | `POLL_INTERVAL` | `5` | Seconds between polling attempts |
 | `CONFIRMATION_BLOCKS` | `2` | Blocks held back for basic reorganization safety |
 | `MAX_BLOCK_RANGE` | `50` | Maximum logs query size while catching up on a public RPC |
-| `LISTENER_STATE_FILE` | File under `listener/.state/` | Durable block checkpoint |
-| `LISTENER_DEAD_LETTER_FILE` | Beside the checkpoint | Durable rejected-event audit trail |
+| `LISTENER_STATE_DIR` | `listener/.state` | Directory for deployment-specific checkpoints and dead-letter files |
 | `LISTENER_START_BLOCK` | Latest confirmed block | First block for a deliberate initial backfill |
+
+Checkpoint and dead-letter filenames automatically include the deployment ID,
+chain ID, and contract address, so changing the selector starts a separate state
+namespace inside `LISTENER_STATE_DIR`.
 
 IPFS variables are documented in the
 [IPFS guide](../integrations/ipfs/README.md). Kafka variables are documented in
@@ -132,10 +134,15 @@ before submitting a new test claim if you only want live events.
 To read older events deliberately:
 
 1. stop the listener;
-2. identify the matching checkpoint under `listener/.state/`;
+2. identify the deployment-specific checkpoint under `LISTENER_STATE_DIR`;
 3. remove that checkpoint;
 4. set `LISTENER_START_BLOCK` to the required historical block;
 5. restart the listener.
+
+The checked-in hardened deployment was created at Sepolia block `11377814`; use
+that value for `LISTENER_START_BLOCK` when intentionally rebuilding its complete
+event history. A different deployment must use its own deployment block and its
+own checkpoint/dead-letter filenames.
 
 At-least-once processing means a retried event can appear more than once. Kafka
 and database consumers should use the event ID for deduplication.

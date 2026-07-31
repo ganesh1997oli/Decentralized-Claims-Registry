@@ -11,9 +11,9 @@ Env vars:
 SEPOLIA_SUBMITTER_PRIVATE_KEY required when submitting a new claim.
 SEPOLIA_ASSESSOR_PRIVATE_KEY required for assessment.
 PINATA_JWT required. Pinata token with public Files write access.
-SEPOLIA_RPC_URL defaults to http://127.0.0.1:8545.
+SEPOLIA_RPC_URL required for the selected Sepolia deployment.
 IPFS_GATEWAY defaults to https://gateway.pinata.cloud/ipfs.
-IGNITION_DIR defaults to the Sepolia deployment directory.
+CLAIMS_DEPLOYMENT_ID selects the checked-in Ignition deployment.
 """
 
 import argparse
@@ -33,23 +33,17 @@ if not __package__:
     if repository_root not in sys.path:
         sys.path.insert(0, repository_root)
 
+from integrations.ethereum import (
+    DeploymentConfigurationError,
+    DeploymentValidationError,
+    connect_claims_deployment,
+    load_claims_deployment,
+)
 from integrations.ipfs import IPFSClient, IPFSError
 
-
-RPC_URL = os.environ.get("SEPOLIA_RPC_URL", "http://127.0.0.1:8545")
-
-# Build this path from the script location, so the command works from any folder.
-# Chain 11155111 is Sepolia; a local Hardhat deployment normally uses 31337.
-DEFAULT_IGNITION_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "contract"
-    / "ignition"
-    / "deployments"
-    / "chain-11155111"
-)
-
-IGNITION_DIR = Path(os.environ.get("IGNITION_DIR", DEFAULT_IGNITION_DIR))
-MODULE_ID = os.environ.get("MODULE_ID", "ClaimsRegistryModule#ClaimsRegistry")
+RPC_URL = os.environ.get("SEPOLIA_RPC_URL") or os.environ.get("RPC_URL")
+if not RPC_URL:
+    raise SystemExit("SEPOLIA_RPC_URL is required")
 
 STATUS_NAMES = ["Submitted", "UnderReview", "Approved", "Rejected", "Flagged"]
 FLAGGED = 4  # Status.Flagged
@@ -64,19 +58,13 @@ parser.add_argument(
 args = parser.parse_args()
 
 
-def load_deployment(ignition_dir: Path, module_id: str):
-    address = json.loads((ignition_dir / "deployed_addresses.json").read_text())
-    artifact = json.loads(
-        (ignition_dir / "artifacts" / f"{module_id}.json").read_text()
-    )
-    return Web3.to_checksum_address(address[module_id]), artifact["abi"]
-
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
-if not w3.is_connected():
-    raise SystemExit(f"Could not connect to {RPC_URL}")
-
-CONTRACT_ADDRESS, ABI = load_deployment(IGNITION_DIR, MODULE_ID)
-contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=ABI)
+try:
+    deployment = load_claims_deployment(os.environ)
+    contract = connect_claims_deployment(w3, deployment)
+except (DeploymentConfigurationError, DeploymentValidationError) as exc:
+    raise SystemExit(str(exc)) from exc
+CONTRACT_ADDRESS = deployment.address
 
 assessor_private_key = os.environ.get("SEPOLIA_ASSESSOR_PRIVATE_KEY")
 if not assessor_private_key:
@@ -84,6 +72,19 @@ if not assessor_private_key:
         "SEPOLIA_ASSESSOR_PRIVATE_KEY is required to sign the assessment"
     )
 assessor_account = w3.eth.account.from_key(assessor_private_key)
+assessor_authorized = contract.functions.isAssessor(
+    assessor_account.address
+).call()
+assessor_insurer = contract.functions.assessorInsurer(
+    assessor_account.address
+).call()
+if not assessor_authorized or not contract.functions.isSubmitter(
+    assessor_insurer
+).call():
+    raise SystemExit(
+        "The assessor wallet lacks an active assessor-to-submitter scope on the "
+        "selected deployment"
+    )
 
 submitter_account = None
 if args.assess_existing is None:
@@ -93,8 +94,15 @@ if args.assess_existing is None:
             "SEPOLIA_SUBMITTER_PRIVATE_KEY is required to submit a new claim"
         )
     submitter_account = w3.eth.account.from_key(submitter_private_key)
+    if not contract.functions.isSubmitter(submitter_account.address).call():
+        raise SystemExit(
+            "The submitter wallet is not authorized on the selected deployment"
+        )
 
-print(f"Contract {CONTRACT_ADDRESS} via {RPC_URL}")
+print(
+    f"Deployment {deployment.deployment_id}: contract {CONTRACT_ADDRESS} "
+    f"on chain {deployment.chain_id} via {RPC_URL}"
+)
 if submitter_account is not None:
     print(f"Submitter account: {submitter_account.address}")
 print(f"Assessor account: {assessor_account.address}")

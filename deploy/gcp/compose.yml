@@ -17,7 +17,7 @@ x-json-logging: &json-logging
 # Keeping them separate is a simple form of least privilege even on one VM.
 x-chain-read-environment: &chain-read-environment
   SEPOLIA_RPC_URL: ${SEPOLIA_RPC_URL:?Set SEPOLIA_RPC_URL in .env.gcp}
-  MODULE_ID: ${MODULE_ID:-ClaimsRegistryModule#ClaimsRegistry}
+  CLAIMS_DEPLOYMENT_ID: ${CLAIMS_DEPLOYMENT_ID:?Set CLAIMS_DEPLOYMENT_ID in .env.gcp}
   RECEIPT_TIMEOUT: ${RECEIPT_TIMEOUT:-180}
 
 x-kafka-environment: &kafka-environment
@@ -220,8 +220,7 @@ services:
       # The listener verifies public IPFS bytes and publishes Kafka events. It
       # cannot submit transactions because it receives no wallet private key.
       IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
-      LISTENER_STATE_FILE: ${LISTENER_STATE_FILE:-/var/lib/claims-listener/checkpoint.json}
-      LISTENER_DEAD_LETTER_FILE: ${LISTENER_DEAD_LETTER_FILE:-/var/lib/claims-listener/dead-letter.jsonl}
+      LISTENER_STATE_DIR: ${LISTENER_STATE_DIR:-/var/lib/claims-listener}
       LISTENER_START_BLOCK: ${LISTENER_START_BLOCK:-}
       POLL_INTERVAL: ${POLL_INTERVAL:-5}
       CONFIRMATION_BLOCKS: ${CONFIRMATION_BLOCKS:-2}

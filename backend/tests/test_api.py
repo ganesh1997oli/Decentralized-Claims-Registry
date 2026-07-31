@@ -1,7 +1,10 @@
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from backend.app.main import (
     app,
+    get_active_deployment,
     get_assessment_repository,
     get_claim_query_service,
     get_claim_submission_service,
@@ -21,7 +24,6 @@ from backend.app.service import (
 from duplicates import DuplicateCheck, DuplicateMatch
 from integrations.postgres import AssessmentRecord
 from model.contracts import FraudReason
-
 
 VALID_CLAIM = {
     "insurerId": "northstar-mutual",
@@ -112,7 +114,9 @@ class UnexpectedService:
 
 
 class SuccessfulAssessmentRepository:
-    def get_latest_for_claim(self, claim_id):
+    def get_latest_for_claim(self, *, chain_id, contract_address, claim_id):
+        assert chain_id == 11_155_111
+        assert contract_address == "0xcontract"
         assert claim_id == 7
         return AssessmentRecord(
             event_id="11155111:0xtransaction:0",
@@ -130,7 +134,11 @@ class SuccessfulAssessmentRepository:
             block_number=124,
         )
 
-    def get_duplicate_check_for_claim(self, claim_id):
+    def get_duplicate_check_for_claim(
+        self, *, chain_id, contract_address, claim_id
+    ):
+        assert chain_id == 11_155_111
+        assert contract_address == "0xcontract"
         assert claim_id == 7
         return DuplicateCheck(
             insurer_id="harbour-shield",
@@ -140,13 +148,21 @@ class SuccessfulAssessmentRepository:
 
 
 class PendingAssessmentRepository:
-    def get_latest_for_claim(self, claim_id):
+    def get_latest_for_claim(self, *, chain_id, contract_address, claim_id):
+        assert chain_id == 11_155_111
+        assert contract_address == "0xcontract"
         assert claim_id == 7
-        return None
 
-    def get_duplicate_check_for_claim(self, claim_id):
+    def get_duplicate_check_for_claim(
+        self, *, chain_id, contract_address, claim_id
+    ):
+        assert chain_id == 11_155_111
+        assert contract_address == "0xcontract"
         assert claim_id == 7
-        return None
+
+
+def active_deployment():
+    return SimpleNamespace(chain_id=11_155_111, address="0xcontract")
 
 
 def test_health_does_not_require_external_services():
@@ -246,6 +262,7 @@ def test_get_claim_assessment_returns_postgres_result():
     app.dependency_overrides[
         get_assessment_repository
     ] = SuccessfulAssessmentRepository
+    app.dependency_overrides[get_active_deployment] = active_deployment
     try:
         response = TestClient(app).get("/claims/7/assessment")
     finally:
@@ -285,6 +302,7 @@ def test_get_claim_assessment_returns_postgres_result():
 
 def test_get_claim_assessment_returns_not_found_while_pending():
     app.dependency_overrides[get_assessment_repository] = PendingAssessmentRepository
+    app.dependency_overrides[get_active_deployment] = active_deployment
     try:
         response = TestClient(app).get("/claims/7/assessment")
     finally:

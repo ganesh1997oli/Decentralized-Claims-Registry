@@ -59,8 +59,7 @@ Backend settings:
 | `SEPOLIA_RPC_URL` | Yes | RPC endpoint for Ethereum Sepolia |
 | `SEPOLIA_SUBMITTER_PRIVATE_KEY` | Writes | Sepolia-only account granted `SUBMITTER_ROLE` |
 | `SEPOLIA_ASSESSOR_PRIVATE_KEY` | Worker | Separate Sepolia-only account granted `ASSESSOR_ROLE` for that submitter |
-| `MODULE_ID` | No | Ignition artifact ID; defaults to `ClaimsRegistryModule#ClaimsRegistry` |
-| `IGNITION_DIR` | No | Alternative Ignition deployment directory |
+| `CLAIMS_DEPLOYMENT_ID` | Yes | Checked-in Ignition deployment directory; use `sepolia-security-audit-v1` for the hardened contract |
 | `RECEIPT_TIMEOUT` | No | Seconds to wait for a transaction receipt |
 | `DUPLICATE_FINGERPRINT_KEY` | Async | Private key used for incident HMAC fingerprints; minimum 32 bytes |
 | `FRONTEND_ORIGINS` | No | Comma-separated browser origins allowed by CORS |
@@ -75,9 +74,11 @@ IPFS settings:
 
 The claims list is a public blockchain read. It needs the Sepolia RPC URL and
 deployment artifact, but deliberately does not load the wallet key or Pinata
-token. Submitting a new claim still requires both write credentials. If required
-configuration is missing, FastAPI returns a structured JSON `503` response
-instead of an unexplained plain `500`.
+token. Submitting a new claim still requires both write credentials. At startup,
+the API validates the selected local artifact. Blockchain clients additionally
+check the RPC chain, bytecode, hardened interface, and wallet role before use.
+If required route configuration is missing, FastAPI returns a structured JSON
+`503` response instead of an unexplained plain `500`.
 
 Never commit `.env.local`. Write accounts need test ETH and only their intended
 contract role. The deployment/admin key is not an application setting.
