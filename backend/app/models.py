@@ -7,7 +7,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 MotorClaimType = Literal["collision", "theft", "fire", "flood"]
 VehicleType = Literal[
     "sedan",
@@ -76,20 +75,30 @@ class ClaimSubmission(BaseModel):
     description: str = Field(min_length=1, max_length=2_000)
     evidence: list[str] = Field(default_factory=list, max_length=20)
 
-    def canonical_document(self) -> dict[str, object]:
-        """Build the exact document that will be stored and hashed."""
 
-        # The schema version gives us a safe way to change this document later.
-        return {
-            "schemaVersion": 3,
-            **self.model_dump(by_alias=True, mode="json"),
-        }
+
+class SubmissionAuthorization(BaseModel):
+    """Gateway attestation proving which credential authorized a claim."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    version: Literal["insurer-principal-hmac-sha256-v1"]
+    credential_id: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        alias="credentialId",
+    )
+    signature: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class StoredClaimDocument(ClaimSubmission):
     """The versioned claim document downloaded from IPFS by workers."""
 
-    schema_version: Literal[3] = Field(alias="schemaVersion")
+    schema_version: Literal[4] = Field(alias="schemaVersion")
+    submission_authorization: SubmissionAuthorization = Field(
+        alias="submissionAuthorization"
+    )
 
 
 class ClaimSubmissionResponse(BaseModel):
@@ -100,7 +109,7 @@ class ClaimSubmissionResponse(BaseModel):
     block_number: int
     data_pointer: str
     claim_hash: str
-    assessment: "ClaimAssessmentResponse | None" = None
+    assessment: ClaimAssessmentResponse | None = None
 
 
 class AssessmentReasonResponse(BaseModel):

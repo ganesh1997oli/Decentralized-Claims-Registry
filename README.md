@@ -29,16 +29,17 @@ research and integration testing; it never approves or rejects a real claim.
 
 When a user submits a fictional test claim:
 
-1. FastAPI validates the form and creates deterministic JSON bytes.
+1. FastAPI authenticates the synthetic insurer, enforces its submission limits,
+   validates the form, and creates signed deterministic JSON bytes.
 2. The backend uploads the exact JSON bytes to IPFS through Pinata and downloads
    them again to verify the upload.
 3. The backend stores the IPFS pointer and the document's Keccak-256 hash in the
    `ClaimsRegistry` contract on Ethereum Sepolia.
 4. The listener verifies the claim and publishes its deterministic event to
    Kafka.
-5. The scoring worker verifies the IPFS bytes again, creates a private keyed
-   incident fingerprint, and checks PostgreSQL for matching claims submitted by
-   another synthetic insurer.
+5. The scoring worker verifies the IPFS bytes and authoritative insurer
+   authorization again, creates a private keyed incident fingerprint, and
+   checks PostgreSQL for matching claims submitted by another synthetic insurer.
 6. The worker derives and saves a versioned PostgreSQL feature snapshot,
    including report delay, ratios, historical counts, and prior averages.
 7. The worker runs XGBoost, creates claim-specific SHAP reasons, and saves the
@@ -165,6 +166,12 @@ Open `.env.local` and add:
 - `SEPOLIA_ASSESSOR_PRIVATE_KEY`: the separately granted scoring account;
 - `PINATA_JWT`: a server-side Pinata upload token.
 
+The example also provides three explicitly fictional local insurer API keys,
+their digest-only server records, and a local claim-authorization key. See the
+[backend credential guide](backend/README.md#local-insurer-credentials) before
+replacing them for a hosted run. The raw insurer keys belong with the submitting
+operators; never add them to server environment variables or `VITE_` values.
+
 Keep `CLAIMS_DEPLOYMENT_ID="sepolia-security-audit-v1"` unless you have reviewed
 and checked in a different hardened Ignition deployment.
 
@@ -243,7 +250,9 @@ npm --prefix frontend run dev -- --host 127.0.0.1
 ```
 
 Open <http://127.0.0.1:5173>. The browser talks only to FastAPI; it never
-receives the wallet private key or Pinata token.
+receives the wallet private key, Pinata token, or claim-authorization key. Enter
+the local API key that matches the insurer selected in the form; it is kept only
+in the page's runtime memory and is cleared when the form resets.
 
 ### 4. Start the blockchain listener — terminal C
 
@@ -400,9 +409,10 @@ than inventing missing model information.
 
 ## Understanding duplicate detection
 
-Claim schema v3 includes a fictional insurer ID. The worker canonicalizes only
-incident attributes that should remain stable across insurers, then calculates
-an HMAC-SHA256 fingerprint with `DUPLICATE_FINGERPRINT_KEY`. Claim references,
+Claim schema v4 includes a fictional insurer ID plus a gateway authorization.
+The worker verifies that authorization before it canonicalizes incident
+attributes that should remain stable across insurers, then calculates an
+HMAC-SHA256 fingerprint with `DUPLICATE_FINGERPRINT_KEY`. Claim references,
 policy references, premiums and free-text descriptions are excluded because
 different insurers can legitimately record them differently.
 
@@ -430,8 +440,10 @@ docker compose -f integrations/kafka/compose.yml ps
 
 ### The worker fails on an older `schemaVersion`
 
-The local Kafka volume contains a message from before claim schema v3 introduced
-the synthetic insurer ID.
+The local Kafka volume contains a message from before claim schema v4 introduced
+the authenticated insurer authorization. The current worker deliberately
+rejects unsigned schema-v3 documents rather than trusting their user-supplied
+insurer ID.
 Stop the worker and, only if those old local test messages are no longer needed,
 move this development consumer group to the latest offsets:
 

@@ -96,14 +96,17 @@ describe('submitClaim', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(submitClaim(payload)).resolves.toEqual(receipt)
+    await expect(submitClaim(payload, 'insurer-api-key')).resolves.toEqual(receipt)
     expect(fetchMock).toHaveBeenCalledOnce()
 
     const [url, request] = fetchMock.mock.calls[0]
     expect(url).toBe('http://127.0.0.1:8000/claims')
     expect(request).toMatchObject({
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Insurer-API-Key': 'insurer-api-key',
+      },
     })
     expect(JSON.parse(request.body)).toEqual(payload)
   })
@@ -120,7 +123,9 @@ describe('submitClaim', () => {
       ),
     )
 
-    await expect(submitClaim(payload)).resolves.toEqual(pendingReceipt)
+    await expect(submitClaim(payload, 'insurer-api-key')).resolves.toEqual(
+      pendingReceipt,
+    )
   })
 
   it('surfaces FastAPI error details', async () => {
@@ -134,13 +139,15 @@ describe('submitClaim', () => {
       ),
     )
 
-    await expect(submitClaim(payload)).rejects.toThrow('upstream unavailable')
+    await expect(submitClaim(payload, 'insurer-api-key')).rejects.toThrow(
+      'upstream unavailable',
+    )
   })
 
   it('explains when the backend is offline', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('offline')))
 
-    await expect(submitClaim(payload)).rejects.toThrow(
+    await expect(submitClaim(payload, 'insurer-api-key')).rejects.toThrow(
       'Confirm that the backend is running',
     )
   })

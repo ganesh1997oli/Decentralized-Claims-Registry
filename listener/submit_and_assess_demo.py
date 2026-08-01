@@ -11,13 +11,13 @@ Env vars:
 SEPOLIA_SUBMITTER_PRIVATE_KEY required when submitting a new claim.
 SEPOLIA_ASSESSOR_PRIVATE_KEY required for assessment.
 PINATA_JWT required. Pinata token with public Files write access.
+CLAIM_AUTHORIZATION_KEY required to create the worker-verifiable claim document.
 SEPOLIA_RPC_URL required for the selected Sepolia deployment.
 IPFS_GATEWAY defaults to https://gateway.pinata.cloud/ipfs.
 CLAIMS_DEPLOYMENT_ID selects the checked-in Ignition deployment.
 """
 
 import argparse
-import json
 import os
 import re
 import sys
@@ -33,6 +33,12 @@ if not __package__:
     if repository_root not in sys.path:
         sys.path.insert(0, repository_root)
 
+from backend.app.models import ClaimSubmission
+from backend.app.submission_auth import (
+    SUBMIT_CLAIM_OPERATION,
+    ClaimAuthorizationSigner,
+    InsurerPrincipal,
+)
 from integrations.ethereum import (
     DeploymentConfigurationError,
     DeploymentValidationError,
@@ -153,8 +159,8 @@ def send(fn, account):
 # Step 1: upload and submit a new claim, or continue an existing claim.
 if args.assess_existing is None:
     claim_id = contract.functions.claimCount().call()  # next id == current count
-    claim_document = {
-        "schemaVersion": 3,
+    claim = ClaimSubmission.model_validate(
+        {
         "insurerId": "northstar-mutual",
         "claimReference": f"synthetic-claim-{claim_id}",
         "policyReference": "synthetic-policy-42",
@@ -170,10 +176,20 @@ if args.assess_existing is None:
         "totalLossFlag": False,
         "description": "Synthetic bumper damage claim for IPFS integration testing",
         "evidence": [],
-    }
-    payload = json.dumps(
-        claim_document, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+        }
+    )
+    demo_principal = InsurerPrincipal(
+        insurer_id=claim.insurer_id,
+        credential_id=os.environ.get(
+            "DEMO_INSURER_CREDENTIAL_ID", "northstar-local-v1"
+        ),
+        permitted_operations=frozenset({SUBMIT_CLAIM_OPERATION}),
+        daily_quota=1,
+    )
+    payload = ClaimAuthorizationSigner.from_env().authorized_claim_bytes(
+        claim,
+        demo_principal,
+    )
 
     try:
         ipfs = IPFSClient.from_env(require_upload=True)

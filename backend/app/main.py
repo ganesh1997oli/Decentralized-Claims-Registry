@@ -8,8 +8,18 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Path, Query, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Security,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 
 from backend.app.models import (
     AssessmentReasonResponse,
@@ -27,6 +37,15 @@ from backend.app.service import (
     ClaimSubmissionService,
     ClaimSubmissionServiceError,
 )
+from backend.app.submission_auth import (
+    ClaimRequestSizeLimitMiddleware,
+    InsurerPrincipal,
+    SubmissionAuthConfigurationError,
+    SubmissionAuthenticationError,
+    SubmissionAuthorizationError,
+    SubmissionBoundary,
+    SubmissionRateLimitError,
+)
 from integrations.ethereum import (
     ClaimsDeployment,
     DeploymentConfigurationError,
@@ -39,6 +58,10 @@ from integrations.postgres import (
 )
 
 logger = logging.getLogger(__name__)
+insurer_api_key_header = APIKeyHeader(
+    name="X-Insurer-API-Key",
+    auto_error=False,
+)
 
 
 @lru_cache
@@ -60,16 +83,84 @@ def get_active_deployment() -> ClaimsDeployment:
         ) from exc
 
 
+@lru_cache
+def load_submission_boundary() -> SubmissionBoundary:
+    """Load hashed insurer credentials and process-local abuse controls."""
+
+    return SubmissionBoundary.from_env()
+
+
+def get_submission_boundary() -> SubmissionBoundary:
+    try:
+        return load_submission_boundary()
+    except SubmissionAuthConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Insurer authentication is unavailable: {exc}",
+        ) from exc
+
+
+SubmissionBoundaryDependency = Annotated[
+    SubmissionBoundary,
+    Depends(get_submission_boundary),
+]
+
+
+def get_insurer_principal(
+    request: Request,
+    claim: ClaimSubmission,
+    boundary: SubmissionBoundaryDependency,
+    api_key: Annotated[str | None, Security(insurer_api_key_header)],
+) -> InsurerPrincipal:
+    """Authenticate the insurer and reserve quota before any external write."""
+
+    client_ip = request.client.host if request.client is not None else "unknown"
+    try:
+        return boundary.authorize_and_reserve(
+            api_key=api_key,
+            claimed_insurer_id=claim.insurer_id,
+            client_ip=client_ip,
+        )
+    except SubmissionAuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "ApiKey"},
+        ) from exc
+    except SubmissionAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except SubmissionRateLimitError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+
+
+InsurerPrincipalDependency = Annotated[
+    InsurerPrincipal,
+    Depends(get_insurer_principal),
+]
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Artifact selection is local and fast. Refuse to start with a missing,
     # legacy, or incompatible contract instead of discovering it on first use.
     deployment = load_active_deployment()
+    boundary = load_submission_boundary()
     logger.info(
         "Configured ClaimsRegistry deployment=%s chain=%s address=%s",
         deployment.deployment_id,
         deployment.chain_id,
         deployment.address,
+    )
+    logger.info(
+        "Configured authenticated insurer submission boundary type=%s",
+        type(boundary).__name__,
     )
     yield
 
@@ -82,6 +173,26 @@ app = FastAPI(
         "IPFS, and anchor its hash and CID on Sepolia."
     ),
     lifespan=lifespan,
+)
+
+
+def _claim_body_limit() -> int:
+    try:
+        value = int(os.environ.get("MAX_CLAIM_BODY_BYTES", "16384"))
+    except ValueError as exc:
+        raise SubmissionAuthConfigurationError(
+            "MAX_CLAIM_BODY_BYTES must be a positive integer"
+        ) from exc
+    if value < 1:
+        raise SubmissionAuthConfigurationError(
+            "MAX_CLAIM_BODY_BYTES must be a positive integer"
+        )
+    return value
+
+
+app.add_middleware(
+    ClaimRequestSizeLimitMiddleware,
+    max_bytes=_claim_body_limit(),
 )
 
 frontend_origins = [
@@ -98,7 +209,7 @@ app.add_middleware(
     allow_origins=frontend_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Insurer-API-Key"],
 )
 
 
@@ -258,12 +369,14 @@ def get_claim_assessment(
     tags=["claims"],
 )
 def submit_claim(
-    claim: ClaimSubmission, service: ClaimServiceDependency
+    claim: ClaimSubmission,
+    principal: InsurerPrincipalDependency,
+    service: ClaimServiceDependency,
 ) -> ClaimSubmissionResponse:
     # The service owns the workflow; this route only translates failures into
     # an HTTP response the frontend can understand.
     try:
-        return service.submit(claim)
+        return service.submit(claim, principal)
     except ClaimSubmissionServiceError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

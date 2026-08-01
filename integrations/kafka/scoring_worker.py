@@ -9,7 +9,8 @@ committed only after this handler returns successfully.
 from __future__ import annotations
 
 import time
-from typing import Callable, Protocol
+from collections.abc import Callable
+from typing import Protocol
 
 from web3 import Web3
 
@@ -19,6 +20,10 @@ from backend.app.blockchain import (
     SepoliaClaimsRegistry,
 )
 from backend.app.models import StoredClaimDocument
+from backend.app.submission_auth import (
+    ClaimAuthorizationSigner,
+    InsurerPrincipal,
+)
 from duplicates import CrossInsurerDuplicateDetector, DuplicateCheck
 from integrations.ipfs import IPFSClient
 from integrations.postgres import (
@@ -40,6 +45,10 @@ class ClaimReader(Protocol):
 
 class ClaimScorer(Protocol):
     def score(self, claim: StoredClaimDocument) -> FraudScore: ...
+
+
+class ClaimAuthorizationVerifier(Protocol):
+    def verify_claim(self, claim: StoredClaimDocument) -> InsurerPrincipal: ...
 
 
 class ClaimEventHandler(Protocol):
@@ -173,6 +182,7 @@ class ClaimScoringHandler:
         feature_processor: FeatureProcessor,
         repository: AssessmentStore,
         registry: AssessmentRegistry,
+        authorization: ClaimAuthorizationVerifier,
     ) -> None:
         self.ipfs = ipfs
         self.scorer = scorer
@@ -180,6 +190,7 @@ class ClaimScoringHandler:
         self.feature_processor = feature_processor
         self.repository = repository
         self.registry = registry
+        self.authorization = authorization
 
     def __call__(self, event: ClaimSubmittedEvent) -> None:
         existing = self.repository.get_by_event_id(event.event_id)
@@ -197,6 +208,9 @@ class ClaimScoringHandler:
         # Parse only after the hash check. This prevents a different document at
         # the same external URL from ever reaching feature extraction.
         claim = StoredClaimDocument.model_validate_json(payload)
+        principal = self.authorization.verify_claim(claim)
+        if principal.insurer_id != claim.insurer_id:
+            raise ValueError("Authorized insurer identity does not match the claim")
         duplicate_check = self.duplicate_detector.check(event, claim)
         feature_snapshot = self.feature_processor.process(
             event,
@@ -289,6 +303,7 @@ def main() -> None:
         registry=SepoliaClaimsRegistry.from_env(
             private_key_env="SEPOLIA_ASSESSOR_PRIVATE_KEY"
         ),
+        authorization=ClaimAuthorizationSigner.from_env(),
     )
     monitored_handler = MonitoredClaimHandler(handler, metrics)
     consumer = KafkaClaimEventConsumer(settings)

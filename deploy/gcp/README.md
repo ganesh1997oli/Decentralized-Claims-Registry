@@ -54,6 +54,8 @@ insurance deployment:
 - The VM is one failure domain and is manually sized.
 - Separate Sepolia-only submission and assessment wallets are supplied to their
   respective application containers.
+- Synthetic insurers authenticate through one API key each; the server stores
+  only their SHA-256 digests.
 - Model training data is suitable for research, not a real fraud decision.
 
 The value of this setup is reproducible integration and measurable behaviour,
@@ -196,6 +198,19 @@ openssl rand -hex 24
 openssl rand -hex 32
 ```
 
+Generate one independent insurer credential at a time from the repository root:
+
+```bash
+python backend/scripts/generate_insurer_credential.py \
+  northstar-mutual northstar-cloud-v1 --daily-quota 25
+```
+
+Give the printed raw key only to that synthetic insurer operator. Put only the
+printed digest entry in the `INSURER_CREDENTIALS_JSON` list and repeat for each
+insurer. Generate `CLAIM_AUTHORIZATION_KEY` with `openssl rand -hex 32`; it is
+shared only by the backend and scoring worker so the worker can reject an IPFS
+document that did not pass through the authenticated gateway.
+
 Keep `CLAIMS_DEPLOYMENT_ID="sepolia-security-audit-v1"` for the reviewed
 hardened contract bundled into the image. The API, listener, and worker all use
 this same selector and refuse a legacy or incompatible artifact.
@@ -207,11 +222,18 @@ Use only:
   contract roles and enough test ETH for their writes;
 - a Pinata token intended for this research project;
 - a unique PostgreSQL password;
+- unique digest-only insurer credential entries and a claim-authorization key;
 - a unique duplicate-fingerprint HMAC key.
 
 Do not put the deployment/admin key on the VM. FastAPI receives only
 `SEPOLIA_SUBMITTER_PRIVATE_KEY`, while the worker receives only
 `SEPOLIA_ASSESSOR_PRIVATE_KEY`.
+
+The default per-IP, per-insurer, and daily quota counters are process-local and
+fit this deployment's single FastAPI process. They reset on restart. A
+multi-process or multi-VM deployment must replace them with a shared atomic
+store. Nginx and FastAPI both enforce the default 16 KiB claim request limit;
+keep `client_max_body_size` and `MAX_CLAIM_BODY_BYTES` aligned if it changes.
 
 If the VM's external IP changes, update `FRONTEND_ORIGINS` before rebuilding or
 restarting the API.

@@ -207,13 +207,17 @@ function errorMessage(body: unknown, status: number): string {
 
 export async function submitClaim(
   payload: ClaimPayload,
+  insurerApiKey: string,
   signal?: AbortSignal,
 ): Promise<ClaimReceipt> {
   let response: Response
   try {
     response = await fetch(`${API_BASE_URL}/claims`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Insurer-API-Key': insurerApiKey,
+      },
       body: JSON.stringify(payload),
       signal,
     })

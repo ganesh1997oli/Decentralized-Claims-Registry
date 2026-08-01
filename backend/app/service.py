@@ -8,7 +8,6 @@ worker own the later model assessment.
 
 from __future__ import annotations
 
-import json
 from typing import Protocol
 
 from web3 import Web3
@@ -24,6 +23,11 @@ from backend.app.models import (
     ClaimPageResponse,
     ClaimSubmission,
     ClaimSubmissionResponse,
+)
+from backend.app.submission_auth import (
+    ClaimAuthorizationSigner,
+    InsurerPrincipal,
+    SubmissionAuthConfigurationError,
 )
 from integrations.ipfs import IPFSClient, IPFSError
 
@@ -54,15 +58,14 @@ class ClaimsRegistryReader(Protocol):
     ) -> tuple[list[ChainClaim], int]: ...
 
 
-def canonical_claim_bytes(claim: ClaimSubmission) -> bytes:
-    """Create stable JSON bytes so the same claim always has the same hash."""
+def canonical_claim_bytes(
+    claim: ClaimSubmission,
+    principal: InsurerPrincipal,
+    authorization: ClaimAuthorizationSigner,
+) -> bytes:
+    """Create stable, gateway-authorized bytes for IPFS and Sepolia."""
 
-    return json.dumps(
-        claim.canonical_document(),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
+    return authorization.authorized_claim_bytes(claim, principal)
 
 
 class ClaimQueryService:
@@ -77,7 +80,7 @@ class ClaimQueryService:
         self.registry = registry
 
     @classmethod
-    def from_env(cls) -> "ClaimQueryService":
+    def from_env(cls) -> ClaimQueryService:
         """Build the read-only Sepolia client from public configuration."""
 
         try:
@@ -143,25 +146,37 @@ class ClaimSubmissionService:
         *,
         ipfs: IPFSStore,
         registry: ClaimsRegistryWriter,
+        authorization: ClaimAuthorizationSigner,
     ) -> None:
         self.ipfs = ipfs
         self.registry = registry
+        self.authorization = authorization
 
     @classmethod
-    def from_env(cls) -> "ClaimSubmissionService":
+    def from_env(cls) -> ClaimSubmissionService:
         try:
             return cls(
                 ipfs=IPFSClient.from_env(require_upload=True),
                 registry=SepoliaClaimsRegistry.from_env(
                     private_key_env="SEPOLIA_SUBMITTER_PRIVATE_KEY"
                 ),
+                authorization=ClaimAuthorizationSigner.from_env(),
             )
-        except (IPFSError, BlockchainSubmissionError, ValueError) as exc:
+        except (
+            IPFSError,
+            BlockchainSubmissionError,
+            SubmissionAuthConfigurationError,
+            ValueError,
+        ) as exc:
             raise ClaimSubmissionServiceError(str(exc)) from exc
 
-    def submit(self, claim: ClaimSubmission) -> ClaimSubmissionResponse:
+    def submit(
+        self,
+        claim: ClaimSubmission,
+        principal: InsurerPrincipal,
+    ) -> ClaimSubmissionResponse:
         # These exact bytes are uploaded to IPFS and hashed for the contract.
-        payload = canonical_claim_bytes(claim)
+        payload = canonical_claim_bytes(claim, principal, self.authorization)
         try:
             cid = self.ipfs.upload_bytes(
                 payload,

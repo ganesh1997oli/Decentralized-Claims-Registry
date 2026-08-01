@@ -1,15 +1,15 @@
 """Broker-and-database integration test for the asynchronous scoring workflow."""
 
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import json
-import time
 
 import pytest
 from web3 import Web3
 
 from backend.app.blockchain import ChainAssessment, ChainClaim
 from backend.app.models import ClaimSubmission
+from backend.app.submission_auth import ClaimAuthorizationSigner, InsurerPrincipal
 from duplicates import CrossInsurerDuplicateDetector
 from integrations.kafka import (
     ClaimSubmittedEvent,
@@ -20,8 +20,10 @@ from integrations.kafka.scoring_worker import ClaimScoringHandler
 from integrations.postgres import ClaimFeatureProcessor
 from model.contracts import FraudReason, FraudScore
 
-
 pytestmark = pytest.mark.integration
+AUTHORIZATION = ClaimAuthorizationSigner(
+    b"kafka-integration-authorization-key-32-bytes"
+)
 
 
 class PayloadStore:
@@ -101,11 +103,13 @@ def claim_payload(insurer_id: str) -> bytes:
         description=f"Synthetic incident described by {insurer_id}",
         evidence=[],
     )
-    return json.dumps(
-        claim.canonical_document(),
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    principal = InsurerPrincipal(
+        insurer_id=insurer_id,
+        credential_id=f"{insurer_id}-integration-v1",
+        permitted_operations=frozenset({"submit_claim"}),
+        daily_quota=25,
+    )
+    return AUTHORIZATION.authorized_claim_bytes(claim, principal)
 
 
 def submitted_event(claim_id: int, payload: bytes) -> ClaimSubmittedEvent:
@@ -148,6 +152,7 @@ def test_broker_events_are_scored_and_matched_across_insurers(
         ),
         repository=postgres_repository,
         registry=registry,
+        authorization=AUTHORIZATION,
     )
     publisher = KafkaClaimEventPublisher(kafka_settings)
     consumer = KafkaClaimEventConsumer(kafka_settings)

@@ -47,8 +47,9 @@ set +a
 | `VITE_API_BASE_URL` | `http://127.0.0.1:8000` | FastAPI base URL |
 | `VITE_IPFS_GATEWAY` | `https://gateway.pinata.cloud/ipfs` | Opens receipt CIDs in a browser |
 
-Vite variables are visible in the browser. Never add a private key, Pinata JWT,
-or other secret to a `VITE_` variable.
+Vite variables are visible in the browser. Never add an insurer API key, wallet
+private key, Pinata JWT, claim-authorization key, or other secret to a `VITE_`
+variable.
 
 ## Run locally
 
@@ -69,6 +70,11 @@ submission, the receipt links to Etherscan and the configured IPFS gateway. In
 asynchronous mode it polls FastAPI for up to one minute while Kafka scores the
 claim, then displays the duplicate check, stored assessment and refreshed
 contract state.
+The form also asks for the selected synthetic insurer's API key. That value is
+sent only in `X-Insurer-API-Key`, remains in React runtime memory, and is cleared
+when the form resets. FastAPI derives the authoritative insurer from the key and
+rejects a selection that does not match. The local-only example keys are listed
+in the [backend guide](../backend/README.md#local-insurer-credentials).
 The header labels the interface **Research test data only** to make clear that
 users must enter fictional test claims; it does not describe where the research
 dataset is hosted.

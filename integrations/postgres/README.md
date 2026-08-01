@@ -34,7 +34,8 @@ and evidence. The same server-side secret is used by duplicate detection, but a
 separate versioned HMAC payload keeps the two fingerprint purposes isolated.
 
 The proposal's true policy-age and shared-address features are not present
-because claim schema v3 collects neither a policy start date nor an address.
+because claim payload schema v4 collects neither a policy start date nor an
+address.
 Adding either feature requires an intentional claim-schema migration, privacy
 review, representative data, and model retraining. The pipeline does not
 substitute vehicle age for policy age or invent an address value.

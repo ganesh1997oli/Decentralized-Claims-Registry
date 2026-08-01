@@ -8,6 +8,8 @@ from backend.app.main import (
     get_assessment_repository,
     get_claim_query_service,
     get_claim_submission_service,
+    get_insurer_principal,
+    get_submission_boundary,
 )
 from backend.app.models import (
     ClaimAssessmentResponse,
@@ -20,6 +22,12 @@ from backend.app.service import (
     ClaimQueryServiceError,
     ClaimSubmissionService,
     ClaimSubmissionServiceError,
+)
+from backend.app.submission_auth import (
+    InsurerPrincipal,
+    SubmissionAuthenticationError,
+    SubmissionAuthorizationError,
+    SubmissionRateLimitError,
 )
 from duplicates import DuplicateCheck, DuplicateMatch
 from integrations.postgres import AssessmentRecord
@@ -45,9 +53,10 @@ VALID_CLAIM = {
 
 
 class SuccessfulService:
-    def submit(self, claim):
+    def submit(self, claim, principal):
         assert claim.claim_reference == "synthetic-claim-api-1"
         assert claim.insurer_id == "northstar-mutual"
+        assert principal.insurer_id == "northstar-mutual"
         return ClaimSubmissionResponse(
             claim_id=7,
             transaction_hash="0xtransaction",
@@ -91,13 +100,14 @@ class SuccessfulService:
 
 
 class FailingService:
-    def submit(self, claim):
+    def submit(self, claim, principal):
         raise ClaimSubmissionServiceError("upstream unavailable")
 
 
 class PendingService:
-    def submit(self, claim):
+    def submit(self, claim, principal):
         assert claim.claim_reference == "synthetic-claim-api-1"
+        assert principal.insurer_id == "northstar-mutual"
         return ClaimSubmissionResponse(
             claim_id=7,
             transaction_hash="0xtransaction",
@@ -109,7 +119,7 @@ class PendingService:
 
 
 class UnexpectedService:
-    def submit(self, claim):
+    def submit(self, claim, principal):
         raise AssertionError("Invalid input must not reach the submission service")
 
 
@@ -165,6 +175,34 @@ def active_deployment():
     return SimpleNamespace(chain_id=11_155_111, address="0xcontract")
 
 
+def authenticated_principal():
+    return InsurerPrincipal(
+        insurer_id="northstar-mutual",
+        credential_id="northstar-test-v1",
+        permitted_operations=frozenset({"submit_claim"}),
+        daily_quota=25,
+    )
+
+
+def allow_authenticated_submission():
+    app.dependency_overrides[get_insurer_principal] = authenticated_principal
+
+
+class BoundaryProbe:
+    def __init__(self, result=None, error=None):
+        self.result = result or authenticated_principal()
+        self.error = error
+        self.calls = []
+
+    def authorize_and_reserve(
+        self, *, api_key, claimed_insurer_id, client_ip
+    ):
+        self.calls.append((api_key, claimed_insurer_id, client_ip))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
 def test_health_does_not_require_external_services():
     response = TestClient(app).get("/health")
 
@@ -178,7 +216,9 @@ def test_cors_preflight_allows_the_local_react_app():
         headers={
             "Origin": "http://127.0.0.1:5173",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "content-type",
+            "Access-Control-Request-Headers": (
+                "content-type,x-insurer-api-key"
+            ),
         },
     )
 
@@ -187,10 +227,14 @@ def test_cors_preflight_allows_the_local_react_app():
         "http://127.0.0.1:5173"
     )
     assert "POST" in response.headers["access-control-allow-methods"]
+    assert "X-Insurer-API-Key" in response.headers[
+        "access-control-allow-headers"
+    ]
 
 
 def test_submit_claim_returns_created_receipt():
     app.dependency_overrides[get_claim_submission_service] = SuccessfulService
+    allow_authenticated_submission()
     try:
         response = TestClient(app).post("/claims", json=VALID_CLAIM)
     finally:
@@ -221,6 +265,7 @@ def test_submit_claim_returns_created_receipt():
 
 def test_submit_claim_returns_anchor_while_async_assessment_is_pending():
     app.dependency_overrides[get_claim_submission_service] = PendingService
+    allow_authenticated_submission()
     try:
         response = TestClient(app).post("/claims", json=VALID_CLAIM)
     finally:
@@ -228,6 +273,109 @@ def test_submit_claim_returns_anchor_while_async_assessment_is_pending():
 
     assert response.status_code == 201
     assert response.json()["assessment"] is None
+
+
+def test_submit_claim_authenticates_api_key_and_authoritative_insurer():
+    boundary = BoundaryProbe()
+    app.dependency_overrides[get_claim_submission_service] = SuccessfulService
+    app.dependency_overrides[get_submission_boundary] = lambda: boundary
+    try:
+        response = TestClient(app).post(
+            "/claims",
+            json=VALID_CLAIM,
+            headers={"X-Insurer-API-Key": "test-api-key"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+    assert boundary.calls == [
+        ("test-api-key", "northstar-mutual", "testclient")
+    ]
+
+
+def test_submit_claim_requires_an_insurer_api_key():
+    boundary = BoundaryProbe(
+        error=SubmissionAuthenticationError("Invalid insurer API credential")
+    )
+    app.dependency_overrides[get_claim_submission_service] = UnexpectedService
+    app.dependency_overrides[get_submission_boundary] = lambda: boundary
+    try:
+        response = TestClient(app).post("/claims", json=VALID_CLAIM)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "ApiKey"
+
+
+def test_authentication_runs_before_submission_service_initialization():
+    boundary = BoundaryProbe(
+        error=SubmissionAuthenticationError("Invalid insurer API credential")
+    )
+
+    def unexpected_service_initialization():
+        raise AssertionError("Authentication must run before external clients load")
+
+    app.dependency_overrides[
+        get_claim_submission_service
+    ] = unexpected_service_initialization
+    app.dependency_overrides[get_submission_boundary] = lambda: boundary
+    try:
+        response = TestClient(app).post("/claims", json=VALID_CLAIM)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+
+
+def test_submit_claim_rejects_insurer_identity_mismatch():
+    boundary = BoundaryProbe(
+        error=SubmissionAuthorizationError(
+            "The selected insurer does not match the authenticated credential"
+        )
+    )
+    app.dependency_overrides[get_claim_submission_service] = UnexpectedService
+    app.dependency_overrides[get_submission_boundary] = lambda: boundary
+    try:
+        response = TestClient(app).post(
+            "/claims",
+            json=VALID_CLAIM,
+            headers={"X-Insurer-API-Key": "test-api-key"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 403
+    assert "does not match" in response.json()["detail"]
+
+
+def test_submit_claim_returns_retry_after_for_rate_limit():
+    boundary = BoundaryProbe(
+        error=SubmissionRateLimitError("Daily quota reached", retry_after=3600)
+    )
+    app.dependency_overrides[get_claim_submission_service] = UnexpectedService
+    app.dependency_overrides[get_submission_boundary] = lambda: boundary
+    try:
+        response = TestClient(app).post(
+            "/claims",
+            json=VALID_CLAIM,
+            headers={"X-Insurer-API-Key": "test-api-key"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "3600"
+
+
+def test_submit_claim_rejects_oversized_body_before_dependencies():
+    oversized = {**VALID_CLAIM, "description": "x" * 17_000}
+
+    response = TestClient(app).post("/claims", json=oversized)
+
+    assert response.status_code == 413
+    assert "exceeds 16384 bytes" in response.json()["detail"]
 
 
 def test_list_claims_returns_current_on_chain_state():
@@ -326,6 +474,7 @@ def test_submit_claim_rejects_invalid_amount_before_external_calls():
     invalid_claim = {**VALID_CLAIM, "claimAmountUsd": -1}
 
     app.dependency_overrides[get_claim_submission_service] = UnexpectedService
+    allow_authenticated_submission()
     try:
         response = TestClient(app).post("/claims", json=invalid_claim)
     finally:
@@ -338,6 +487,7 @@ def test_submit_claim_rejects_an_invalid_insurer_id_before_external_calls():
     invalid_claim = {**VALID_CLAIM, "insurerId": "Northstar Mutual"}
 
     app.dependency_overrides[get_claim_submission_service] = UnexpectedService
+    allow_authenticated_submission()
     try:
         response = TestClient(app).post("/claims", json=invalid_claim)
     finally:
@@ -348,6 +498,7 @@ def test_submit_claim_rejects_an_invalid_insurer_id_before_external_calls():
 
 def test_submit_claim_reports_upstream_failure():
     app.dependency_overrides[get_claim_submission_service] = FailingService
+    allow_authenticated_submission()
     try:
         response = TestClient(app).post("/claims", json=VALID_CLAIM)
     finally:
@@ -393,6 +544,7 @@ def test_submit_claim_reports_missing_write_configuration_as_json_503(monkeypatc
         )
 
     get_claim_submission_service.cache_clear()
+    allow_authenticated_submission()
     monkeypatch.setattr(
         ClaimSubmissionService,
         "from_env",

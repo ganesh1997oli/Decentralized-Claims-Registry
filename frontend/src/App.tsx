@@ -627,6 +627,7 @@ export function ClaimsDashboard({
 
 function App() {
   const [form, setForm] = useState<FormValues>(initialForm)
+  const [insurerApiKey, setInsurerApiKey] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [receipt, setReceipt] = useState<DisplayReceipt | null>(() =>
@@ -871,6 +872,11 @@ function App() {
     event.preventDefault()
     setError(null)
 
+    if (insurerApiKey.trim().length < 24) {
+      setError('Enter the API credential issued for the selected insurer.')
+      return
+    }
+
     if (!Number.isFinite(claimAmountUsd) || claimAmountUsd <= 0) {
       setError('Enter a claim amount greater than $0.00.')
       return
@@ -904,7 +910,10 @@ function App() {
 
     setIsSubmitting(true)
     try {
-      const submittedReceipt = await submitClaim(payload)
+      const submittedReceipt = await submitClaim(
+        payload,
+        insurerApiKey.trim(),
+      )
       claimDetailsRequest.current?.abort()
       setSelectedClaimId(null)
       setClaimDetailsError(null)
@@ -927,6 +936,7 @@ function App() {
 
   function resetForm() {
     setForm(initialForm())
+    setInsurerApiKey('')
     setError(null)
   }
 
@@ -1018,13 +1028,17 @@ function App() {
 
             <form onSubmit={handleSubmit} className="mt-7 space-y-6">
               <div className="grid gap-5 sm:grid-cols-2">
-                <label className="field-group sm:col-span-2">
-                  <span className="field-label">Synthetic insurer</span>
+                <div className="field-group sm:col-span-2">
+                  <label className="field-label" htmlFor="insurer-id">
+                    Synthetic insurer
+                  </label>
                   <select
+                    id="insurer-id"
                     className="field-control"
                     name="insurerId"
                     value={form.insurerId}
                     onChange={update}
+                    aria-describedby="insurer-id-help"
                   >
                     {RESEARCH_INSURERS.map((insurer) => (
                       <option key={insurer.id} value={insurer.id}>
@@ -1032,11 +1046,35 @@ function App() {
                       </option>
                     ))}
                   </select>
-                  <span className="field-help">
-                    Submit the same incident through another insurer to demonstrate
-                    cross-insurer matching.
+                  <span className="field-help" id="insurer-id-help">
+                    The API credential must belong to this insurer. FastAPI rejects
+                    a user-selected label that does not match the authenticated
+                    principal.
                   </span>
-                </label>
+                </div>
+
+                <div className="field-group sm:col-span-2">
+                  <label className="field-label" htmlFor="insurer-api-key">
+                    Insurer API credential
+                  </label>
+                  <input
+                    id="insurer-api-key"
+                    className="field-control font-mono"
+                    type="password"
+                    value={insurerApiKey}
+                    onChange={(event) => setInsurerApiKey(event.target.value)}
+                    required
+                    minLength={24}
+                    maxLength={256}
+                    autoComplete="off"
+                    spellCheck={false}
+                    aria-describedby="insurer-api-key-help"
+                  />
+                  <span className="field-help" id="insurer-api-key-help">
+                    Enter the synthetic insurer credential at runtime. It is sent
+                    only in the request header and is never saved in browser storage.
+                  </span>
+                </div>
 
                 <label className="field-group">
                   <span className="field-label">Claim reference</span>
@@ -1270,8 +1308,8 @@ function App() {
 
               <div className="flex flex-col gap-4 border-t border-ink/8 pt-6 sm:flex-row sm:items-center sm:justify-between">
                 <p className="max-w-md text-xs leading-5 text-slate">
-                  The browser sends this form only to FastAPI. Wallet and Pinata
-                  credentials remain server-side.
+                  The browser authenticates the synthetic insurer to FastAPI.
+                  Wallet, claim-attestation and Pinata credentials remain server-side.
                 </p>
                 <button
                   type="submit"
