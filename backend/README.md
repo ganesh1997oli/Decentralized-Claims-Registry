@@ -1,9 +1,9 @@
 # FastAPI backend
 
-The backend validates schema-version-3 motor claims, stores their canonical JSON
-on IPFS, verifies the uploaded bytes, and anchors the hash and pointer on
-Sepolia. Kafka performs XGBoost scoring after anchoring, and PostgreSQL supplies
-the completed assessment to the browser.
+The backend authenticates a synthetic insurer, validates a motor claim, stores
+its signed schema-version-4 canonical JSON on IPFS, verifies the uploaded bytes,
+and anchors the hash and pointer on Sepolia. Kafka performs XGBoost scoring after
+anchoring, and PostgreSQL supplies the completed assessment to the browser.
 
 It also provides the paginated claims data used by the React dashboard.
 
@@ -14,16 +14,20 @@ It also provides the paginated claims data used by the React dashboard.
 
 For `POST /claims`:
 
-1. Validate the request with Pydantic.
-2. Create deterministic JSON bytes.
-3. Upload the bytes to Pinata and read them back through the IPFS gateway.
-4. Calculate the Keccak-256 hash and call `submitClaim` on Sepolia.
-5. Return the anchor receipt with `assessment: null`.
+1. Authenticate `X-Insurer-API-Key` and derive the authoritative insurer.
+2. Reject a request whose `insurerId` does not match that principal, then
+   reserve its per-IP, per-insurer, and daily allowance.
+3. Validate the request with Pydantic and create signed deterministic JSON.
+4. Upload the bytes to Pinata and read them back through the IPFS gateway.
+5. Calculate the Keccak-256 hash and call `submitClaim` on Sepolia.
+6. Return the anchor receipt with `assessment: null`.
 
 The browser polls `GET /claims/{claim_id}/assessment`. The Kafka scoring worker
 stores that response and performs the assessment transaction.
 
-The browser never receives the Pinata JWT or Sepolia private key.
+The scoring worker independently verifies the signed insurer authorization
+before duplicate detection or scoring. The browser never receives the Pinata
+JWT, authorization key, or Sepolia private key.
 
 ## Install
 
@@ -61,6 +65,11 @@ Backend settings:
 | `SEPOLIA_ASSESSOR_PRIVATE_KEY` | Worker | Separate Sepolia-only account granted `ASSESSOR_ROLE` for that submitter |
 | `CLAIMS_DEPLOYMENT_ID` | Yes | Checked-in Ignition deployment directory; use `sepolia-security-audit-v1` for the hardened contract |
 | `RECEIPT_TIMEOUT` | No | Seconds to wait for a transaction receipt |
+| `INSURER_CREDENTIALS_JSON` | Yes | Digest-only synthetic-insurer credential records; never put raw API keys here |
+| `INSURER_RATE_LIMIT_PER_MINUTE` | No | Accepted submissions allowed per insurer each minute; default `5` |
+| `IP_RATE_LIMIT_PER_MINUTE` | No | All authentication attempts allowed per client IP each minute; default `20` |
+| `MAX_CLAIM_BODY_BYTES` | No | Maximum `POST /claims` request body; default `16384` bytes |
+| `CLAIM_AUTHORIZATION_KEY` | Yes | HMAC key shared only by FastAPI and the scoring worker; minimum 32 bytes |
 | `DUPLICATE_FINGERPRINT_KEY` | Async | Private key used for incident HMAC fingerprints; minimum 32 bytes |
 | `FRONTEND_ORIGINS` | No | Comma-separated browser origins allowed by CORS |
 | `DATABASE_URL` | Async | PostgreSQL assessment store used by the polling endpoint |
@@ -82,6 +91,36 @@ If required route configuration is missing, FastAPI returns a structured JSON
 
 Never commit `.env.local`. Write accounts need test ETH and only their intended
 contract role. The deployment/admin key is not an application setting.
+
+### Local insurer credentials
+
+The checked-in `.env.example` contains only these keys' SHA-256 digests. The raw
+values below are intentionally public, fictional local-development credentials:
+
+| Insurer | Local API key |
+| --- | --- |
+| `northstar-mutual` | `local-northstar-mutual-api-key-change-me` |
+| `harbour-shield` | `local-harbour-shield-api-key-change-me` |
+| `cedar-insurance` | `local-cedar-insurance-api-key-change-me` |
+
+Enter the matching raw value in the browser or send it in
+`X-Insurer-API-Key`. Do not reuse these example keys in a hosted environment.
+Generate each hosted credential separately:
+
+```bash
+python backend/scripts/generate_insurer_credential.py \
+  northstar-mutual northstar-cloud-v1 --daily-quota 25
+```
+
+The command prints the raw key once for the synthetic insurer operator and a
+digest-only JSON entry for `INSURER_CREDENTIALS_JSON`. Join the generated
+entries into one JSON list. Keep the raw keys out of server configuration,
+logs, screenshots, browser storage, and all `VITE_` variables.
+
+The built-in minute limits and daily quotas are deliberately process-local for
+this single-process research gateway. They reset on process restart and do not
+coordinate multiple workers or VMs. Use a shared atomic store such as Redis or
+PostgreSQL before scaling FastAPI beyond one process.
 
 ## Run
 
@@ -112,6 +151,7 @@ Useful local URLs:
 ```bash
 curl -X POST http://127.0.0.1:8000/claims \
   -H 'Content-Type: application/json' \
+  -H 'X-Insurer-API-Key: local-northstar-mutual-api-key-change-me' \
   -d '{
     "insurerId": "northstar-mutual",
     "claimReference": "synthetic-api-1",
@@ -166,7 +206,10 @@ python -m pytest backend/tests -q
 - Duplicate detection uses exact normalized incident fields. It produces review
   candidates, not proof of fraud or privacy-preserving record linkage suitable
   for real insurers.
-- Authentication, authorization and rate limiting are not yet implemented.
+- Insurer authentication uses research API keys rather than an enterprise
+  identity provider, and the in-memory limits assume one FastAPI process.
+- Credential revocation and rotation require updating the digest-only
+  configuration and restarting the research gateway.
 
 See the [root project guide](../README.md) for the complete application run and
 the [model guide](../model/README.md) for how the fraud score is produced.

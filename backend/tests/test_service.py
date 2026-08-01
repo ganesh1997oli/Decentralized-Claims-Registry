@@ -9,6 +9,17 @@ from backend.app.service import (
     ClaimSubmissionServiceError,
     canonical_claim_bytes,
 )
+from backend.app.submission_auth import ClaimAuthorizationSigner, InsurerPrincipal
+
+AUTHORIZATION = ClaimAuthorizationSigner(
+    b"service-test-claim-authorization-key-32-bytes"
+)
+PRINCIPAL = InsurerPrincipal(
+    insurer_id="northstar-mutual",
+    credential_id="northstar-test-v1",
+    permitted_operations=frozenset({"submit_claim"}),
+    daily_quota=25,
+)
 
 
 def claim_model() -> ClaimSubmission:
@@ -82,25 +93,25 @@ class FakeRegistry:
 
 
 def test_canonical_serialization_is_stable():
-    payload = canonical_claim_bytes(claim_model())
+    first = canonical_claim_bytes(claim_model(), PRINCIPAL, AUTHORIZATION)
+    second = canonical_claim_bytes(claim_model(), PRINCIPAL, AUTHORIZATION)
 
-    assert payload == (
-        b'{"claimAmountUsd":2500.0,"claimReference":"synthetic-claim-api-1",'
-        b'"claimType":"collision","country":"Nigeria","description":"Synthetic '
-        b'bumper damage for API testing","evidence":[],"incidentDate":"2026-07-13",'
-        b'"insurerId":"northstar-mutual","policyPremiumUsd":480.0,'
-        b'"policyReference":"synthetic-policy-42","regionType":"urban",'
-        b'"schemaVersion":3,"thirdPartyInjuryFlag":false,'
-        b'"totalLossFlag":false,"vehicleAge":6,"vehicleType":"sedan"}'
-    )
+    assert first == second
+    assert b'"schemaVersion":4' in first
+    assert b'"credentialId":"northstar-test-v1"' in first
+    assert b'"signature":' in first
 
 
 def test_service_uploads_verifies_and_submits_exact_payload():
     ipfs = FakeIPFS()
     registry = FakeRegistry()
-    service = ClaimSubmissionService(ipfs=ipfs, registry=registry)
+    service = ClaimSubmissionService(
+        ipfs=ipfs,
+        registry=registry,
+        authorization=AUTHORIZATION,
+    )
 
-    result = service.submit(claim_model())
+    result = service.submit(claim_model(), PRINCIPAL)
 
     submitted_hash, submitted_pointer = registry.submission
     assert submitted_pointer == "ipfs://bafy-test"
@@ -115,10 +126,11 @@ def test_service_refuses_to_anchor_corrupt_ipfs_round_trip():
     service = ClaimSubmissionService(
         ipfs=FakeIPFS(corrupt_download=True),
         registry=registry,
+        authorization=AUTHORIZATION,
     )
 
     try:
-        service.submit(claim_model())
+        service.submit(claim_model(), PRINCIPAL)
     except ClaimSubmissionServiceError as exc:
         assert "different" in str(exc)
     else:

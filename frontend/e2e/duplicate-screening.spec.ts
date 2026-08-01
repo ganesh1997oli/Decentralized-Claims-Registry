@@ -54,6 +54,7 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
 }) => {
   const consoleErrors: string[] = []
   let submittedPayload: Record<string, unknown> | undefined
+  let submittedApiKey: string | undefined
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text())
   })
@@ -64,6 +65,7 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
 
     if (request.method() === 'POST' && path === '/api/claims') {
       submittedPayload = request.postDataJSON() as Record<string, unknown>
+      submittedApiKey = request.headers()['x-insurer-api-key']
       await route.fulfill({
         status: 201,
         contentType: 'application/json',
@@ -101,7 +103,12 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
   })
 
   await page.goto('/')
-  await page.getByLabel('Synthetic insurer').selectOption('harbour-shield')
+  await page
+    .getByLabel('Synthetic insurer', { exact: true })
+    .selectOption('harbour-shield')
+  await page
+    .getByRole('textbox', { name: /^Insurer API credential/ })
+    .fill('local-harbour-shield-api-key-change-me')
   await page.getByLabel('Claim reference').fill('harbour-production-test')
   await page.getByLabel('Policy reference').fill('harbour-policy-test')
   await page.getByRole('button', { name: /Submit synthetic claim/ }).click()
@@ -120,5 +127,7 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
     claimReference: 'harbour-production-test',
     policyReference: 'harbour-policy-test',
   })
+  expect(submittedPayload).not.toHaveProperty('insurerApiKey')
+  expect(submittedApiKey).toBe('local-harbour-shield-api-key-change-me')
   expect(consoleErrors).toEqual([])
 })

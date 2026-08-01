@@ -82,6 +82,8 @@ set +a
 | `MAX_BLOCK_RANGE` | `50` | Maximum logs query size while catching up on a public RPC |
 | `LISTENER_STATE_DIR` | `listener/.state` | Directory for deployment-specific checkpoints and dead-letter files |
 | `LISTENER_START_BLOCK` | Latest confirmed block | First block for a deliberate initial backfill |
+| `CLAIM_AUTHORIZATION_KEY` | Required by demo | HMAC key used to create a worker-verifiable schema-v4 claim |
+| `DEMO_INSURER_CREDENTIAL_ID` | `northstar-local-v1` | Public credential label embedded by the direct submission demo |
 
 Checkpoint and dead-letter filenames automatically include the deployment ID,
 chain ID, and contract address, so changing the selector starts a separate state
@@ -91,9 +93,9 @@ IPFS variables are documented in the
 [IPFS guide](../integrations/ipfs/README.md). Kafka variables are documented in
 the [Kafka guide](../integrations/kafka/README.md).
 
-The listener only downloads IPFS data, so it does not require `PINATA_JWT` or
-any wallet key. The two role keys are needed only by
-`submit_and_assess_demo.py`.
+The listener only downloads IPFS data, so it does not require `PINATA_JWT`,
+`CLAIM_AUTHORIZATION_KEY`, or any wallet key. The two role keys and claim
+authorization key are needed only by `submit_and_assess_demo.py`.
 
 ## Run
 
@@ -149,9 +151,9 @@ and database consumers should use the event ID for deduplication.
 
 ## Command-line demonstration
 
-The backend is the recommended submission path. For a smaller terminal-only
-demonstration, load a Pinata JWT and the separately authorized submitter and
-assessor keys, then run:
+The backend is the recommended submission path. For a smaller trusted
+terminal-only demonstration, load a Pinata JWT, `CLAIM_AUTHORIZATION_KEY`, and
+the separately authorized submitter and assessor keys, then run:
 
 ```bash
 set -a
@@ -159,6 +161,10 @@ source .env.local
 set +a
 python listener/submit_and_assess_demo.py
 ```
+
+The script signs the schema-v4 IPFS document with the same authorization key as
+the worker. It is therefore a trusted operator tool, not an untrusted insurer
+client, and the authorization key must never be copied into browser code.
 
 If submission succeeded but assessment was interrupted, continue the existing
 claim instead of creating another one:

@@ -30,7 +30,7 @@ claims.submitted.v1
         │
         ▼
 XGBoost scoring worker
-        │ verify CID and parse claim schema v3
+        │ verify CID and signed claim schema v4 authorization
         ▼
 private incident HMAC + cross-insurer lookup
         │
@@ -155,11 +155,14 @@ set +a
 python listener/claims_listener.py
 ```
 
-Submit through the React form or `POST /claims`. The worker verifies the
-document, performs duplicate screening, saves a versioned PostgreSQL feature
-snapshot, runs XGBoost/SHAP, and writes the assessment. A successful flow prints
-`KafkaPublished` in the listener and `ClaimAssessed` in the worker; the latter
-includes `features=claim-processing-v1`.
+Submit through the React form or authenticated `POST /claims`. The worker
+verifies both the document hash and the gateway HMAC authorization before it
+trusts `insurerId`, performs duplicate screening, saves a versioned PostgreSQL
+feature snapshot, runs XGBoost/SHAP, and writes the assessment. It receives
+`CLAIM_AUTHORIZATION_KEY`, but it does not receive raw insurer API keys or their
+digests. A successful flow prints `KafkaPublished` in the listener and
+`ClaimAssessed` in the worker; the latter includes
+`features=claim-processing-v1`.
 
 The older verification-only consumer remains useful for inspecting events. Do
 not run it with the scorer's consumer-group ID because members of the same Kafka

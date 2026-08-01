@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +7,12 @@ from prometheus_client import generate_latest
 from web3 import Web3
 
 from backend.app.blockchain import ChainAssessment, ChainClaim
-from backend.app.models import StoredClaimDocument
+from backend.app.models import ClaimSubmission, StoredClaimDocument
+from backend.app.submission_auth import (
+    ClaimAuthorizationSigner,
+    ClaimAuthorizationVerificationError,
+    InsurerPrincipal,
+)
 from duplicates import DuplicateCheck
 from integrations.kafka import ClaimSubmittedEvent
 from integrations.kafka.scoring_worker import (
@@ -20,11 +24,20 @@ from integrations.postgres import AssessmentRecord
 from model.contracts import FraudReason, FraudScore
 from observability import ScoringMetrics
 
+AUTHORIZATION = ClaimAuthorizationSigner(
+    b"worker-test-claim-authorization-key-32-bytes"
+)
+PRINCIPAL = InsurerPrincipal(
+    insurer_id="northstar-mutual",
+    credential_id="northstar-test-v1",
+    permitted_operations=frozenset({"submit_claim"}),
+    daily_quota=25,
+)
+
 
 def claim_payload() -> bytes:
-    return json.dumps(
+    claim = ClaimSubmission.model_validate(
         {
-            "schemaVersion": 3,
             "insurerId": "northstar-mutual",
             "claimReference": "synthetic-worker-1",
             "policyReference": "synthetic-policy-42",
@@ -40,10 +53,9 @@ def claim_payload() -> bytes:
             "totalLossFlag": False,
             "description": "Synthetic bumper damage for worker testing",
             "evidence": [],
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
+        }
+    )
+    return AUTHORIZATION.authorized_claim_bytes(claim, PRINCIPAL)
 
 
 def claim_event(payload: bytes | None = None) -> ClaimSubmittedEvent:
@@ -79,7 +91,7 @@ class FakeScorer:
         self.calls = 0
 
     def score(self, claim):
-        assert claim.schema_version == 3
+        assert claim.schema_version == 4
         assert claim.vehicle_age == 6
         self.calls += 1
         return FraudScore(
@@ -197,6 +209,7 @@ def test_worker_scores_persists_and_assesses_one_verified_claim():
         feature_processor=feature_processor,
         repository=repository,
         registry=registry,
+        authorization=AUTHORIZATION,
     )
 
     handler(event)
@@ -234,6 +247,7 @@ def test_worker_commits_a_duplicate_without_scoring_again():
         feature_processor=feature_processor,
         repository=FakeRepository(record),
         registry=FakeRegistry(status=4, fraud_score=6800),
+        authorization=AUTHORIZATION,
     )
 
     handler(event)
@@ -268,6 +282,7 @@ def test_worker_recovers_when_chain_write_finished_before_database_update():
         feature_processor=FakeFeatureProcessor(),
         repository=repository,
         registry=registry,
+        authorization=AUTHORIZATION,
     )
 
     handler(event)
@@ -288,6 +303,7 @@ def test_worker_rejects_changed_ipfs_bytes_before_scoring():
         feature_processor=feature_processor,
         repository=repository,
         registry=FakeRegistry(),
+        authorization=AUTHORIZATION,
     )
 
     with pytest.raises(ValueError, match="hash"):
@@ -295,6 +311,49 @@ def test_worker_rejects_changed_ipfs_bytes_before_scoring():
 
     assert scorer.calls == 0
     assert feature_processor.calls == []
+    assert repository.record is None
+
+
+def test_worker_rejects_claim_not_attested_by_authenticated_gateway():
+    attacker = ClaimAuthorizationSigner(
+        b"different-worker-authorization-key-32-bytes"
+    )
+    unsigned_claim = ClaimSubmission.model_validate(
+        {
+            "insurerId": "northstar-mutual",
+            "claimReference": "synthetic-worker-forged",
+            "policyReference": "synthetic-policy-42",
+            "claimType": "collision",
+            "incidentDate": "2026-07-13",
+            "claimAmountUsd": 2500,
+            "policyPremiumUsd": 480,
+            "vehicleAge": 6,
+            "vehicleType": "sedan",
+            "country": "Nigeria",
+            "regionType": "urban",
+            "thirdPartyInjuryFlag": False,
+            "totalLossFlag": False,
+            "description": "Forged insurer identity",
+            "evidence": [],
+        }
+    )
+    payload = attacker.authorized_claim_bytes(unsigned_claim, PRINCIPAL)
+    scorer = FakeScorer()
+    repository = FakeRepository()
+    handler = ClaimScoringHandler(
+        ipfs=FakeIPFS(payload),
+        scorer=scorer,
+        duplicate_detector=FakeDuplicateDetector(),
+        feature_processor=FakeFeatureProcessor(),
+        repository=repository,
+        registry=FakeRegistry(),
+        authorization=AUTHORIZATION,
+    )
+
+    with pytest.raises(ClaimAuthorizationVerificationError, match="not authorized"):
+        handler(claim_event(payload))
+
+    assert scorer.calls == 0
     assert repository.record is None
 
 
