@@ -30,13 +30,10 @@ import shap
 from model.contracts import FraudReason, FraudScore
 from model.research_pipeline import FEATURE_COLUMNS
 
-
 # This is the reproducible artifact created by ``python -m model.train_xgboost``.
 # An environment variable can point to another reviewed artifact at deployment.
 DEFAULT_ARTIFACT_DIR = (
-    Path(__file__).resolve().parent
-    / "artifacts"
-    / "xgboost-african-motor-v1"
+    Path(__file__).resolve().parent / "artifacts" / "xgboost-african-motor-v1"
 )
 
 # The model works with machine-oriented feature names. These mappings give the
@@ -108,7 +105,7 @@ class ClaimFeaturesV1:
         claim: ScorableMotorClaim,
         *,
         claim_frequency: float,
-    ) -> "ClaimFeaturesV1":
+    ) -> ClaimFeaturesV1:
         """Build trusted model features from an application claim.
 
         Most values come directly from the submitted claim. Market claim
@@ -252,7 +249,7 @@ class XGBoostFraudScorer:
         artifact_dir: Path = DEFAULT_ARTIFACT_DIR,
         *,
         expected_sha256: str | None = None,
-    ) -> "XGBoostFraudScorer":
+    ) -> XGBoostFraudScorer:
         """Load and verify a reviewed model artifact from a directory.
 
         The directory must contain ``model.joblib`` and ``metadata.json``.
@@ -291,7 +288,7 @@ class XGBoostFraudScorer:
         return cls(pipeline, metadata)
 
     @classmethod
-    def from_env(cls) -> "XGBoostFraudScorer":
+    def from_env(cls) -> XGBoostFraudScorer:
         """Create the scorer from deployment environment variables.
 
         ``XGBOOST_MODEL_DIR`` selects the artifact directory and

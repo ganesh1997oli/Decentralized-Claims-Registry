@@ -469,3 +469,18 @@ Confirm:
 Use `verify-deployment.sh` on the VM before debugging the public network. Its
 read-only output includes the selected deployment ID, chain ID, and contract
 address so configuration drift is visible without printing secrets.
+
+## Schema and health behavior
+
+Every normal Compose start runs `database-migrate` after PostgreSQL becomes
+healthy. FastAPI and the scoring worker wait for that one-shot service to finish
+successfully, so a broken or drifted migration stops the deployment instead of
+starting a partially compatible application. Application containers install
+only the exact hash-checked packages from the root `requirements.lock`.
+
+The backend container health check calls `/health/ready`, which covers the
+database and migration state, insurer authentication configuration, Sepolia
+deployment, and submission adapters. `/health/live` remains dependency-free and
+is the correct diagnostic when an external service is unavailable. Runtime
+application logs are JSON with stable `event` values and correlation fields;
+Docker still bounds the local JSON files before the Ops Agent forwards them.

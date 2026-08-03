@@ -21,20 +21,12 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirement files before application code. Docker can then reuse the
-# expensive dependency layer when only a Python function or comment changes.
-COPY deploy/gcp/python-requirements.txt deploy/gcp/python-requirements.txt
-COPY backend/requirements.txt backend/requirements.txt
-COPY listener/requirements.txt listener/requirements.txt
-COPY model/requirements.txt model/requirements.txt
-COPY integrations/requirements.txt integrations/requirements.txt
-COPY integrations/ipfs/requirements.txt integrations/ipfs/requirements.txt
-COPY integrations/kafka/requirements.txt integrations/kafka/requirements.txt
-COPY integrations/postgres/requirements.txt integrations/postgres/requirements.txt
-COPY observability/requirements.txt observability/requirements.txt
+# Install only the reviewed, exact production dependency graph. Hash checking
+# prevents an altered distribution file from silently entering the image, and
+# copying the lock first preserves Docker's expensive dependency cache layer.
+COPY requirements.lock requirements.lock
 
-RUN python -m pip install --upgrade pip \
-    && python -m pip install -r deploy/gcp/python-requirements.txt
+RUN python -m pip install --require-hashes -r requirements.lock
 
 # Only runtime code and the reviewed Sepolia deployment artifact enter the
 # image. Local environment files and trained model files are excluded by

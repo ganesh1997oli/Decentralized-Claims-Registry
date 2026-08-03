@@ -21,7 +21,6 @@ from typing import Protocol
 
 from duplicates import DuplicateCheck
 
-
 FEATURE_VERSION = "claim-processing-v1"
 POLICY_FINGERPRINT_VERSION = "policy-hmac-sha256-v1"
 MINIMUM_FINGERPRINT_KEY_BYTES = 32
@@ -120,7 +119,7 @@ class ClaimFeatureProcessor:
         self._store = store
 
     @classmethod
-    def from_env(cls, store: ClaimFeatureStore) -> "ClaimFeatureProcessor":
+    def from_env(cls, store: ClaimFeatureStore) -> ClaimFeatureProcessor:
         # Reuse the worker's existing secret, but domain-separate the policy
         # payload from incident fingerprints with its own version identifier.
         raw_key = os.environ.get("DUPLICATE_FINGERPRINT_KEY", "")

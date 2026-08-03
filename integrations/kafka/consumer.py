@@ -9,12 +9,15 @@ from __future__ import annotations
 from web3 import Web3
 
 from integrations.ipfs import IPFSClient
+from observability import configure_logging, get_event_logger
 
 from .events import (
     ClaimSubmittedEvent,
     KafkaClaimEventConsumer,
     KafkaSettings,
 )
+
+logger = get_event_logger(__name__)
 
 
 class VerifiedClaimEventHandler:
@@ -30,28 +33,34 @@ class VerifiedClaimEventHandler:
                 f"IPFS hash does not match for Kafka event {event.event_id}"
             )
 
-        print(
-            f"[KafkaProcessed] eventId={event.event_id} claimId={event.claim_id} "
-            f"pointer={event.data_pointer} bytes={len(payload)}"
+        logger.info(
+            "kafka.claim_processed",
+            event_id=event.event_id,
+            claim_id=event.claim_id,
+            data_pointer=event.data_pointer,
+            payload_bytes=len(payload),
         )
 
 
 def main() -> None:
+    configure_logging("claims-verification-consumer")
     settings = KafkaSettings.from_env()
     if not settings.enabled:
         raise SystemExit("Set KAFKA_ENABLED=true before starting the consumer")
 
     consumer = KafkaClaimEventConsumer(settings)
     handler = VerifiedClaimEventHandler(IPFSClient.from_env())
-    print(
-        f"Consuming {settings.topic} from {settings.bootstrap_servers} "
-        f"as group {settings.consumer_group_id}"
+    logger.info(
+        "consumer.started",
+        topic=settings.topic,
+        bootstrap_servers=settings.bootstrap_servers,
+        consumer_group_id=settings.consumer_group_id,
     )
     try:
         while True:
             consumer.process_next(handler)
     except KeyboardInterrupt:
-        print("Stopping Kafka consumer")
+        logger.info("consumer.stopping", reason="keyboard_interrupt")
     finally:
         consumer.close()
 

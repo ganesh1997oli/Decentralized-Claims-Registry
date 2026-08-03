@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
@@ -19,8 +18,10 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
+from backend.app.health import ReadinessProbe, build_readiness_probe
 from backend.app.models import (
     AssessmentReasonResponse,
     ClaimAssessmentResponse,
@@ -30,6 +31,7 @@ from backend.app.models import (
     DuplicateDetectionResponse,
     DuplicateMatchResponse,
     HealthResponse,
+    ReadinessResponse,
 )
 from backend.app.service import (
     ClaimQueryService,
@@ -52,12 +54,13 @@ from integrations.ethereum import (
     load_claims_deployment,
 )
 from integrations.postgres import (
-    PostgresAssessmentRepository,
     PostgresConfigurationError,
+    PostgresRepositories,
     PostgresStorageError,
 )
+from observability import configure_logging, get_event_logger
 
-logger = logging.getLogger(__name__)
+logger = get_event_logger(__name__)
 insurer_api_key_header = APIKeyHeader(
     name="X-Insurer-API-Key",
     auto_error=False,
@@ -148,19 +151,20 @@ InsurerPrincipalDependency = Annotated[
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    configure_logging("claims-api")
     # Artifact selection is local and fast. Refuse to start with a missing,
     # legacy, or incompatible contract instead of discovering it on first use.
     deployment = load_active_deployment()
     boundary = load_submission_boundary()
     logger.info(
-        "Configured ClaimsRegistry deployment=%s chain=%s address=%s",
-        deployment.deployment_id,
-        deployment.chain_id,
-        deployment.address,
+        "api.deployment_configured",
+        deployment_id=deployment.deployment_id,
+        chain_id=deployment.chain_id,
+        contract_address=deployment.address,
     )
     logger.info(
-        "Configured authenticated insurer submission boundary type=%s",
-        type(boundary).__name__,
+        "api.submission_boundary_configured",
+        boundary_type=type(boundary).__name__,
     )
     yield
 
@@ -246,19 +250,15 @@ def get_claim_query_service() -> ClaimQueryService:
         ) from exc
 
 
-ClaimQueryDependency = Annotated[
-    ClaimQueryService, Depends(get_claim_query_service)
-]
+ClaimQueryDependency = Annotated[ClaimQueryService, Depends(get_claim_query_service)]
 
 
 @lru_cache
-def get_assessment_repository() -> PostgresAssessmentRepository:
-    """Create the assessment reader only when the dashboard asks for it."""
+def get_postgres_repositories() -> PostgresRepositories:
+    """Create focused readers only when the dashboard asks for stored data."""
 
     try:
-        repository = PostgresAssessmentRepository.from_env()
-        repository.ensure_schema()
-        return repository
+        return PostgresRepositories.from_env()
     except (PostgresConfigurationError, PostgresStorageError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -266,9 +266,9 @@ def get_assessment_repository() -> PostgresAssessmentRepository:
         ) from exc
 
 
-AssessmentRepositoryDependency = Annotated[
-    PostgresAssessmentRepository,
-    Depends(get_assessment_repository),
+PostgresRepositoriesDependency = Annotated[
+    PostgresRepositories,
+    Depends(get_postgres_repositories),
 ]
 ActiveDeploymentDependency = Annotated[
     ClaimsDeployment,
@@ -276,9 +276,46 @@ ActiveDeploymentDependency = Annotated[
 ]
 
 
+@lru_cache
+def get_readiness_probe() -> ReadinessProbe:
+    """Construct check definitions once; each evaluation uses fresh adapters."""
+
+    return build_readiness_probe()
+
+
 @app.get("/health", response_model=HealthResponse, tags=["operations"])
 def health() -> HealthResponse:
     return HealthResponse(status="ok")
+
+
+@app.get("/health/live", response_model=HealthResponse, tags=["operations"])
+def health_live() -> HealthResponse:
+    """Confirm only that the FastAPI process can serve a request."""
+
+    return HealthResponse(status="ok")
+
+
+@app.get(
+    "/health/ready",
+    response_model=ReadinessResponse,
+    tags=["operations"],
+    responses={503: {"model": ReadinessResponse}},
+)
+def health_ready(
+    probe: Annotated[ReadinessProbe, Depends(get_readiness_probe)],
+) -> ReadinessResponse | JSONResponse:
+    """Report whether every dependency required for traffic is usable."""
+
+    result = probe.evaluate()
+    body = ReadinessResponse(
+        status="ready" if result.ready else "not_ready",
+        checks=result.checks,
+    )
+    if result.ready:
+        return body
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=body.model_dump()
+    )
 
 
 @app.get("/claims", response_model=ClaimPageResponse, tags=["claims"])
@@ -304,7 +341,7 @@ def list_claims(
 )
 def get_claim_assessment(
     claim_id: Annotated[int, Path(ge=0)],
-    repository: AssessmentRepositoryDependency,
+    repositories: PostgresRepositoriesDependency,
     deployment: ActiveDeploymentDependency,
 ) -> ClaimAssessmentResponse:
     try:
@@ -313,8 +350,8 @@ def get_claim_assessment(
             "contract_address": deployment.address,
             "claim_id": claim_id,
         }
-        record = repository.get_latest_for_claim(**query)
-        duplicate_check = repository.get_duplicate_check_for_claim(**query)
+        record = repositories.assessments.get_latest_for_claim(**query)
+        duplicate_check = repositories.duplicates.get_duplicate_check_for_claim(**query)
     except PostgresStorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

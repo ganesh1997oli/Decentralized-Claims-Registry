@@ -1,5 +1,7 @@
 """Tests for the verification-only Kafka consumer handler."""
 
+import logging
+
 import pytest
 from web3 import Web3
 
@@ -32,15 +34,19 @@ def event(payload: bytes) -> ClaimSubmittedEvent:
     )
 
 
-def test_handler_accepts_only_bytes_committed_by_the_claim_event(capsys):
+def test_handler_accepts_only_bytes_committed_by_the_claim_event(caplog):
     payload = b'{"schemaVersion":3,"claimReference":"verified"}'
     handler = VerifiedClaimEventHandler(PayloadReader(payload))
 
-    handler(event(payload))
+    with caplog.at_level(logging.INFO):
+        handler(event(payload))
 
-    output = capsys.readouterr().out
-    assert "[KafkaProcessed]" in output
-    assert "claimId=7" in output
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event_name", None) == "kafka.claim_processed"
+    )
+    assert record.event_fields["claim_id"] == 7
 
 
 def test_handler_rejects_payload_that_differs_from_the_claim_event():

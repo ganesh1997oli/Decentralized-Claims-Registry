@@ -1,12 +1,16 @@
 """PostgreSQL processing interfaces for claim features and assessments."""
 
 from duplicates import DuplicateCheck, DuplicateMatch
+
 from .assessment_repository import (
-    AssessmentRecord,
     PostgresAssessmentRepository,
+)
+from .database import (
     PostgresConfigurationError,
+    PostgresDatabase,
     PostgresStorageError,
 )
+from .duplicate_repository import PostgresDuplicateRepository
 from .feature_processor import (
     FEATURE_VERSION,
     POLICY_FINGERPRINT_VERSION,
@@ -16,8 +20,14 @@ from .feature_processor import (
     ClaimFeatureProcessor,
     ClaimFeatureSnapshot,
 )
+from .feature_repository import PostgresFeatureRepository
+from .migrations import MigrationStatus, PostgresMigrator
+from .records import AssessmentRecord
+from .repositories import PostgresRepositories
 
 __all__ = [
+    "FEATURE_VERSION",
+    "POLICY_FINGERPRINT_VERSION",
     "AssessmentRecord",
     "ClaimFeatureConfigurationError",
     "ClaimFeatureInput",
@@ -26,9 +36,13 @@ __all__ = [
     "ClaimFeatureSnapshot",
     "DuplicateCheck",
     "DuplicateMatch",
-    "FEATURE_VERSION",
-    "POLICY_FINGERPRINT_VERSION",
+    "MigrationStatus",
     "PostgresAssessmentRepository",
     "PostgresConfigurationError",
+    "PostgresDatabase",
+    "PostgresDuplicateRepository",
+    "PostgresFeatureRepository",
+    "PostgresMigrator",
+    "PostgresRepositories",
     "PostgresStorageError",
 ]

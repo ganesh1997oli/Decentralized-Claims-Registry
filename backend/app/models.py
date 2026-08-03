@@ -48,12 +48,8 @@ class ClaimSubmission(BaseModel):
         pattern=r"^[a-z0-9][a-z0-9-]*[a-z0-9]$",
         alias="insurerId",
     )
-    claim_reference: str = Field(
-        min_length=1, max_length=100, alias="claimReference"
-    )
-    policy_reference: str = Field(
-        min_length=1, max_length=100, alias="policyReference"
-    )
+    claim_reference: str = Field(min_length=1, max_length=100, alias="claimReference")
+    policy_reference: str = Field(min_length=1, max_length=100, alias="policyReference")
     claim_type: MotorClaimType = Field(alias="claimType")
     incident_date: date = Field(alias="incidentDate")
     claim_amount_usd: float = Field(
@@ -74,7 +70,6 @@ class ClaimSubmission(BaseModel):
     total_loss_flag: bool = Field(alias="totalLossFlag")
     description: str = Field(min_length=1, max_length=2_000)
     evidence: list[str] = Field(default_factory=list, max_length=20)
-
 
 
 class SubmissionAuthorization(BaseModel):
@@ -173,3 +168,10 @@ class ClaimPageResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+
+
+class ReadinessResponse(BaseModel):
+    """Safe per-dependency state for load balancers and operators."""
+
+    status: Literal["ready", "not_ready"]
+    checks: dict[str, str]

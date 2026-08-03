@@ -130,16 +130,14 @@ Run the following commands from the repository root.
 ```bash
 python3 -m venv backend/.venv
 source backend/.venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install \
-  -r backend/requirements.txt \
-  -r listener/requirements.txt \
-  -r model/requirements.txt \
-  -r integrations/kafka/requirements.txt
+python -m pip install --require-hashes -r requirements-dev.lock
 ```
 
 The application shares this environment across FastAPI, the listener, the
-worker, and the research model. On macOS, XGBoost also needs OpenMP:
+worker, tests, and the research model. `requirements-dev.lock` pins the complete
+Python graph and verifies downloaded distributions by hash. The smaller
+`requirements.lock` is the production-image graph and excludes test tooling.
+On macOS, XGBoost also needs OpenMP:
 
 ```bash
 brew install libomp
@@ -227,6 +225,21 @@ docker compose -f integrations/kafka/compose.yml ps
 Wait until Kafka and PostgreSQL report healthy. The optional Kafka dashboard is
 available at <http://127.0.0.1:8081>.
 
+Apply and verify the checked-in database migrations before starting either
+application process:
+
+```bash
+set -a
+source .env.local
+set +a
+python -m integrations.postgres.migrations upgrade
+python -m integrations.postgres.migrations check
+```
+
+The command records a SHA-256 checksum for each migration and refuses unknown
+or edited history. The cloud Compose deployment runs the same command as a
+one-shot prerequisite for FastAPI and the scoring worker.
+
 ### 2. Start FastAPI — terminal A
 
 ```bash
@@ -237,8 +250,10 @@ set +a
 uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Confirm the process at <http://127.0.0.1:8000/health>. The interactive API
-documentation is at <http://127.0.0.1:8000/docs>.
+Confirm process liveness at <http://127.0.0.1:8000/health/live> and dependency
+readiness at <http://127.0.0.1:8000/health/ready>. The interactive API
+documentation is at <http://127.0.0.1:8000/docs>. A `503` readiness response
+means the process is alive but should not receive claim traffic.
 
 ### 3. Start React — terminal B
 
@@ -264,7 +279,8 @@ set +a
 python listener/claims_listener.py
 ```
 
-A healthy listener prints the contract address, Kafka topic, and checkpoint.
+A healthy listener logs the contract address, Kafka topic, and checkpoint as
+structured JSON.
 The checkpoint lets it resume after a restart without beginning from block zero.
 
 ### 5. Start the scoring worker — terminal D
@@ -278,7 +294,7 @@ python -m integrations.kafka.scoring_worker
 ```
 
 The first import may build a Matplotlib font cache; that is normal. A healthy
-worker prints the topic and consumer-group name, then waits for a new claim.
+worker logs the topic and consumer-group name, then waits for a new claim.
 
 ### 6. Submit and follow one claim
 
@@ -288,8 +304,8 @@ from the browser.
 You should see this sequence:
 
 1. The browser shows the Sepolia submission transaction, IPFS pointer, and hash.
-2. The listener prints `IPFSVerified` followed by `KafkaPublished`.
-3. The worker prints `ClaimAssessed`, including the number of cross-insurer
+2. The listener logs `ipfs.verified` followed by `kafka.claim_published`.
+3. The worker logs `claim.assessed`, including the number of cross-insurer
    incident matches.
 4. The browser replaces the pending message with the XGBoost probability,
    duplicate-review result, SHAP indicators, on-chain score, assessment
@@ -307,7 +323,9 @@ After the first-time installation, run the checks from the repository root:
 ```bash
 # Python unit tests and the enforced branch-coverage threshold
 source backend/.venv/bin/activate
-python -m pip install -r requirements-dev.txt
+python -m pip install --require-hashes -r requirements-dev.lock
+ruff check backend duplicates integrations listener model observability \
+  --exclude model/notebooks
 python -m pytest -m "not integration" \
   --cov=backend.app --cov=duplicates \
   --cov=integrations.ipfs --cov=integrations.kafka \
@@ -342,9 +360,14 @@ TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
   backend/.venv/bin/python -m pytest -m integration
 ```
 
-GitHub Actions runs the Python coverage, infrastructure integration, frontend
-browser and smart-contract jobs independently on every feature branch and pull
-request.
+GitHub Actions runs dependency-lock drift, Python coverage, infrastructure
+integration, frontend browser, smart-contract, and cloud-configuration jobs on
+every pushed branch and pull request. Configure those named checks as required
+checks in repository branch protection before merging to `main`.
+
+When intentionally updating Python dependencies, edit the ranged input files,
+regenerate both locks with the commands recorded in their headers, run the full
+suite, and review the resolved version diff. Do not hand-edit a generated lock.
 
 ## Contract lifecycle
 

@@ -3,14 +3,18 @@
 import os
 from uuid import uuid4
 
-from confluent_kafka.admin import AdminClient, NewTopic
 import psycopg
+import pytest
+from confluent_kafka.admin import AdminClient, NewTopic
 from psycopg import sql
 from psycopg.rows import dict_row
-import pytest
 
 from integrations.kafka import KafkaSettings
-from integrations.postgres import PostgresAssessmentRepository
+from integrations.postgres import (
+    PostgresDatabase,
+    PostgresMigrator,
+    PostgresRepositories,
+)
 
 
 @pytest.fixture
@@ -65,8 +69,8 @@ def kafka_settings():
 
 
 @pytest.fixture
-def postgres_repository():
-    """Provide a repository isolated in a uniquely named PostgreSQL schema."""
+def postgres_repositories():
+    """Provide focused repositories in one disposable PostgreSQL schema."""
 
     database_url = os.environ.get("TEST_DATABASE_URL", "").strip()
     if not database_url:
@@ -85,16 +89,24 @@ def postgres_repository():
             row_factory=dict_row,
         )
 
-    repository = PostgresAssessmentRepository(database_url, connect=connect)
+    database = PostgresDatabase(database_url, connect=connect)
+    repositories = PostgresRepositories.from_database(database)
     try:
-        repository.ensure_schema()
-        yield repository
+        # Integration tests exercise the same explicit migration entry point as
+        # a deployment. Application repositories never create tables themselves.
+        PostgresMigrator(database).upgrade()
+        yield repositories
     finally:
         # The generated and quoted identifier constrains CASCADE to this test's
         # disposable schema; no application schema or data can be selected.
         with psycopg.connect(database_url) as connection:
             connection.execute(
-                sql.SQL("DROP SCHEMA {} CASCADE").format(
-                    sql.Identifier(schema_name)
-                )
+                sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema_name))
             )
+
+
+@pytest.fixture
+def postgres_repository(postgres_repositories):
+    """Compatibility alias while integration tests migrate to narrow adapters."""
+
+    return postgres_repositories

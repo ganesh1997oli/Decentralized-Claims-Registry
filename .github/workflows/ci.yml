@@ -3,9 +3,7 @@ name: Continuous integration
 on:
   pull_request:
   push:
-    branches:
-      - main
-      - "feature/**"
+    branches: ["**"]
 
 permissions:
   contents: read
@@ -15,6 +13,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dependency-locks:
+    name: Python dependency locks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      # Pin the action itself as well as uv so dependency resolution cannot
+      # change merely because an upstream tag moved.
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.9.20"
+          enable-cache: true
+          cache-dependency-glob: "requirements*.lock"
+      - name: Rebuild locks and reject dependency drift
+        run: |
+          uv pip compile deploy/gcp/python-requirements.txt \
+            --python-version 3.13 \
+            --python-platform x86_64-manylinux_2_28 \
+            --generate-hashes \
+            --custom-compile-command 'uv pip compile deploy/gcp/python-requirements.txt --python-version 3.13 --python-platform x86_64-manylinux_2_28 --generate-hashes -o requirements.lock' \
+            -o requirements.lock
+          uv pip compile requirements-dev.txt \
+            --python-version 3.13 \
+            --python-platform x86_64-manylinux_2_28 \
+            --generate-hashes \
+            --custom-compile-command 'uv pip compile requirements-dev.txt --python-version 3.13 --python-platform x86_64-manylinux_2_28 --generate-hashes -o requirements-dev.lock' \
+            -o requirements-dev.lock
+          git diff --exit-code -- requirements.lock requirements-dev.lock
+
   python:
     name: Python unit and coverage
     runs-on: ubuntu-latest
@@ -25,19 +52,10 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: |
-            requirements-dev.txt
-            backend/requirements.txt
-            integrations/**/requirements.txt
-            listener/requirements.txt
-            model/requirements.txt
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -r requirements-dev.txt
-      - name: Run Python correctness lint
-        run: >-
-          ruff check --select E4,E7,E9,F
-          backend duplicates integrations listener model observability
-          --exclude model/notebooks
+          cache-dependency-path: requirements-dev.lock
+      - run: python -m pip install --require-hashes -r requirements-dev.lock
+      - name: Run Python lint
+        run: ruff check backend duplicates integrations listener model observability --exclude model/notebooks
       - name: Run isolated tests with branch coverage
         run: >-
           python -m pytest -m "not integration"
@@ -62,9 +80,8 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: requirements-dev.txt
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -r requirements-dev.txt
+          cache-dependency-path: requirements-dev.lock
+      - run: python -m pip install --require-hashes -r requirements-dev.lock
       - name: Start isolated infrastructure
         run: |
           docker compose -f integrations/kafka/compose.yml up -d --wait postgres kafka
@@ -74,6 +91,12 @@ jobs:
           TEST_DATABASE_URL: postgresql://claims:claims-local@127.0.0.1:5432/claims_registry
           TEST_KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
         run: python -m pytest -m integration
+      - name: Exercise the production migration command
+        env:
+          DATABASE_URL: postgresql://claims:claims-local@127.0.0.1:5432/claims_registry
+        run: |
+          python -m integrations.postgres.migrations upgrade
+          python -m integrations.postgres.migrations check
       - name: Show service logs after a failure
         if: failure()
         run: docker compose -f integrations/kafka/compose.yml logs --no-color

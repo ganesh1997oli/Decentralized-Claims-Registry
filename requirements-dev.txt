@@ -2,5 +2,8 @@
 -r listener/requirements.txt
 -r model/requirements.txt
 
+# Test-only HTTP client and runner stay out of the production container.
+httpx2>=2.0,<3.0
+pytest>=8.0,<9.0
 pytest-cov>=7.0,<8.0
 ruff>=0.12,<1.0

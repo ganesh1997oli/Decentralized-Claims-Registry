@@ -44,7 +44,14 @@ from integrations.kafka import (
     KafkaSettings,
     create_publisher,
 )
-from observability import ListenerMetrics, ShutdownSignal
+from observability import (
+    ListenerMetrics,
+    ShutdownSignal,
+    configure_logging,
+    get_event_logger,
+)
+
+logger = get_event_logger(__name__)
 
 # If you hit an "extraData" validation error on Sepolia, uncomment these:
 # from web3.middleware import ExtraDataToPOAMiddleware
@@ -199,9 +206,7 @@ class ClaimEventProcessor:
                 elif event["event"] == "ClaimAssessed":
                     self._handle_claim_assessed(event)
                 else:
-                    raise ValueError(
-                        f"Unsupported claim event: {event['event']}"
-                    )
+                    raise ValueError(f"Unsupported claim event: {event['event']}")
             except PermanentClaimEventError as exc:
                 # The event is already immutable on-chain. Reprocessing the same
                 # malformed pointer or hash can never fix it, so record it
@@ -209,9 +214,11 @@ class ClaimEventProcessor:
                 if self.dead_letter is None:
                     raise
                 self.dead_letter.record(event, exc)
-                print(
-                    f"[ClaimQuarantined] claimId={event['args']['claimId']} "
-                    f"block={event['blockNumber']} reason={exc}"
+                logger.warning(
+                    "claim.quarantined",
+                    claim_id=event["args"]["claimId"],
+                    block_number=event["blockNumber"],
+                    reason=str(exc),
                 )
 
     def _verified_payload(
@@ -224,12 +231,21 @@ class ClaimEventProcessor:
         try:
             payload = self.ipfs.download_pointer(pointer)
         except InvalidIPFSPointer as exc:
-            print(f"[InvalidIPFSPointer] claimId={claim_id} error={exc}")
+            logger.warning(
+                "ipfs.pointer_invalid",
+                claim_id=claim_id,
+                error_type=type(exc).__name__,
+            )
             raise PermanentClaimEventError(
                 f"Invalid IPFS pointer for claim {claim_id}: {exc}"
             ) from exc
         except IPFSError as exc:
-            print(f"[IPFSError] claimId={claim_id} pointer={pointer} error={exc}")
+            logger.warning(
+                "ipfs.download_failed",
+                claim_id=claim_id,
+                data_pointer=pointer,
+                error_type=type(exc).__name__,
+            )
             raise RuntimeError(
                 f"IPFS verification failed for claim {claim_id}"
             ) from exc
@@ -238,17 +254,20 @@ class ClaimEventProcessor:
         # even one byte must never be published for scoring.
         actual_hash = Web3.keccak(payload)
         if actual_hash != expected_hash:
-            print(
-                f"[IPFSVerificationFailed] claimId={claim_id} "
-                f"expected={hx(expected_hash)} actual={hx(actual_hash)}"
+            logger.error(
+                "ipfs.verification_failed",
+                claim_id=claim_id,
+                expected_hash=hx(expected_hash),
+                actual_hash=hx(actual_hash),
             )
-            raise PermanentClaimEventError(
-                f"IPFS hash mismatch for claim {claim_id}"
-            )
+            raise PermanentClaimEventError(f"IPFS hash mismatch for claim {claim_id}")
 
-        print(
-            f"[IPFSVerified] claimId={claim_id} pointer={pointer} "
-            f"bytes={len(payload)} hash={hx(actual_hash)}"
+        logger.info(
+            "ipfs.verified",
+            claim_id=claim_id,
+            data_pointer=pointer,
+            payload_bytes=len(payload),
+            claim_hash=hx(actual_hash),
         )
         return payload
 
@@ -256,11 +275,14 @@ class ClaimEventProcessor:
         # The log carries both the pointer and expected hash, so verification
         # does not trust a browser receipt or a separate backend response.
         args = event["args"]
-        print(
-            f"[ClaimSubmitted] claimId={args['claimId']} "
-            f"claimant={args['claimant']} claimHash={hx(args['claimHash'])} "
-            f"dataPointer={args['dataPointer']} block={event['blockNumber']} "
-            f"tx={hx(event['transactionHash'])}"
+        logger.info(
+            "claim.submitted",
+            claim_id=args["claimId"],
+            claimant=args["claimant"],
+            claim_hash=hx(args["claimHash"]),
+            data_pointer=args["dataPointer"],
+            block_number=event["blockNumber"],
+            transaction_hash=hx(event["transactionHash"]),
         )
         self._verified_payload(
             claim_id=args["claimId"],
@@ -295,9 +317,12 @@ class ClaimEventProcessor:
         if self.metrics is not None:
             self.metrics.observe_event("claim_submitted")
             self.metrics.observe_kafka_publication()
-        print(
-            f"[KafkaPublished] eventId={claim_event.event_id} "
-            f"topic={self.publisher.topic}"
+        logger.info(
+            "kafka.claim_published",
+            event_id=claim_event.event_id,
+            claim_id=claim_event.claim_id,
+            transaction_hash=claim_event.transaction_hash,
+            topic=self.publisher.topic,
         )
 
     def _handle_claim_assessed(self, event: Any) -> None:
@@ -308,11 +333,14 @@ class ClaimEventProcessor:
             if raw_status < len(STATUS_NAMES)
             else f"?{raw_status}"
         )
-        print(
-            f"[ClaimAssessed] claimId={args['claimId']} status={status} "
-            f"fraudScore={args['fraudScore']} "
-            f"({args['fraudScore'] / 100:.2f}%) assessor={args['assessor']} "
-            f"block={event['blockNumber']} tx={hx(event['transactionHash'])}"
+        logger.info(
+            "claim.assessed",
+            claim_id=args["claimId"],
+            status=status,
+            fraud_score=args["fraudScore"],
+            assessor=args["assessor"],
+            block_number=event["blockNumber"],
+            transaction_hash=hx(event["transactionHash"]),
         )
         if self.metrics is not None:
             self.metrics.observe_event("claim_assessed")
@@ -358,6 +386,7 @@ class ConfirmedBlockPoller:
 
 
 def main():
+    configure_logging("claims-listener")
     # Metrics contain no claimant data. The Ops Agent reads this private
     # endpoint on the VM and forwards the samples to Cloud Monitoring.
     metrics = ListenerMetrics.start_from_env()
@@ -402,23 +431,30 @@ def main():
         max_block_range=MAX_BLOCK_RANGE,
     )
 
-    print(
-        f"Listening for {', '.join(processor.event_names)} on deployment "
-        f"{deployment.deployment_id} (chain={chain_id}, "
-        f"address={contract_address}) via {RPC_URL}"
+    logger.info(
+        "listener.started",
+        event_names=list(processor.event_names),
+        deployment_id=deployment.deployment_id,
+        chain_id=chain_id,
+        contract_address=contract_address,
     )
     if claim_event_publisher is not None:
-        print(
-            f"Kafka publishing enabled: {kafka_settings.topic} via "
-            f"{kafka_settings.bootstrap_servers}"
+        logger.info(
+            "kafka.publisher_enabled",
+            topic=kafka_settings.topic,
+            bootstrap_servers=kafka_settings.bootstrap_servers,
         )
 
     first_safe_block = max(0, w3.eth.block_number - CONFIRMATION_BLOCKS)
     start_block = os.environ.get("LISTENER_START_BLOCK")
     first_run_default = int(start_block) - 1 if start_block else first_safe_block
     last_processed = cursor.load(default=first_run_default)
-    print(f"Listener checkpoint: {state_path} (last block {last_processed})")
-    print(f"Listener dead-letter file: {dead_letter_path}")
+    logger.info(
+        "listener.checkpoint_loaded",
+        checkpoint_path=str(state_path),
+        last_processed_block=last_processed,
+    )
+    logger.info("listener.dead_letter_ready", path=str(dead_letter_path))
 
     try:
         while not shutdown.is_set():
@@ -436,7 +472,11 @@ def main():
             except Exception as exc:  # noqa: BLE001 - adapter failures retry safely
                 # RPC, IPFS and Kafka failures all retry from the saved checkpoint.
                 metrics.observe_poll_error()
-                print(f"Polling error (will retry): {exc}")
+                logger.warning(
+                    "listener.poll_failed",
+                    error_type=type(exc).__name__,
+                    retrying=True,
+                )
             # Unlike time.sleep, this returns immediately when Docker asks the
             # container to stop, making normal deployments quick and predictable.
             shutdown.wait(POLL_INTERVAL)

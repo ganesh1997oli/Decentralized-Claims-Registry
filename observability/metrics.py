@@ -20,6 +20,10 @@ from prometheus_client import (
     start_http_server,
 )
 
+from .logging import get_event_logger
+
+logger = get_event_logger(__name__)
+
 
 def _metrics_port_from_env() -> int | None:
     """Return the configured metrics port, or ``None`` for local opt-out.
@@ -53,7 +57,7 @@ def _start_private_metrics_endpoint(registry: CollectorRegistry) -> None:
     # Inside a container we listen on every container interface. Docker binds
     # this port to 127.0.0.1 on the VM, so it is not reachable from the internet.
     start_http_server(port, addr="0.0.0.0", registry=registry)
-    print(f"[MetricsReady] Prometheus metrics are available on port {port}")
+    logger.info("metrics.ready", port=port)
 
 
 @dataclass
@@ -71,7 +75,7 @@ class ListenerMetrics:
     kafka_publications: Counter
 
     @classmethod
-    def start_from_env(cls) -> "ListenerMetrics":
+    def start_from_env(cls) -> ListenerMetrics:
         """Create the listener metrics and optionally start their HTTP server."""
 
         registry = CollectorRegistry()
@@ -167,7 +171,7 @@ class ScoringMetrics:
     last_fraud_score: Gauge
 
     @classmethod
-    def start_from_env(cls) -> "ScoringMetrics":
+    def start_from_env(cls) -> ScoringMetrics:
         """Create scoring metrics and optionally expose their private endpoint."""
 
         registry = CollectorRegistry()

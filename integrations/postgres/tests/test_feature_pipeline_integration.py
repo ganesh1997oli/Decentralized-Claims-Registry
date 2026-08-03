@@ -9,7 +9,6 @@ from duplicates import DuplicateCheck, DuplicateMatch
 from integrations.kafka import ClaimSubmittedEvent
 from integrations.postgres import ClaimFeatureProcessor
 
-
 pytestmark = pytest.mark.integration
 
 
@@ -56,11 +55,7 @@ def event(claim_id: int) -> ClaimSubmittedEvent:
 
 
 def duplicate_check(*, with_match: bool = False) -> DuplicateCheck:
-    matches = (
-        (DuplicateMatch(99, "harbour-shield"),)
-        if with_match
-        else ()
-    )
+    matches = (DuplicateMatch(99, "harbour-shield"),) if with_match else ()
     return DuplicateCheck(
         insurer_id="northstar-mutual",
         fingerprint_version="incident-hmac-sha256-v1",
@@ -73,7 +68,7 @@ def test_snapshots_keep_historical_counts_averages_and_replay_values(
 ):
     processor = ClaimFeatureProcessor(
         b"feature-integration-key-" * 2,
-        postgres_repository,
+        postgres_repository.features,
     )
 
     first = processor.process(

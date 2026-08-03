@@ -1,5 +1,6 @@
 """Behavioral tests for confirmed blockchain-event processing."""
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -121,7 +122,7 @@ def assessment_event():
     }
 
 
-def test_processor_orders_events_and_publishes_only_verified_claims(capsys):
+def test_processor_orders_events_and_publishes_only_verified_claims(caplog):
     payload = b'{"schemaVersion":3,"claimReference":"verified"}'
     publisher = FakePublisher()
     contract = SimpleNamespace(
@@ -138,10 +139,11 @@ def test_processor_orders_events_and_publishes_only_verified_claims(capsys):
         publisher=publisher,
     )
 
-    processor.process_range(100, 102)
+    with caplog.at_level(logging.INFO):
+        processor.process_range(100, 102)
 
-    output = capsys.readouterr().out
-    assert output.index("[ClaimAssessed]") < output.index("[ClaimSubmitted]")
+    events = [getattr(record, "event_name", None) for record in caplog.records]
+    assert events.index("claim.assessed") < events.index("claim.submitted")
     assert len(publisher.events) == 1
     event = publisher.events[0]
     assert event.claim_id == 7
@@ -214,7 +216,7 @@ def test_processor_can_verify_without_kafka_when_publishing_is_disabled():
     processor.process_range(100, 102)
 
 
-def test_processor_quarantines_permanent_bad_event_and_continues(capsys):
+def test_processor_quarantines_permanent_bad_event_and_continues(caplog):
     payload = b'{"schemaVersion":3,"claimReference":"verified"}'
     invalid = submission_event(payload)
     invalid["args"] = {**invalid["args"], "dataPointer": "https://invalid.test"}
@@ -237,12 +239,16 @@ def test_processor_quarantines_permanent_bad_event_and_continues(capsys):
         dead_letter=dead_letter,
     )
 
-    processor.process_range(100, 102)
+    with caplog.at_level(logging.INFO):
+        processor.process_range(100, 102)
 
     assert len(dead_letter.entries) == 1
     assert dead_letter.entries[0][0]["args"]["dataPointer"].startswith("https://")
     assert len(publisher.events) == 1
-    assert "[ClaimQuarantined]" in capsys.readouterr().out
+    assert any(
+        getattr(record, "event_name", None) == "claim.quarantined"
+        for record in caplog.records
+    )
 
 
 class RecordingRangeProcessor:

@@ -14,7 +14,6 @@ from integrations.kafka import (
     KafkaSettings,
 )
 
-
 pytestmark = pytest.mark.integration
 
 
@@ -25,9 +24,7 @@ class LiveKafkaTests(unittest.TestCase):
             "",
         ).strip()
         if not bootstrap_servers:
-            self.skipTest(
-                "set TEST_KAFKA_BOOTSTRAP_SERVERS to test a live broker"
-            )
+            self.skipTest("set TEST_KAFKA_BOOTSTRAP_SERVERS to test a live broker")
 
         unique_id = uuid.uuid4().hex
         settings = KafkaSettings.from_mapping(

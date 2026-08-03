@@ -14,9 +14,8 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal, ROUND_HALF_EVEN
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Protocol
-
 
 FINGERPRINT_VERSION = "incident-hmac-sha256-v1"
 MINIMUM_KEY_BYTES = 32
@@ -106,7 +105,7 @@ class CrossInsurerDuplicateDetector:
         self._store = store
 
     @classmethod
-    def from_env(cls, store: DuplicateStore) -> "CrossInsurerDuplicateDetector":
+    def from_env(cls, store: DuplicateStore) -> CrossInsurerDuplicateDetector:
         raw_key = os.environ.get("DUPLICATE_FINGERPRINT_KEY", "")
         if not raw_key:
             raise DuplicateDetectionConfigurationError(

@@ -9,6 +9,9 @@ from integrations.postgres import (
     DuplicateCheck,
     DuplicateMatch,
     PostgresAssessmentRepository,
+    PostgresDatabase,
+    PostgresDuplicateRepository,
+    PostgresFeatureRepository,
     PostgresStorageError,
 )
 from model.contracts import FraudReason
@@ -113,42 +116,10 @@ def feature_row() -> dict:
     }
 
 
-def test_repository_creates_table_and_index_as_separate_statements():
-    connect = FakeConnect()
-    repository = PostgresAssessmentRepository(
-        "postgresql://test",
-        connect=connect,
-    )
-
-    repository.ensure_schema()
-
-    assert len(connect.cursor.executions) == 6
-    assert "CREATE TABLE IF NOT EXISTS claim_assessments" in (
-        connect.cursor.executions[0][0]
-    )
-    assert "CREATE INDEX IF NOT EXISTS" in connect.cursor.executions[1][0]
-    assert "chain_id, contract_address, claim_id" in (
-        " ".join(connect.cursor.executions[1][0].split())
-    )
-    assert "CREATE TABLE IF NOT EXISTS claim_incident_fingerprints" in (
-        connect.cursor.executions[2][0]
-    )
-    assert "claim_incident_fingerprint_match_idx" in (
-        connect.cursor.executions[3][0]
-    )
-    assert "CREATE TABLE IF NOT EXISTS claim_feature_snapshots" in (
-        connect.cursor.executions[4][0]
-    )
-    assert "claim_feature_snapshots_history_idx" in (
-        connect.cursor.executions[5][0]
-    )
-
-
 def test_repository_saves_reasons_as_bound_json():
     connect = FakeConnect()
     repository = PostgresAssessmentRepository(
-        "postgresql://test",
-        connect=connect,
+        PostgresDatabase("postgresql://test", connect=connect)
     )
 
     repository.save_scored(assessment_record())
@@ -184,8 +155,7 @@ def test_repository_rebuilds_a_typed_record_from_postgres_row():
     }
     connect = FakeConnect(row)
     repository = PostgresAssessmentRepository(
-        "postgresql://test",
-        connect=connect,
+        PostgresDatabase("postgresql://test", connect=connect)
     )
 
     record = repository.get_by_event_id("11155111:0xtransaction:0")
@@ -203,8 +173,7 @@ def test_repository_rebuilds_a_typed_record_from_postgres_row():
 def test_repository_scopes_latest_claim_to_chain_and_contract():
     connect = FakeConnect(row=None)
     repository = PostgresAssessmentRepository(
-        "postgresql://test",
-        connect=connect,
+        PostgresDatabase("postgresql://test", connect=connect)
     )
 
     repository.get_latest_for_claim(
@@ -227,9 +196,8 @@ def test_repository_records_fingerprint_and_returns_other_insurer_matches():
             }
         ]
     )
-    repository = PostgresAssessmentRepository(
-        "postgresql://test",
-        connect=connect,
+    repository = PostgresDuplicateRepository(
+        PostgresDatabase("postgresql://test", connect=connect)
     )
 
     result = repository.record_and_find_duplicates(
@@ -271,9 +239,8 @@ def test_repository_rebuilds_dynamic_duplicate_result_for_a_claim():
             }
         ],
     )
-    repository = PostgresAssessmentRepository(
-        "postgresql://test",
-        connect=connect,
+    repository = PostgresDuplicateRepository(
+        PostgresDatabase("postgresql://test", connect=connect)
     )
 
     result = repository.get_duplicate_check_for_claim(
@@ -297,9 +264,8 @@ def test_repository_rebuilds_dynamic_duplicate_result_for_a_claim():
 
 def test_repository_records_and_returns_a_typed_feature_snapshot():
     connect = FakeConnect(row=feature_row())
-    repository = PostgresAssessmentRepository(
-        "postgresql://test",
-        connect=connect,
+    repository = PostgresFeatureRepository(
+        PostgresDatabase("postgresql://test", connect=connect)
     )
 
     snapshot = repository.record_feature_snapshot(feature_input())
@@ -315,24 +281,20 @@ def test_repository_records_and_returns_a_typed_feature_snapshot():
 
 def test_repository_gets_a_feature_snapshot_by_event_id():
     connect = FakeConnect(row=feature_row())
-    repository = PostgresAssessmentRepository(
-        "postgresql://test",
-        connect=connect,
+    repository = PostgresFeatureRepository(
+        PostgresDatabase("postgresql://test", connect=connect)
     )
 
     snapshot = repository.get_feature_snapshot("11155111:0xtransaction:0")
 
     assert snapshot == ClaimFeatureSnapshot(**feature_row())
-    assert connect.cursor.executions[0][1] == (
-        "11155111:0xtransaction:0",
-    )
+    assert connect.cursor.executions[0][1] == ("11155111:0xtransaction:0",)
 
 
 def test_repository_rejects_a_missing_feature_snapshot_result():
     connect = FakeConnect()
-    repository = PostgresAssessmentRepository(
-        "postgresql://test",
-        connect=connect,
+    repository = PostgresFeatureRepository(
+        PostgresDatabase("postgresql://test", connect=connect)
     )
 
     with pytest.raises(PostgresStorageError, match="did not return"):
@@ -344,9 +306,8 @@ def test_repository_hides_driver_errors_behind_its_interface():
         raise OSError("database is offline")
 
     repository = PostgresAssessmentRepository(
-        "postgresql://test",
-        connect=fail_to_connect,
+        PostgresDatabase("postgresql://test", connect=fail_to_connect)
     )
 
     with pytest.raises(PostgresStorageError, match="unavailable"):
-        repository.ensure_schema()
+        repository.get_by_event_id("test-event")
