@@ -1,71 +1,71 @@
 # IPFS integration
 
-This module gives the rest of the application one small interface for storing
-and retrieving claim bytes through Pinata and IPFS.
+`IPFSClient` gives the application one small interface for public claim bytes.
+Pinata handles uploads; a configurable HTTP gateway handles reads.
 
-- `client.py` uploads bytes through the Pinata Files endpoint.
-- It converts safe `ipfs://` pointers into gateway URLs.
-- It retries newly uploaded CIDs that are not immediately available.
-- `__init__.py` exposes the public classes used by FastAPI, the listener, and the
-  Kafka consumer.
-- `tests/` checks the behaviour without contacting Pinata or a live gateway.
+## Byte-integrity flow
 
-## Role in the claim workflow
+```mermaid
+flowchart LR
+    Canonical["Canonical claim bytes"] --> Upload["Pinata public upload"]
+    Upload --> CID["ipfs://CID"]
+    CID --> Read["Gateway download"]
+    Read --> Compare{"Exact bytes match?"}
+    Compare -->|Yes| Anchor["Anchor Keccak-256 + CID on Sepolia"]
+    Compare -->|No| Stop["Stop before chain write"]
+    Anchor --> Later["Listener and worker download + verify again"]
+```
 
-FastAPI creates canonical JSON and passes the exact bytes to `IPFSClient`. The
-client returns a CID, which the application records as `ipfs://<CID>`. The
-application downloads the file again and hashes the returned bytes before it
-writes anything to Sepolia.
+The pointer is gateway-neutral. Callers store `ipfs://<CID>` and the adapter
+converts only a safe, bare CID into a gateway URL. Newly uploaded content is
+retried briefly because a gateway may not expose it immediately.
 
-The blockchain stores the CID and Keccak-256 hash, not the complete claim.
-Later, the listener downloads the same CID and checks that its bytes still match
-the on-chain hash.
+## Public interface
 
-## Configuration
+| Operation | Behaviour |
+| --- | --- |
+| `upload_bytes` | Upload exact bytes and return the CID |
+| `download_pointer` | Validate an `ipfs://` pointer, download bytes, and retry transient reads |
+| `pointer_to_gateway_url` | Convert a safe CID without allowing arbitrary URLs or paths |
 
-The adapter reads two environment variables:
+FastAPI requires upload and read access. The listener and scoring worker are
+read-only and do not receive `PINATA_JWT`.
 
-| Variable | Required | Purpose |
-| --- | :---: | --- |
-| `PINATA_JWT` | For uploads | Server-side Pinata credential with public file-upload permission |
-| `IPFS_GATEWAY` | No | Base gateway URL used to retrieve a CID |
-
-Create the shared ignored file from the repository root:
+## Configure
 
 ```bash
 cp .env.example .env.local
+set -a
+source .env.local
+set +a
 ```
 
-The default gateway is `https://gateway.pinata.cloud/ipfs`. Any process using
-IPFS loads the root file with:
+| Setting | Required | Purpose |
+| --- | :---: | --- |
+| `PINATA_JWT` | Upload only | Server-side Pinata Files credential |
+| `IPFS_GATEWAY` | No | Read gateway; defaults to Pinata's public gateway |
 
-```bash
-set -a; source .env.local; set +a
-```
+Never expose the JWT through a `VITE_` variable or commit it.
 
-Never put `PINATA_JWT` in the React environment or commit it to Git.
-
-## Install and test
-
-The backend and listener requirement files include this module's dependency. To
-test it directly from the repository root:
+## Test
 
 ```bash
 source apps/backend/.venv/bin/activate
 python -m pytest packages/integrations/ipfs/tests -q
 ```
 
-The tests use a fake HTTP session, so they do not upload files or require a JWT.
+Tests inject a fake HTTP session; no public upload or gateway call is made.
 
-## Public IPFS warning
+## Privacy boundary
 
-The current upload explicitly uses Pinata's public network. A CID is an address,
-not a password. Anyone who obtains the CID can request the unencrypted content
-while an IPFS node continues to provide it.
+```text
+CID = address, not password
+hash = integrity, not confidentiality
+```
 
-For that reason, the application accepts fictional research test claims only. A
-real claim would need encryption before upload, controlled key distribution,
-retention and deletion policies, and a documented privacy and regulatory
-assessment.
+Anyone who learns the CID can request the unencrypted bytes while an IPFS node
+provides them. Real claim data would require encryption before upload, managed
+off-chain keys, access auditing, malware controls, and retention/deletion rules.
 
-See the [root project guide](../../../README.md) for the complete data flow.
+See the [backend guide](../../../apps/backend/README.md) and the
+[root data map](../../../README.md#what-is-stored-where).

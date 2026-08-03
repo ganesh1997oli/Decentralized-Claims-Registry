@@ -39,6 +39,7 @@ type ClaimsDashboardProps = {
   onPageSizeChange: (pageSize: number) => void
 }
 
+/** Render a read-only, paginated view of the current Sepolia claim state. */
 export function ClaimsDashboard({
   claims,
   page,

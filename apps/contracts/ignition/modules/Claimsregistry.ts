@@ -1,3 +1,5 @@
+// Deploy the registry with three intentionally separate roles. The one-day
+// default-admin delay makes an accidental transfer recoverable before acceptance.
 import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
 
 export default buildModule("ClaimsRegistryModule", (m) => {

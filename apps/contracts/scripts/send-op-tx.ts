@@ -1,3 +1,5 @@
+// Hardhat toolbox example for an Optimism-style simulated chain. The claims
+// application targets Sepolia and does not invoke this script.
 import { network } from "hardhat";
 
 const { viem } = await network.create({

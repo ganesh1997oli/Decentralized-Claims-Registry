@@ -1,3 +1,5 @@
+// Claim intake keeps the insurer credential in component memory and emits only
+// a server-validated public receipt to the rest of the application.
 import {
   useState,
   type ChangeEvent,
@@ -459,4 +461,3 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
           </section>
   )
 }
-

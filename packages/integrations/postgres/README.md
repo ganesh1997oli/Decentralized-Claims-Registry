@@ -1,148 +1,166 @@
-# PostgreSQL claim-intelligence storage
+# PostgreSQL claim-processing storage
 
-This module implements the claim-processing audit pipeline outside the
-blockchain. Sepolia receives the compact status and score; PostgreSQL keeps
-versioned feature snapshots, XGBoost results, claim-specific SHAP reasons,
-transaction receipts, and processing errors.
+Sepolia keeps the compact public result. PostgreSQL keeps the richer, versioned
+record needed to explain and safely replay off-chain screening.
 
-It also stores keyed incident fingerprints used to find possible duplicates
-across participating synthetic insurers. PostgreSQL never stores the HMAC key,
-and the fingerprint is not returned to the browser.
+## Stored records
 
-## Module boundaries
+```mermaid
+erDiagram
+    CLAIM_ASSESSMENTS {
+        text event_id PK
+        bigint chain_id
+        text contract_address
+        bigint claim_id
+        text model_version
+        float probability
+        jsonb reasons
+        text processing_status
+    }
+    CLAIM_FEATURE_SNAPSHOTS {
+        text event_id PK
+        bigint chain_id
+        text contract_address
+        bigint claim_id
+        text feature_version
+        text policy_reference_fingerprint
+        int prior_insurer_claim_count
+    }
+    CLAIM_INCIDENT_FINGERPRINTS {
+        bigint chain_id PK
+        text contract_address PK
+        bigint claim_id PK
+        text insurer_id
+        text fingerprint_version
+        text incident_fingerprint
+    }
+```
 
-- `database.py` owns connection configuration and transaction lifetime.
-- `assessment_repository.py` owns only XGBoost assessment persistence.
-- `duplicate_repository.py` owns private incident-fingerprint matching.
-- `feature_repository.py` owns versioned feature snapshots and history.
-- `repositories.py` is the small composition root used by FastAPI and workers.
-- `migrations/` owns versioned, checksummed SQL schema changes.
+Every lookup is scoped by chain ID, contract address, and claim ID. A claim
+number reused by a new deployment cannot expose the old contract's result.
 
-Each repository exposes one cohesive storage capability. Runtime callers do not
-receive a general-purpose SQL cursor and cannot accidentally create schema.
+## Module map
 
-## Versioned feature processing
+| File | Owns |
+| --- | --- |
+| `database.py` | Connection configuration and one-transaction cursor lifetime |
+| `assessment_repository.py` | Score, SHAP, processing state and chain receipt |
+| `duplicate_repository.py` | Private incident fingerprint and current matches |
+| `feature_processor.py` | Validation, direct features and policy HMAC |
+| `feature_repository.py` | Historical enrichment and immutable feature snapshots |
+| `repositories.py` | Small composition root used by API and worker |
+| `migrations/` | Ordered, checksummed schema changes |
 
-For each new verified Kafka event, `ClaimFeatureProcessor` writes one
-`claim-processing-v1` row to `claim_feature_snapshots` before XGBoost runs. The
-row contains the structured model inputs and these derived research features:
+Runtime callers receive focused repositories, not a general SQL cursor or
+permission to create schema.
 
-- report delay in whole days, from the incident date to the UTC block-event date;
-- claim amount divided by policy premium;
-- prior claims for the same HMAC-protected insurer/policy identity;
-- prior claims for the insurer;
-- the insurer's prior average claim amount;
-- the current amount divided by that prior average; and
-- the number of possible cross-insurer incident matches at processing time.
+## Feature snapshot
 
-Historical counts and averages mean **previously processed** claims in the same
-chain, contract, and insurer. An advisory transaction lock gives concurrent
-claims for one insurer a definite order while allowing unrelated insurers to
-continue independently.
+```mermaid
+flowchart LR
+    Claim["Verified claim + event"] --> Direct["Direct structured fields"]
+    Claim --> Derived["report delay + amount / premium"]
+    Claim --> Policy["HMAC policy identity"]
+    History[("Prior snapshots for same insurer")] --> Aggregate["counts + prior average"]
+    Direct --> Snapshot["claim-processing-v1 snapshot"]
+    Derived --> Snapshot
+    Policy --> Snapshot
+    Aggregate --> Snapshot
+    Duplicate["Cross-insurer match count"] --> Snapshot
+```
 
-The table stores a keyed HMAC of the normalized insurer and policy reference,
-not the raw policy reference. It also excludes the claim reference, description,
-and evidence. The same server-side secret is used by duplicate detection, but a
-separate versioned HMAC payload keeps the two fingerprint purposes isolated.
+One advisory transaction lock serializes claims for the same insurer, giving
+historical counts a definite order while other insurers continue independently.
+On replay, the original snapshot is returned instead of recomputing history with
+claims that arrived later.
 
-The proposal's true policy-age and shared-address features are not present
-because claim payload schema v4 collects neither a policy start date nor an
-address.
-Adding either feature requires an intentional claim-schema migration, privacy
-review, representative data, and model retraining. The pipeline does not
-substitute vehicle age for policy age or invent an address value.
+Stored derived values include:
 
-## Idempotency
+- report delay in whole days;
+- claim-to-premium ratio;
+- previous claims for the HMAC-protected policy identity;
+- previous claims and prior average amount for the insurer;
+- current amount divided by that prior average; and
+- cross-insurer match count at processing time.
 
-Every Kafka event has a deterministic `event_id`. PostgreSQL uses it as the
-primary key and also allows only one snapshot and assessment for a chain,
-contract, and claim. A feature replay returns the original snapshot; it does not
-recompute history using claims that arrived later. Completed assessments are
-not replaced by a replay.
+Raw policy reference, description, evidence, and the HMAC key are not stored.
+Policy-age and shared-address features are not invented because schema v4 does
+not collect a policy start date or address.
 
-The scoring worker reads the current contract state before writing. If Sepolia
-already contains the same status and score, the worker completes the existing
-database record instead of submitting another transaction.
+## Duplicate matching
 
-## Cross-insurer duplicate matching
+The worker creates a versioned HMAC from normalized incident fields and records
+it under the current chain and contract. Matches must have the same fingerprint
+and a different insurer ID. Equal fingerprints share an advisory lock so
+concurrent submissions cannot pass one another unnoticed.
 
-`claim_incident_fingerprints` stores one versioned fingerprint per on-chain
-claim. Matching is restricted to the same chain and contract and excludes
-claims from the current insurer. A PostgreSQL transaction-level advisory lock
-serializes equal fingerprints so concurrent submissions cannot silently pass
-one another.
+FastAPI rebuilds the match list when it reads a claim. An earlier claim can
+therefore show a later match. The result remains a human-review candidate and
+does not alter the model probability.
 
-The duplicate result is rebuilt when FastAPI reads a claim. This means an
-earlier claim can show a match that arrived later. A match remains a review
-candidate only and does not alter the XGBoost score or on-chain status.
+## Assessment replay
 
-Dashboard assessment and duplicate lookups are always scoped by the selected
-`chain_id`, `contract_address`, and `claim_id`. Reusing a numeric claim ID on a
-new deployment therefore cannot expose a record from the old contract.
+```mermaid
+stateDiagram-v2
+    [*] --> Scored: save probability, threshold and reasons
+    Scored --> Completed: Sepolia write confirmed
+    Scored --> Failed: write or dependency failure
+    Failed --> Scored: safe replay
+    Completed --> Completed: replay is a no-op
+```
+
+A worker restart after the Sepolia write reads current chain state. If status
+and score already match, it completes the database record without sending a
+second transaction. A completed score is never silently replaced.
 
 ## Local setup
 
-PostgreSQL is included with the Kafka Compose environment:
-
 ```bash
 docker compose -f packages/integrations/kafka/compose.yml up -d postgres
+
 cp .env.example .env.local
-```
-
-Load the connection setting where FastAPI, the worker, or the migration command
-needs access:
-
-```bash
 set -a
 source .env.local
 set +a
-```
 
-Then apply the reviewed migration files explicitly:
-
-```bash
 python -m packages.integrations.postgres.migrations upgrade
 python -m packages.integrations.postgres.migrations check
 ```
 
-`upgrade` takes a PostgreSQL advisory lock, applies each pending migration in a
-transaction, and stores its SHA-256 checksum. `check` is read-only and fails if
-a migration is pending, missing, unknown, or changed after application. Add a
-new monotonically numbered SQL file for every schema change; never edit a
-migration that has already reached a shared environment.
+`upgrade` takes a PostgreSQL advisory lock and applies each pending file in a
+transaction. `check` fails when history is pending, missing, unknown, or edited.
+Add a new numbered migration after a shared deployment; never rewrite an applied
+migration.
 
 ## Test
 
+Isolated repository tests:
+
 ```bash
 source apps/backend/.venv/bin/activate
-python -m pytest packages/integrations/postgres/tests -q
+python -m pytest packages/integrations/postgres/tests -m "not integration" -q
 ```
 
-The isolated tests do not need a running database. The Compose service is for
-the real local application flow.
-
-The integration suite creates a uniquely named schema, tests real SQL and
-concurrent duplicate submissions, verifies historical feature aggregation and
-replay stability, and then removes only that schema:
+Disposable-schema integration tests:
 
 ```bash
 TEST_DATABASE_URL=postgresql://claims:claims-local@127.0.0.1:5432/claims_registry \
   python -m pytest packages/integrations/postgres/tests -m integration -q
 ```
 
-Inspect saved snapshots in the local research database:
+Inspect recent feature snapshots locally:
 
 ```sql
-SELECT
-    claim_id,
-    feature_version,
-    report_delay_days,
-    claim_to_premium_ratio,
-    prior_policy_claim_count,
-    prior_insurer_claim_count,
-    prior_insurer_average_claim_amount_usd,
-    claim_to_prior_insurer_average_ratio,
-    cross_insurer_duplicate_match_count
+SELECT claim_id,
+       feature_version,
+       report_delay_days,
+       claim_to_premium_ratio,
+       prior_policy_claim_count,
+       prior_insurer_claim_count,
+       cross_insurer_duplicate_match_count
 FROM claim_feature_snapshots
 ORDER BY created_at DESC;
 ```
+
+See the [Kafka guide](../kafka/README.md) for replay order and the
+[root data map](../../../README.md#what-is-stored-where).

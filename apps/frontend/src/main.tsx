@@ -1,3 +1,4 @@
+// Browser entry point only; application state begins inside App.
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx'

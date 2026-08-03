@@ -1,3 +1,5 @@
+// Single orchestration point for cancellable reads, pagination, claim selection,
+// assessment polling, and the latest public receipt kept by the browser.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getClaimAssessment,

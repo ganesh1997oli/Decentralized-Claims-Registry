@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.28;
 
+/// @notice Hardhat scaffold retained for toolchain tests; not used by claims.
 contract Counter {
   uint public x;
 

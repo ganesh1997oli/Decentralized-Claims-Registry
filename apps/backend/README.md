@@ -1,161 +1,128 @@
 # FastAPI backend
 
-The backend authenticates a synthetic insurer, validates a motor claim, stores
-its signed schema-version-4 canonical JSON on IPFS, verifies the uploaded bytes,
-and anchors the hash and pointer on Sepolia. Kafka performs XGBoost scoring after
-anchoring, and PostgreSQL supplies the completed assessment to the browser.
+The backend is the trusted entry point for a synthetic claim. It authenticates
+the insurer, creates one deterministic document, verifies its public IPFS copy,
+and then anchors the document hash and CID on Sepolia.
 
-It also provides the paginated claims data used by the React dashboard.
+> Claim content is public and unencrypted on IPFS. Use fictional test data only.
 
-> Submit fictional research test data only. The current IPFS storage is public
-> and unencrypted; a CID is an address, not a password.
+## Submission flow
 
-## Workflow
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant A as FastAPI
+    participant I as IPFS / Pinata
+    participant E as Sepolia
 
-For `POST /claims`:
+    B->>A: POST /claims + X-Insurer-API-Key
+    A->>A: Authenticate, authorize, reserve quota
+    A->>A: Validate and sign canonical schema-v4 JSON
+    A->>I: Upload exact bytes
+    A->>I: Download and compare exact bytes
+    A->>E: submitClaim(Keccak-256, ipfs://CID)
+    E-->>A: ClaimSubmitted receipt
+    A-->>B: 201 receipt, assessment = null
+```
 
-1. Authenticate `X-Insurer-API-Key` and derive the authoritative insurer.
-2. Reject a request whose `insurerId` does not match that principal, then
-   reserve its per-IP, per-insurer, and daily allowance.
-3. Validate the request with Pydantic and create signed deterministic JSON.
-4. Upload the bytes to Pinata and read them back through the IPFS gateway.
-5. Calculate the Keccak-256 hash and call `submitClaim` on Sepolia.
-6. Return the anchor receipt with `assessment: null`.
+The API stops at the permanent anchor. The listener and Kafka worker own
+duplicate screening, feature persistence, XGBoost/SHAP, and assessment
+write-back. The browser polls the assessment endpoint for that later result.
 
-The browser polls `GET /claims/{claim_id}/assessment`. The Kafka scoring worker
-stores that response and performs the assessment transaction.
+## Code map
 
-The scoring worker independently verifies the signed insurer authorization
-before duplicate detection or scoring. The browser never receives the Pinata
-JWT, authorization key, or Sepolia private key.
+| File | Responsibility |
+| --- | --- |
+| `app/main.py` | Routes, dependencies, CORS, liveness and error translation |
+| `app/models.py` | Strict request, IPFS document and response shapes |
+| `app/submission_auth.py` | Digest-based credentials, quotas, request size and HMAC attestation |
+| `app/service.py` | IPFS round trip followed by Sepolia anchoring |
+| `app/blockchain.py` | Role checks, nonce allocation, receipts and public reads |
+| `app/health.py` | Dependency-safe readiness reporting |
 
-## Install
+The query service is deliberately read-only: loading the dashboard does not
+construct a wallet or Pinata upload client.
 
-Run from the repository root:
+## Endpoints
+
+| Method | Path | Result |
+| --- | --- | --- |
+| `GET` | `/health` | Compatibility alias for liveness |
+| `GET` | `/health/live` | Confirms that the process can answer HTTP |
+| `GET` | `/health/ready` | Checks auth config, migrations, IPFS signing config and Sepolia access |
+| `GET` | `/claims?page=1&page_size=10` | Current contract state, newest first; maximum page size 50 |
+| `GET` | `/claims/{claim_id}/assessment` | Stored model and duplicate result, or `404` while pending |
+| `POST` | `/claims` | Authenticate, validate, upload, verify and anchor a claim |
+
+`assessment: null` in a successful `201` response is expected. It means the
+claim is safely anchored and asynchronous screening has not completed yet.
+
+## Run locally
+
+From the repository root:
 
 ```bash
 python3 -m venv apps/backend/.venv
 source apps/backend/.venv/bin/activate
 python -m pip install --require-hashes -r requirements-dev.lock
-```
 
-The development lock includes the API plus test tooling. The cloud image uses
-the exact hash-checked production graph in `requirements.lock`.
-
-## Configure
-
-Create the shared local file from the repository root:
-
-```bash
 cp .env.example .env.local
-```
-
-Add the separate Sepolia submitter and assessor keys plus the Pinata JWT, then
-load that same file before running FastAPI and the worker:
-
-```bash
 set -a
 source .env.local
 set +a
+
+uvicorn apps.backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Backend settings:
+Useful URLs:
 
-| Variable | Required | Purpose |
-| --- | :---: | --- |
-| `SEPOLIA_RPC_URL` | Yes | RPC endpoint for Ethereum Sepolia |
-| `SEPOLIA_SUBMITTER_PRIVATE_KEY` | Writes | Sepolia-only account granted `SUBMITTER_ROLE` |
-| `SEPOLIA_ASSESSOR_PRIVATE_KEY` | Worker | Separate Sepolia-only account granted `ASSESSOR_ROLE` for that submitter |
-| `CLAIMS_DEPLOYMENT_ID` | Yes | Checked-in Ignition deployment directory; use `sepolia-security-audit-v1` for the hardened contract |
-| `RECEIPT_TIMEOUT` | No | Seconds to wait for a transaction receipt |
-| `INSURER_CREDENTIALS_JSON` | Yes | Digest-only synthetic-insurer credential records; never put raw API keys here |
-| `INSURER_RATE_LIMIT_PER_MINUTE` | No | Accepted submissions allowed per insurer each minute; default `5` |
-| `IP_RATE_LIMIT_PER_MINUTE` | No | All authentication attempts allowed per client IP each minute; default `20` |
-| `MAX_CLAIM_BODY_BYTES` | No | Maximum `POST /claims` request body; default `16384` bytes |
-| `CLAIM_AUTHORIZATION_KEY` | Yes | HMAC key shared only by FastAPI and the scoring worker; minimum 32 bytes |
-| `DUPLICATE_FINGERPRINT_KEY` | Async | Private key used for incident HMAC fingerprints; minimum 32 bytes |
-| `FRONTEND_ORIGINS` | No | Comma-separated browser origins allowed by CORS |
-| `DATABASE_URL` | Async | PostgreSQL assessment store used by the polling endpoint |
+- Liveness: <http://127.0.0.1:8000/health/live>
+- Readiness: <http://127.0.0.1:8000/health/ready>
+- OpenAPI UI: <http://127.0.0.1:8000/docs>
 
-IPFS settings:
+## Configuration boundaries
 
-| Variable | Required | Purpose |
-| --- | :---: | --- |
-| `PINATA_JWT` | Writes | Server-side Pinata upload credential |
-| `IPFS_GATEWAY` | No | Gateway used for the upload round-trip check |
+| Setting | Used by | Meaning |
+| --- | --- | --- |
+| `INSURER_CREDENTIALS_JSON` | API | Credential IDs, insurer IDs, SHA-256 digests and quotas; never raw keys |
+| `CLAIM_AUTHORIZATION_KEY` | API + worker | Signs the canonical claim so the worker can trust its insurer identity |
+| `SEPOLIA_SUBMITTER_PRIVATE_KEY` | API | Sepolia-only wallet with `SUBMITTER_ROLE` |
+| `PINATA_JWT` | API | Server-side public upload credential |
+| `DATABASE_URL` | API reads | Assessment and duplicate result shown to the browser |
+| `FRONTEND_ORIGINS` | API | Allowed browser origins |
+| `MAX_CLAIM_BODY_BYTES` | API | Request limit; default 16 KiB |
+| `INSURER_RATE_LIMIT_PER_MINUTE` | API | Per-insurer submission limit; default 5 |
+| `IP_RATE_LIMIT_PER_MINUTE` | API | Per-IP authentication-attempt limit; default 20 |
 
-The claims list is a public blockchain read. It needs the Sepolia RPC URL and
-deployment artifact, but deliberately does not load the wallet key or Pinata
-token. Submitting a new claim still requires both write credentials. At startup,
-the API validates the selected local artifact. Blockchain clients additionally
-check the RPC chain, bytecode, hardened interface, and wallet role before use.
-If required route configuration is missing, FastAPI returns a structured JSON
-`503` response instead of an unexplained plain `500`.
-
-Never commit `.env.local`. Write accounts need test ETH and only their intended
-contract role. The deployment/admin key is not an application setting.
+The deployer key, assessor key, duplicate-fingerprint key, and raw insurer keys
+do not belong in the API container. Never put any secret in a `VITE_` variable.
 
 ### Local insurer credentials
 
-The checked-in `.env.example` contains only these keys' SHA-256 digests. The raw
-values below are intentionally public, fictional local-development credentials:
+The example configuration stores only the SHA-256 digests of these intentionally
+public local keys:
 
-| Insurer | Local API key |
+| Fictional insurer | Local key |
 | --- | --- |
 | `northstar-mutual` | `local-northstar-mutual-api-key-change-me` |
 | `harbour-shield` | `local-harbour-shield-api-key-change-me` |
 | `cedar-insurance` | `local-cedar-insurance-api-key-change-me` |
 
-Enter the matching raw value in the browser or send it in
-`X-Insurer-API-Key`. Do not reuse these example keys in a hosted environment.
-Generate each hosted credential separately:
+For a hosted research run, generate a random key and its digest-only record:
 
 ```bash
 python apps/backend/scripts/generate_insurer_credential.py \
   northstar-mutual northstar-cloud-v1 --daily-quota 25
 ```
 
-The command prints the raw key once for the synthetic insurer operator and a
-digest-only JSON entry for `INSURER_CREDENTIALS_JSON`. Join the generated
-entries into one JSON list. Keep the raw keys out of server configuration,
-logs, screenshots, browser storage, and all `VITE_` variables.
+The raw key is shown once for the fictional insurer operator. Put only the
+printed JSON record in `INSURER_CREDENTIALS_JSON`. The built-in quotas are
+process-local, reset on restart, and assume one FastAPI process.
 
-The built-in minute limits and daily quotas are deliberately process-local for
-this single-process research gateway. They reset on process restart and do not
-coordinate multiple workers or VMs. Use a shared atomic store such as Redis or
-PostgreSQL before scaling FastAPI beyond one process.
-
-## Run
+## Example request
 
 ```bash
-source apps/backend/.venv/bin/activate
-set -a
-source .env.local
-set +a
-uvicorn apps.backend.app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-Useful local URLs:
-
-- Liveness check: <http://127.0.0.1:8000/health/live>
-- Dependency readiness: <http://127.0.0.1:8000/health/ready>
-- Interactive API documentation: <http://127.0.0.1:8000/docs>
-
-## Endpoints
-
-| Method | Path | Description |
-| --- | --- | --- |
-| `GET` | `/health` | Backward-compatible process liveness alias |
-| `GET` | `/health/live` | Confirms only that FastAPI can serve requests; never calls a dependency |
-| `GET` | `/health/ready` | Verifies insurer configuration, current PostgreSQL migrations, Pinata/signing configuration, and the selected Sepolia contract; returns 503 when unavailable |
-| `GET` | `/claims?page=1&page_size=10` | Returns current claims newest first; page size is limited to 50 |
-| `GET` | `/claims/{claim_id}/assessment` | Returns the stored XGBoost/SHAP and cross-insurer duplicate result, or 404 while pending |
-| `POST` | `/claims` | Validates, stores and anchors a synthetic motor claim |
-
-### Example submission
-
-```bash
-curl -X POST http://127.0.0.1:8000/claims \
+curl http://127.0.0.1:8000/claims \
   -H 'Content-Type: application/json' \
   -H 'X-Insurer-API-Key: local-northstar-mutual-api-key-change-me' \
   -d '{
@@ -177,45 +144,41 @@ curl -X POST http://127.0.0.1:8000/claims \
   }'
 ```
 
-A successful asynchronous response has HTTP status `201` and includes:
+## Failure behaviour
 
-- the claim ID, block number and submission transaction;
-- the `ipfs://` pointer and on-chain hash;
-- `assessment: null` while Kafka processing is pending.
+```mermaid
+flowchart TD
+    Request["POST /claims"] --> Auth{"Authenticated and within quota?"}
+    Auth -->|No| FourXX["401 / 403 / 429"]
+    Auth -->|Yes| Config{"Dependencies configured?"}
+    Config -->|No| Unavailable["503 with safe JSON detail"]
+    Config -->|Yes| Submit["IPFS round trip + Sepolia write"]
+    Submit -->|Fails| Gateway["502; no successful anchor receipt"]
+    Submit -->|Succeeds| Created["201; asynchronous assessment pending"]
+```
 
-Once the worker stores a result, the assessment endpoint returns the model
-version, probability, threshold, SHAP reasons, current cross-insurer duplicate
-matches, processing error if any, and assessment transaction.
-
-Returning `assessment: null` is not an error. It means the permanent claim anchor
-has succeeded and the independent Kafka worker has not finished yet. This split
-keeps a slow model or temporary worker restart from holding the submission
-request open.
+Readiness logs the dependency and exception type while public responses omit
+connection strings, credentials, and upstream response bodies.
 
 ## Test
-
-The tests use in-memory adapters and do not spend test ETH or contact Pinata:
 
 ```bash
 source apps/backend/.venv/bin/activate
 python -m pytest apps/backend/tests -q
+ruff check apps/backend packages/duplicates packages/integrations
 ```
 
-## Current limitations
+The isolated tests use in-memory adapters; they do not spend test ETH, upload to
+Pinata, or require PostgreSQL.
 
-- The claims list reads contract state directly and is suitable only for this
-  small testnet demonstration.
-- The prototype uses process-level wallets rather than a managed signing
-  service; submission and assessment are nevertheless separated.
-- IPFS content is public and unencrypted.
-- The XGBoost model is trained on synthetic data, not real insurance records.
-- Duplicate detection uses exact normalized incident fields. It produces review
-  candidates, not proof of fraud or privacy-preserving record linkage suitable
-  for real insurers.
-- Insurer authentication uses research API keys rather than an enterprise
-  identity provider, and the in-memory limits assume one FastAPI process.
-- Credential revocation and rotation require updating the digest-only
-  configuration and restarting the research gateway.
+## Known limits
 
-See the [root project guide](../../README.md) for the complete application run and
-the [model guide](../../packages/model/README.md) for how the fraud score is produced.
+- Public IPFS cannot protect real claim data.
+- Direct contract pagination fits this prototype, not a large registry.
+- API keys and process-local quotas are not enterprise identity or distributed
+  abuse prevention.
+- Process-level testnet wallets should be replaced by managed signing for a
+  production design.
+
+See the [root runbook](../../README.md) and the
+[Kafka worker guide](../../packages/integrations/kafka/README.md).

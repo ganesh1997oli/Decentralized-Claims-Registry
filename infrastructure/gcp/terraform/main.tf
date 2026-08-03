@@ -1,3 +1,5 @@
+# Disposable single-VM research topology. Application secrets stay outside
+# Terraform so they never enter plans, state files, or VM metadata.
 provider "google" {
   project = var.project_id
   region  = var.region

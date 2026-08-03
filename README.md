@@ -1,555 +1,308 @@
 # Decentralized Claims Registry
 
-A dissertation prototype that explores one practical question: can an insurance
-claim be stored off-chain, screened by a machine-learning workflow, and still
-leave a small public record that another party can verify independently?
+A research application that anchors a synthetic insurance claim on Ethereum,
+screens it off-chain, and leaves a compact result that anyone can verify.
 
-The application combines a Solidity registry, public IPFS storage, FastAPI,
-React, Kafka, PostgreSQL, XGBoost, and SHAP. Each part has one clear job, and the
-guides explain both what it does and why it is present.
+> **Use fictional data only.** Claim JSON is uploaded to public, unencrypted
+> IPFS. Sepolia transactions and pointers are public. The model is trained on a
+> synthetic dataset and must never be used to approve, reject, or investigate a
+> real claim.
 
-> **Research test data only:** use fictional claim references, values, and
-> descriptions. The current IPFS upload is public and unencrypted, the wallet
-> holds Sepolia test ETH, and the model was trained on a synthetic research
-> dataset. Do not enter real names, addresses, policies, photographs, or files.
+## One claim, end to end
 
-## What this prototype demonstrates
-
-- The full claim document does not need to be stored on Ethereum.
-- A Keccak-256 hash can prove whether later IPFS bytes match the submitted claim.
-- Kafka can separate user submission from slower model processing.
-- PostgreSQL can retain versioned engineered features, model results, and SHAP
-  context that are unsuitable for a smart contract.
-- Sepolia can hold a compact, independently visible lifecycle record.
-
-It does **not** demonstrate a production fraud decision. The model supports
-research and integration testing; it never approves or rejects a real claim.
-
-## What the application does
-
-When a user submits a fictional test claim:
-
-1. FastAPI authenticates the synthetic insurer, enforces its submission limits,
-   validates the form, and creates signed deterministic JSON bytes.
-2. The backend uploads the exact JSON bytes to IPFS through Pinata and downloads
-   them again to verify the upload.
-3. The backend stores the IPFS pointer and the document's Keccak-256 hash in the
-   `ClaimsRegistry` contract on Ethereum Sepolia.
-4. The listener verifies the claim and publishes its deterministic event to
-   Kafka.
-5. The scoring worker verifies the IPFS bytes and authoritative insurer
-   authorization again, creates a private keyed incident fingerprint, and
-   checks PostgreSQL for matching claims submitted by another synthetic insurer.
-6. The worker derives and saves a versioned PostgreSQL feature snapshot,
-   including report delay, ratios, historical counts, and prior averages.
-7. The worker runs XGBoost, creates claim-specific SHAP reasons, and saves the
-   result in PostgreSQL.
-8. The worker writes `UnderReview` or `Flagged` and the score to Sepolia.
-9. The React interface polls FastAPI for the assessment and displays the score,
-   duplicate-review result, reasons, transaction, and paginated contract state.
-
-The application has one scoring path: the listener and Kafka worker perform
-duplicate detection, XGBoost inference, persistence, and assessment after the
-claim anchor has succeeded.
-
-```text
-React ──► FastAPI ──► IPFS + Sepolia claim anchor
-                           │
-                           ▼
-                 listener ──► Kafka
-                                │
-                                ▼
-              duplicate check + feature processing + XGBoost/SHAP
-                                │
-                         PostgreSQL audit
-                                │
-                                ▼
-                    Sepolia assessment write-back
+```mermaid
+flowchart LR
+    Browser["React browser"] -->|"claim + insurer API key"| API["FastAPI"]
+    API -->|"signed canonical JSON"| IPFS[("Public IPFS")]
+    API -->|"Keccak hash + CID"| Chain[("Sepolia registry")]
+    Chain -->|"confirmed ClaimSubmitted"| Listener["Listener"]
+    Listener -->|"verified reference event"| Kafka[("Kafka")]
+    Kafka --> Worker["Scoring worker"]
+    IPFS -->|"same bytes"| Worker
+    Worker -->|"features, duplicate check, score, SHAP"| Postgres[("PostgreSQL")]
+    Worker -->|"status + score"| Chain
+    Postgres -->|"assessment details"| API
+    Chain -->|"current claim state"| API
+    API --> Browser
 ```
 
-## Project structure
+The split is intentional: the request finishes after the IPFS document has been
+verified and its hash has been anchored. Kafka handles the slower screening
+work without holding the browser request open.
 
-The repository is organized as a monorepo. Deployable processes live in
-`apps/`, reusable Python modules and external-system adapters live in
-`packages/`, and environment-specific deployment code lives in
-`infrastructure/`:
+## What is stored where
 
-```text
-.
-├── apps/             # API, web UI, listener, and smart contracts
-├── packages/         # Shared Python modules and external adapters
-├── infrastructure/   # Google Cloud, Docker, Terraform, and monitoring
-├── docs/             # Dissertation and project documentation
-└── .github/           # Continuous-integration workflows
-```
-
-| Directory | Responsibility | Documentation |
+| Place | Stored | Deliberately not stored |
 | --- | --- | --- |
-| `apps/backend/` | FastAPI validation, scoring, IPFS and Sepolia workflow | [Backend guide](apps/backend/README.md) |
-| `apps/frontend/` | React claim form, receipt and claims dashboard | [Frontend guide](apps/frontend/README.md) |
-| `apps/listener/` | Blockchain event polling, verification and checkpoints | [Listener guide](apps/listener/README.md) |
-| `apps/contracts/` | Solidity contract, tests and Ignition deployments | [Contract guide](apps/contracts/README.md) |
-| `packages/duplicates/` | Private cross-insurer incident fingerprinting | This guide |
-| `packages/model/` | XGBoost/SHAP training, evaluation, and scoring | [Model guide](packages/model/README.md) |
-| `packages/integrations/ipfs/` | Shared Pinata and IPFS adapter | [IPFS guide](packages/integrations/ipfs/README.md) |
-| `packages/integrations/kafka/` | Kafka messages, producer, consumer and local broker | [Kafka guide](packages/integrations/kafka/README.md) |
-| `packages/integrations/postgres/` | Versioned feature, duplicate, and assessment storage | [PostgreSQL guide](packages/integrations/postgres/README.md) |
-| `packages/observability/` | Structured logging, Prometheus metrics, and shutdown handling | This guide |
-| `infrastructure/gcp/` | Single-VM Google Cloud research deployment and monitoring | [Google Cloud guide](infrastructure/gcp/README.md) |
-| `docs/` | Dissertation and supporting documents | — |
+| Browser | Form state in memory; latest public receipt in local storage | Wallet keys, Pinata JWT, HMAC keys, saved insurer credential |
+| IPFS | Signed schema-v4 synthetic claim JSON | Encryption or access control |
+| Sepolia | Claim ID, submitter, hash, CID, status, score, timestamps | Full claim, SHAP reasons, private fingerprints |
+| Kafka | Versioned blockchain and IPFS references | Full claim payload |
+| PostgreSQL | Versioned features, keyed fingerprints, score, SHAP reasons, write receipt | HMAC keys, raw policy reference, description, evidence |
 
-## Hardened Sepolia deployment
+## Trust and replay boundaries
 
-- Network: Ethereum Sepolia (`11155111`)
-- Contract: `0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB`
-- Ignition module: `ClaimsRegistryModule#ClaimsRegistry`
-- Ignition deployment: `sepolia-security-audit-v1`
-- Explorer: [view the contract on Sepolia Etherscan](https://sepolia.etherscan.io/address/0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB)
+```mermaid
+sequenceDiagram
+    participant A as FastAPI
+    participant I as IPFS
+    participant E as Sepolia
+    participant L as Listener
+    participant K as Kafka
+    participant W as Worker
+    participant P as PostgreSQL
 
-The earlier contract at `0x57E3203b9427BE41c753bEedD526D81a66bFc2AB`
-is retained only as a legacy research record. It does not contain the hardened
-role and lifecycle rules.
+    A->>I: Upload exact canonical bytes
+    A->>I: Download and compare bytes
+    A->>E: Submit hash and CID
+    E-->>L: Confirmed ClaimSubmitted log
+    L->>I: Download and verify on-chain hash
+    L->>K: Publish deterministic event ID
+    W->>I: Reverify hash and gateway authorization
+    W->>P: Save immutable feature snapshot and score
+    W->>E: Write UnderReview or Flagged
+    W->>P: Mark chain write complete
+    W->>K: Commit offset
+```
 
-Every runtime process reads the address and ABI selected by
-`CLAIMS_DEPLOYMENT_ID`. The example selection,
-`sepolia-security-audit-v1`, resolves to the hardened address above. Artifact
-loading rejects the legacy interface; each blockchain client then rejects a
-wrong RPC chain, missing bytecode, an incompatible live contract, or an
-unauthorized write wallet.
+- The listener advances its block checkpoint only after the whole range has
+  been handled and Kafka has acknowledged publication.
+- The worker commits a Kafka offset only after persistence and chain write-back
+  succeed.
+- The blockchain log creates a deterministic `event_id`, so a restart can
+  replay safely instead of silently skipping a claim.
+- Completed scores are reused on replay; the worker does not silently rescore a
+  claim with a newer model.
 
-## Prerequisites
+## Repository map
 
-- Node.js 22 or later and npm
-- Python 3.10 or later
-- A Sepolia RPC endpoint
-- Three separate Sepolia-only wallets for deployment/admin, submission, and
-  assessment; write accounts need test ETH
-- A Pinata JWT with public file-upload permission
-- Docker Desktop for the local Kafka and PostgreSQL environment
+```text
+apps/
+├── backend/       FastAPI, authentication, IPFS and Sepolia submission
+├── contracts/     Solidity registry, tests and Ignition deployments
+├── frontend/      React intake, receipt and claims dashboard
+└── listener/      Confirmed-log polling, IPFS verification and checkpoints
 
-Never use a wallet that holds real assets. The setup below creates one ignored
-`.env.local` file for local development. A deployed environment should inject
-the same settings through its secret manager instead of copying that file.
+packages/
+├── duplicates/    Cross-insurer HMAC incident matching
+├── integrations/  Ethereum, IPFS, Kafka and PostgreSQL adapters
+├── model/         Training pipeline and serving-time XGBoost scorer
+└── observability/ Structured logs, Prometheus metrics and shutdown handling
 
-## First-time local setup
+infrastructure/gcp/  Disposable single-VM research deployment
+```
 
-Unit and integration tests do not require a live deployment. Running the
-end-to-end flow uses the checked-in hardened deployment by default; the supplied
-submitter and assessor wallets must already have their intended roles on that
-contract. To use a different hardened deployment, check its Ignition artifact
-into `apps/contracts/ignition/deployments/` and select its directory name explicitly.
+## Local setup
 
-Run the following commands from the repository root.
+### Prerequisites
 
-### 1. Create the Python environment
+- Node.js 24 and npm
+- Python 3.13
+- Docker Desktop
+- a Sepolia RPC endpoint
+- separate Sepolia-only submitter and assessor wallets with test ETH
+- a Pinata JWT for public test uploads
+
+Never use a wallet that holds real assets.
+
+### 1. Install dependencies
+
+Run from the repository root:
 
 ```bash
 python3 -m venv apps/backend/.venv
 source apps/backend/.venv/bin/activate
 python -m pip install --require-hashes -r requirements-dev.lock
+
+npm --prefix apps/frontend ci
+npm --prefix apps/contracts ci
 ```
 
-The application shares this environment across FastAPI, the listener, the
-worker, tests, and the research model. `requirements-dev.lock` pins the complete
-Python graph and verifies downloaded distributions by hash. The smaller
-`requirements.lock` is the production-image graph and excludes test tooling.
 On macOS, XGBoost also needs OpenMP:
 
 ```bash
 brew install libomp
 ```
 
-### 2. Install the frontend
-
-```bash
-npm --prefix apps/frontend ci
-```
-
-`npm ci` uses the committed lock file, which makes a clean installation more
-repeatable than silently updating package versions.
-
-### 3. Configure local secrets
+### 2. Create the local configuration
 
 ```bash
 cp .env.example .env.local
 ```
 
-Open `.env.local` and add:
+Set at least:
 
-- `SEPOLIA_SUBMITTER_PRIVATE_KEY`: the account granted submission permission;
-- `SEPOLIA_ASSESSOR_PRIVATE_KEY`: the separately granted scoring account;
-- `PINATA_JWT`: a server-side Pinata upload token.
-
-The example also provides three explicitly fictional local insurer API keys,
-their digest-only server records, and a local claim-authorization key. See the
-[backend credential guide](apps/backend/README.md#local-insurer-credentials) before
-replacing them for a hosted run. The raw insurer keys belong with the submitting
-operators; never add them to server environment variables or `VITE_` values.
+- `SEPOLIA_SUBMITTER_PRIVATE_KEY`
+- `SEPOLIA_ASSESSOR_PRIVATE_KEY`
+- `PINATA_JWT`
 
 Keep `CLAIMS_DEPLOYMENT_ID="sepolia-security-audit-v1"` unless you have reviewed
-and checked in a different hardened Ignition deployment.
+and checked in another hardened Ignition deployment. The example file already
+contains fictional local insurer credentials and safe local service addresses.
+See the [backend guide](apps/backend/README.md#local-insurer-credentials) before
+changing authentication settings.
 
-Keep `SEPOLIA_DEPLOYER_PRIVATE_KEY` only on the machine used for a contract
-deployment; the normal API and worker do not need it. Browsing the public claims
-list intentionally loads no wallet or Pinata secret.
+Load the file in every terminal that runs an application process:
 
-The example contains a fictional-data-only `DUPLICATE_FINGERPRINT_KEY`. Replace
-it with a secret value of at least 32 bytes before hosting the worker. Keep the
-remaining defaults unless your local ports differ. `.env.local` is ignored by
-Git. If a secret has appeared in a screenshot, chat, or commit, rotate it rather
-than continuing to use it.
+```bash
+set -a
+source .env.local
+set +a
+```
 
-### 4. Prepare the XGBoost artifact
-
-On a fresh clone, create the reviewed artifact with:
+### 3. Build the reviewed model artifact
 
 ```bash
 source apps/backend/.venv/bin/activate
 python -m packages.model.train_xgboost --download
 ```
 
-This command downloads the pinned Hugging Face dataset revision, verifies its
-SHA-256 digest, trains the pipeline, and writes the model, metadata, and SHAP
-summary under `packages/model/artifacts/xgboost-african-motor-v1/`.
+This downloads the pinned synthetic dataset, verifies its checksum, and writes
+the ignored serving artifact under
+`packages/model/artifacts/xgboost-african-motor-v1/`.
 
-Confirm that the application can load it:
-
-```bash
-set -a
-source .env.local
-set +a
-python -c "from packages.model.xgboost_scorer import XGBoostFraudScorer; m=XGBoostFraudScorer.from_env(); print('Model loaded:', m.model_version); print('Threshold:', m.threshold)"
-```
-
-The expected model is `african-motor-xgboost-v1`. The current reviewed threshold
-is `0.47`, meaning 47%.
-
-## Start the complete application
-
-The asynchronous workflow has four long-running processes plus Docker. Using a
-separate terminal for each process makes failures much easier to identify.
-
-### 1. Start Kafka and PostgreSQL
-
-Start Docker Desktop, then run:
+### 4. Start Kafka, PostgreSQL, and migrations
 
 ```bash
 docker compose -f packages/integrations/kafka/compose.yml up -d
 docker compose -f packages/integrations/kafka/compose.yml ps
-```
 
-Wait until Kafka and PostgreSQL report healthy. The optional Kafka dashboard is
-available at <http://127.0.0.1:8081>.
-
-Apply and verify the checked-in database migrations before starting either
-application process:
-
-```bash
-set -a
-source .env.local
-set +a
 python -m packages.integrations.postgres.migrations upgrade
 python -m packages.integrations.postgres.migrations check
 ```
 
-The command records a SHA-256 checksum for each migration and refuses unknown
-or edited history. The cloud Compose deployment runs the same command as a
-one-shot prerequisite for FastAPI and the scoring worker.
+Kafka UI is available at <http://127.0.0.1:8081>.
 
-### 2. Start FastAPI — terminal A
+### 5. Start the four application processes
+
+Use a separate configured terminal for each command:
 
 ```bash
-source apps/backend/.venv/bin/activate
-set -a
-source .env.local
-set +a
+# FastAPI
 uvicorn apps.backend.app.main:app --reload --host 127.0.0.1 --port 8000
-```
 
-Confirm process liveness at <http://127.0.0.1:8000/health/live> and dependency
-readiness at <http://127.0.0.1:8000/health/ready>. The interactive API
-documentation is at <http://127.0.0.1:8000/docs>. A `503` readiness response
-means the process is alive but should not receive claim traffic.
-
-### 3. Start React — terminal B
-
-```bash
-set -a
-source .env.local
-set +a
+# React
 npm --prefix apps/frontend run dev -- --host 127.0.0.1
-```
 
-Open <http://127.0.0.1:5173>. The browser talks only to FastAPI; it never
-receives the wallet private key, Pinata token, or claim-authorization key. Enter
-the local API key that matches the insurer selected in the form; it is kept only
-in the page's runtime memory and is cleared when the form resets.
-
-### 4. Start the blockchain listener — terminal C
-
-```bash
-source apps/backend/.venv/bin/activate
-set -a
-source .env.local
-set +a
+# Confirmed-block listener
 python -m apps.listener.claims_listener
-```
 
-A healthy listener logs the contract address, Kafka topic, and checkpoint as
-structured JSON.
-The checkpoint lets it resume after a restart without beginning from block zero.
-
-### 5. Start the scoring worker — terminal D
-
-```bash
-source apps/backend/.venv/bin/activate
-set -a
-source .env.local
-set +a
+# Kafka scoring worker
 python -m packages.integrations.kafka.scoring_worker
 ```
 
-The first import may build a Matplotlib font cache; that is normal. A healthy
-worker logs the topic and consumer-group name, then waits for a new claim.
+Open <http://127.0.0.1:5173>. Health and API documentation are available at:
 
-### 6. Submit and follow one claim
+- <http://127.0.0.1:8000/health/live>
+- <http://127.0.0.1:8000/health/ready>
+- <http://127.0.0.1:8000/docs>
 
-Keep the listener and worker running, then submit the pre-filled fictional claim
-from the browser.
+### 6. Follow a claim
 
-You should see this sequence:
+Submit the pre-filled fictional claim. A healthy run looks like this:
 
-1. The browser shows the Sepolia submission transaction, IPFS pointer, and hash.
-2. The listener logs `ipfs.verified` followed by `kafka.claim_published`.
-3. The worker logs `claim.assessed`, including the number of cross-insurer
-   incident matches.
-4. The browser replaces the pending message with the XGBoost probability,
-   duplicate-review result, SHAP indicators, on-chain score, assessment
-   transaction, and lifecycle status.
-5. The newest row appears in **All submitted claims**.
+```text
+Browser receipt: claim anchored, assessment pending
+Listener log:    ipfs.verified -> kafka.claim_published
+Worker log:      claim.assessed
+Browser receipt: duplicate check + score + SHAP reasons + chain status
+```
 
-Click **View details →** on any row to reopen that claim. The page keeps the
-latest public receipt after a refresh and restores the newest contract claim if
-browser storage is empty.
+To demonstrate duplicate screening, submit the same incident fields through a
+second fictional insurer while changing its claim and policy references. The
+second claim should point to the first as a possible cross-insurer match.
 
-## Run the automated checks
+## Claim lifecycle
 
-After the first-time installation, run the checks from the repository root:
+```mermaid
+stateDiagram-v2
+    [*] --> Submitted
+    Submitted --> UnderReview: score below threshold
+    Submitted --> Flagged: score at or above threshold
+    UnderReview --> Approved: future human review
+    UnderReview --> Rejected: future human review
+    UnderReview --> Flagged: later review
+    Flagged --> Approved: future human review
+    Flagged --> Rejected: future human review
+```
+
+The worker can create only `UnderReview` or `Flagged`. It never infers
+`Approved` or `Rejected`. The on-chain score is the probability multiplied by
+10,000: `0.2466` becomes `2,466`, displayed as `24.66%`.
+
+## Checked-in Sepolia deployment
+
+| Item | Value |
+| --- | --- |
+| Chain | Sepolia (`11155111`) |
+| Deployment ID | `sepolia-security-audit-v1` |
+| Module | `ClaimsRegistryModule#ClaimsRegistry` |
+| Contract | `0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB` |
+| Explorer | [Open in Sepolia Etherscan](https://sepolia.etherscan.io/address/0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB) |
+
+Every runtime process resolves the address and ABI from the same deployment ID
+and rejects a wrong chain, missing bytecode, legacy interface, or unauthorized
+write wallet.
+
+## Verification
 
 ```bash
-# Python unit tests and the enforced branch-coverage threshold
+# Python lint, unit tests, and coverage
 source apps/backend/.venv/bin/activate
-python -m pip install --require-hashes -r requirements-dev.lock
-ruff check apps packages \
-  --exclude packages/model/notebooks
-python -m pytest -m "not integration" \
-  --cov=apps.backend.app --cov=packages.duplicates \
-  --cov=packages.integrations.ipfs --cov=packages.integrations.kafka \
-  --cov=packages.integrations.postgres --cov=apps.listener.block_cursor \
-  --cov=apps.listener.claims_listener \
-  --cov=packages.model.xgboost_scorer --cov-report=term-missing
-
-# Smart contract
-npm --prefix apps/contracts ci
-npm --prefix apps/contracts exec -- hardhat test
+ruff check apps packages --exclude packages/model/notebooks
+python -m pytest -m "not integration"
 
 # Frontend
-npm --prefix apps/frontend ci
 npm --prefix apps/frontend test
 npm --prefix apps/frontend run lint
 npm --prefix apps/frontend run build
-npm --prefix apps/frontend exec -- playwright install chromium
 npm --prefix apps/frontend run test:e2e
+
+# Contract
+npm --prefix apps/contracts exec -- hardhat test
+npm --prefix apps/contracts exec -- hardhat build --build-profile production
 ```
 
-The infrastructure-backed suite uses disposable PostgreSQL schemas and isolated
-Kafka topics. Start the local services, then run:
+Infrastructure-backed tests require the local Kafka and PostgreSQL services:
 
 ```bash
-docker compose -f packages/integrations/kafka/compose.yml up -d --wait postgres kafka
-docker compose -f packages/integrations/kafka/compose.yml run --rm kafka-init
-
 TEST_DATABASE_URL=postgresql://claims:claims-local@127.0.0.1:5432/claims_registry \
 TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
-  apps/backend/.venv/bin/python -m pytest -m integration
+  python -m pytest -m integration
 ```
 
-GitHub Actions runs dependency-lock drift, Python coverage, infrastructure
-integration, frontend browser, smart-contract, and cloud-configuration jobs on
-every pushed branch and pull request. Configure those named checks as required
-checks in repository branch protection before merging to `main`.
+## Limits that matter
 
-When intentionally updating Python dependencies, edit the ranged input files,
-regenerate both locks with the commands recorded in their headers, run the full
-suite, and review the resolved version diff. Do not hand-edit a generated lock.
+- IPFS content is public and unencrypted.
+- Insurer rate limits are process-local and reset on API restart.
+- The dashboard reads current contract state directly; it is not an event index.
+- Exact incident fingerprints produce review candidates, not proof of fraud.
+- The synthetic model is an integration artifact, not a validated decision model.
+- Wallets are process-level testnet signers, not managed signing infrastructure.
+- Local and GCP Compose files use one Kafka broker and one PostgreSQL instance.
 
-## Contract lifecycle
+Before real claim data, the design would need encryption before IPFS, managed
+keys and signing, enterprise identity, malware and evidence controls, an indexed
+read model, managed replicated infrastructure, retention rules, and a validated
+and monitored model.
 
-The registry uses five statuses:
+## Focused guides
 
-| Value | Status | Meaning |
-| ---: | --- | --- |
-| `0` | `Submitted` | Recorded and awaiting assessment |
-| `1` | `UnderReview` | Scored but still requires human review |
-| `2` | `Approved` | Final accepted outcome |
-| `3` | `Rejected` | Final rejected outcome |
-| `4` | `Flagged` | Model score exceeded the demonstration threshold |
+| Area | Guide |
+| --- | --- |
+| FastAPI and insurer credentials | [Backend](apps/backend/README.md) |
+| Browser behaviour | [Frontend](apps/frontend/README.md) |
+| Block polling and recovery | [Listener](apps/listener/README.md) |
+| Roles and lifecycle rules | [Smart contract](apps/contracts/README.md) |
+| Training and SHAP | [Model](packages/model/README.md) |
+| Notebook workflow | [Notebooks](packages/model/notebooks/README.md) |
+| Public file storage | [IPFS](packages/integrations/ipfs/README.md) |
+| Event delivery and replay | [Kafka](packages/integrations/kafka/README.md) |
+| Feature and assessment storage | [PostgreSQL](packages/integrations/postgres/README.md) |
+| Single-VM deployment | [Google Cloud](infrastructure/gcp/README.md) |
 
-The model never approves or rejects a claim automatically. A low score becomes
-`UnderReview`, while a score above the saved threshold becomes `Flagged`.
-
-In the normal asynchronous flow, `Submitted` can be brief because the worker may
-score the claim before the dashboard refreshes. `Approved` and `Rejected` are
-reserved for a future authenticated human-review workflow.
-
-## Understanding the model result
-
-It helps to think of the model result as two connected answers:
-
-1. **The score asks, “How closely does this claim resemble the higher-risk
-   patterns learned from the synthetic training data?”**
-2. **The SHAP reasons ask, “Which parts of this particular claim moved the
-   model toward or away from that score?”**
-
-XGBoost returns the first answer as a probability between `0` and `1`. Solidity
-has no floating-point type, so the worker multiplies the probability by `10,000`
-and stores a whole number:
-
-```text
-probability 0.2466 = 24.66% = on-chain score 2,466 / 10,000
-threshold   0.4700 = 47.00% = threshold score 4,700 / 10,000
-```
-
-For the second answer, SHAP gives every transformed model feature a signed
-contribution. The scorer orders those contributions by absolute size and keeps
-the strongest five. It keeps the original sign so the dashboard can show the
-direction as well as the importance:
-
-- a **positive** contribution pushed this claim's score toward higher risk;
-- a **negative** contribution pushed it toward lower risk;
-- a larger absolute number had more influence on this prediction than a smaller
-  one.
-
-These are local explanations, meaning they describe this one claim rather than
-the model as a whole. A categorical field may appear as `Country: Ghana` or
-`Country is not Kenya` because the training pipeline turns categories into
-yes/no model columns before making a prediction.
-
-The five reasons explain the model's behaviour; they do not prove fraud, show
-that a feature caused fraud, or replace an investigator's judgement. Likewise,
-a negative contribution is not proof that a claim is genuine. The model only
-helps decide what may deserve closer human review.
-
-Older claims can show a score without current XGBoost/SHAP details if they were
-created before the PostgreSQL assessment history. The interface says so rather
-than inventing missing model information.
-
-## Understanding duplicate detection
-
-Claim schema v4 includes a fictional insurer ID plus a gateway authorization.
-The worker verifies that authorization before it canonicalizes incident
-attributes that should remain stable across insurers, then calculates an
-HMAC-SHA256 fingerprint with `DUPLICATE_FINGERPRINT_KEY`. Claim references,
-policy references, premiums and free-text descriptions are excluded because
-different insurers can legitimately record them differently.
-
-PostgreSQL stores the keyed fingerprint, not the canonical incident fields or
-the HMAC key. A match is reported only when the same fingerprint appears under
-a different insurer ID. It is always labelled as a possible duplicate for human
-review; it does not change the model score and never approves or rejects either
-claim.
-
-To demonstrate the feature, submit the pre-filled incident through Northstar
-Mutual, change the insurer to Harbour Shield, assign different claim and policy
-references, and submit again without changing the incident fields. The second
-receipt will reference the first claim.
-
-## Common local problems
-
-### The worker shows `Coordinator load in progress`
-
-Kafka is still starting its internal coordinator. Wait a few seconds and leave
-the process running. If it continues, check:
-
-```bash
-docker compose -f packages/integrations/kafka/compose.yml ps
-```
-
-### The worker fails on an older `schemaVersion`
-
-The local Kafka volume contains a message from before claim schema v4 introduced
-the authenticated insurer authorization. The current worker deliberately
-rejects unsigned schema-v3 documents rather than trusting their user-supplied
-insurer ID.
-Stop the worker and, only if those old local test messages are no longer needed,
-move this development consumer group to the latest offsets:
-
-```bash
-docker compose -f packages/integrations/kafka/compose.yml exec kafka \
-  /opt/kafka/bin/kafka-consumer-groups.sh \
-  --bootstrap-server localhost:9092 \
-  --group claims-registry-scorer-v1 \
-  --topic claims.submitted.v1 \
-  --reset-offsets \
-  --to-latest \
-  --execute
-```
-
-This skips old messages; it does not delete the topic. A production worker should
-quarantine incompatible messages in a dead-letter workflow instead.
-
-### A claim remains `Submitted`
-
-Check that both `apps/listener/claims_listener.py` and
-`packages/integrations/kafka/scoring_worker.py` are running. Then confirm Kafka consumer
-lag in <http://127.0.0.1:8081>.
-
-### Every new claim is `UnderReview`
-
-That is expected when its probability is below the current 47% threshold.
-`Flagged` appears only at or above the threshold. Neither status is a final claim
-decision.
-
-### XGBoost cannot load `libomp`
-
-On macOS:
-
-```bash
-brew install libomp
-```
-
-Then restart the Python process.
-
-## Stop the local application
-
-Stop each foreground process with `Ctrl+C`, then stop Docker services:
+Stop local infrastructure without deleting its volumes:
 
 ```bash
 docker compose -f packages/integrations/kafka/compose.yml down
 ```
-
-Do not add `--volumes` unless you deliberately want to delete local Kafka
-messages and PostgreSQL assessments.
-
-## Security and production limitations
-
-This repository demonstrates integration, not a production insurance platform.
-The evidence field is intentionally disabled because a public CID is an address,
-not a password. Anyone who learns the CID can request the unencrypted bytes while
-an IPFS node continues to provide them.
-
-Before accepting real claims or evidence, the design would need at least:
-
-- per-file envelope encryption before IPFS and managed off-chain keys;
-- audited role-based contract access control;
-- managed transaction signing instead of a process-level private key;
-- authenticated users, authorization and formal audit-retention controls;
-- file validation, malware scanning, access logs, and deletion procedures;
-- an indexed event history rather than repeated direct contract reads;
-- a validated real insurance-fraud dataset and monitored model;
-- managed Kafka with TLS/SASL, replication, dead-letter handling, and monitoring.
-
-For a production deployment, inject secrets through a managed secret store and
-use a cloud KMS or Vault-style service for encryption keys. Never place a
-decryption key, wallet private key, or Pinata token on IPFS, Sepolia, or in a
-`VITE_` browser variable.

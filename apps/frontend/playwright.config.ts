@@ -1,3 +1,5 @@
+// Browser tests run against an isolated Vite server whose /api routes are
+// intercepted by each scenario; no live Sepolia or FastAPI service is required.
 import { defineConfig, devices } from '@playwright/test'
 
 const isCI = Boolean(process.env.CI)
