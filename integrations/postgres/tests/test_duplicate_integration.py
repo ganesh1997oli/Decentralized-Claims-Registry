@@ -10,7 +10,6 @@ from backend.app.models import ClaimSubmission
 from duplicates import CrossInsurerDuplicateDetector
 from integrations.kafka import ClaimSubmittedEvent
 
-
 pytestmark = pytest.mark.integration
 
 
@@ -55,7 +54,7 @@ def test_concurrent_other_insurer_submissions_become_mutual_matches(
 ):
     detector = CrossInsurerDuplicateDetector(
         b"integration-key-" * 3,
-        postgres_repository,
+        postgres_repository.duplicates,
     )
     barrier = Barrier(2)
 
@@ -76,10 +75,10 @@ def test_concurrent_other_insurer_submissions_become_mutual_matches(
         "chain_id": 11_155_111,
         "contract_address": "0x1111111111111111111111111111111111111111",
     }
-    first = postgres_repository.get_duplicate_check_for_claim(
+    first = postgres_repository.duplicates.get_duplicate_check_for_claim(
         **scope, claim_id=7
     )
-    second = postgres_repository.get_duplicate_check_for_claim(
+    second = postgres_repository.duplicates.get_duplicate_check_for_claim(
         **scope, claim_id=8
     )
     assert first is not None

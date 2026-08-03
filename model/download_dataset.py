@@ -10,10 +10,7 @@ from urllib.request import urlopen
 
 import certifi
 
-
-DATASET_REPOSITORY = (
-    "electricsheepafrica/africa-synth-motor-insurance-claims-all"
-)
+DATASET_REPOSITORY = "electricsheepafrica/africa-synth-motor-insurance-claims-all"
 DATASET_REVISION = "7b8b6e8526c28ea54ae8e6414666d48d108221a1"
 DATASET_FILENAME = "african_motor_claims.csv"
 DATASET_SHA256 = "c82a531db73cf72de8791978b29799f53e828ad5891f9a170868f3111c45b457"
@@ -40,11 +37,14 @@ def download_dataset(destination: Path = DEFAULT_DATASET_PATH) -> Path:
     ssl_context = ssl.create_default_context(cafile=certifi.where())
 
     try:
-        with urlopen(
-            DATASET_URL,
-            timeout=120,
-            context=ssl_context,
-        ) as response, temporary.open("wb") as output:
+        with (
+            urlopen(
+                DATASET_URL,
+                timeout=120,
+                context=ssl_context,
+            ) as response,
+            temporary.open("wb") as output,
+        ):
             shutil.copyfileobj(response, output)
 
         actual_hash = file_sha256(temporary)

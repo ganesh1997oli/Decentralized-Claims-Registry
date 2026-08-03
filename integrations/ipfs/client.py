@@ -16,7 +16,6 @@ from urllib.parse import quote, urlsplit
 
 import requests
 
-
 PINATA_UPLOAD_URL = "https://uploads.pinata.cloud/v3/files"
 DEFAULT_IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs"
 
@@ -44,7 +43,7 @@ class IPFSClient:
         self.session = session or requests.Session()
 
     @classmethod
-    def from_env(cls, *, require_upload: bool = False) -> "IPFSClient":
+    def from_env(cls, *, require_upload: bool = False) -> IPFSClient:
         pinata_jwt = os.environ.get("PINATA_JWT")
         if require_upload and not pinata_jwt:
             raise IPFSError(
@@ -94,9 +93,7 @@ class IPFSClient:
         try:
             parsed = urlsplit(pointer)
         except ValueError as exc:
-            raise InvalidIPFSPointer(
-                f"Invalid IPFS data pointer: {pointer!r}"
-            ) from exc
+            raise InvalidIPFSPointer(f"Invalid IPFS data pointer: {pointer!r}") from exc
         if parsed.scheme != "ipfs":
             raise InvalidIPFSPointer(f"Unsupported data pointer: {pointer!r}")
         if parsed.query or parsed.fragment or parsed.username or parsed.password:

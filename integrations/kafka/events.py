@@ -8,9 +8,9 @@ details in one place and makes the listener easy to test without a live broker.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Mapping, Protocol
-
+from typing import Any, Protocol
 
 SCHEMA_VERSION = 1
 EVENT_TYPE = "ClaimSubmitted"
@@ -100,7 +100,7 @@ class ClaimSubmittedEvent:
         transaction_hash: str,
         log_index: int,
         event_timestamp: int,
-    ) -> "ClaimSubmittedEvent":
+    ) -> ClaimSubmittedEvent:
         return cls(
             schema_version=SCHEMA_VERSION,
             event_type=EVENT_TYPE,
@@ -127,12 +127,12 @@ class ClaimSubmittedEvent:
     def to_json_bytes(self) -> bytes:
         """Use one compact, repeatable encoding for logs and tests."""
 
-        return json.dumps(
-            asdict(self), sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        return json.dumps(asdict(self), sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
 
     @classmethod
-    def from_json_bytes(cls, value: bytes | str) -> "ClaimSubmittedEvent":
+    def from_json_bytes(cls, value: bytes | str) -> ClaimSubmittedEvent:
         try:
             raw = json.loads(value)
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
@@ -154,12 +154,8 @@ class ClaimSubmittedEvent:
             claim_id=_required_int(raw.get("claim_id"), name="claim_id"),
             claimant=_required_text(raw.get("claimant"), name="claimant"),
             claim_hash=_required_text(raw.get("claim_hash"), name="claim_hash"),
-            data_pointer=_required_text(
-                raw.get("data_pointer"), name="data_pointer"
-            ),
-            block_number=_required_int(
-                raw.get("block_number"), name="block_number"
-            ),
+            data_pointer=_required_text(raw.get("data_pointer"), name="data_pointer"),
+            block_number=_required_int(raw.get("block_number"), name="block_number"),
             block_hash=_required_text(raw.get("block_hash"), name="block_hash"),
             transaction_hash=_required_text(
                 raw.get("transaction_hash"), name="transaction_hash"
@@ -202,13 +198,11 @@ class KafkaSettings:
     consumer_poll_seconds: float = 1.0
 
     @classmethod
-    def from_mapping(cls, values: Mapping[str, str]) -> "KafkaSettings":
+    def from_mapping(cls, values: Mapping[str, str]) -> KafkaSettings:
         """Read Kafka settings without ever printing credentials."""
 
         try:
-            delivery_timeout_ms = int(
-                values.get("KAFKA_DELIVERY_TIMEOUT_MS", "30000")
-            )
+            delivery_timeout_ms = int(values.get("KAFKA_DELIVERY_TIMEOUT_MS", "30000"))
             consumer_poll_seconds = float(
                 values.get("KAFKA_CONSUMER_POLL_SECONDS", "1")
             )
@@ -217,9 +211,9 @@ class KafkaSettings:
                 "Kafka timeout values must be numbers"
             ) from exc
 
-        security_protocol = values.get(
-            "KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"
-        ).strip().upper()
+        security_protocol = (
+            values.get("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT").strip().upper()
+        )
         settings = cls(
             enabled=_read_bool(
                 values.get("KAFKA_ENABLED", "false"), name="KAFKA_ENABLED"
@@ -228,9 +222,7 @@ class KafkaSettings:
                 "KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092"
             ).strip(),
             topic=values.get("KAFKA_CLAIM_SUBMITTED_TOPIC", DEFAULT_TOPIC).strip(),
-            client_id=values.get(
-                "KAFKA_CLIENT_ID", "claims-registry-listener"
-            ).strip(),
+            client_id=values.get("KAFKA_CLIENT_ID", "claims-registry-listener").strip(),
             consumer_group_id=values.get(
                 "KAFKA_CONSUMER_GROUP_ID", "claims-registry-scorer-v1"
             ).strip(),
@@ -245,7 +237,7 @@ class KafkaSettings:
         return settings
 
     @classmethod
-    def from_env(cls) -> "KafkaSettings":
+    def from_env(cls) -> KafkaSettings:
         import os
 
         return cls.from_mapping(os.environ)
@@ -254,9 +246,7 @@ class KafkaSettings:
         if not self.bootstrap_servers:
             raise KafkaConfigurationError("KAFKA_BOOTSTRAP_SERVERS cannot be empty")
         if not self.topic:
-            raise KafkaConfigurationError(
-                "KAFKA_CLAIM_SUBMITTED_TOPIC cannot be empty"
-            )
+            raise KafkaConfigurationError("KAFKA_CLAIM_SUBMITTED_TOPIC cannot be empty")
         if not self.client_id or not self.consumer_group_id:
             raise KafkaConfigurationError("Kafka client and group IDs cannot be empty")
         if self.security_protocol not in SUPPORTED_SECURITY_PROTOCOLS:
@@ -271,13 +261,12 @@ class KafkaSettings:
             raise KafkaConfigurationError(
                 "KAFKA_CONSUMER_POLL_SECONDS must be greater than zero"
             )
-        if self.security_protocol.startswith("SASL"):
-            if not all(
-                (self.sasl_mechanism, self.sasl_username, self.sasl_password)
-            ):
-                raise KafkaConfigurationError(
-                    "SASL Kafka requires mechanism, username and password"
-                )
+        if self.security_protocol.startswith("SASL") and not all(
+            (self.sasl_mechanism, self.sasl_username, self.sasl_password)
+        ):
+            raise KafkaConfigurationError(
+                "SASL Kafka requires mechanism, username and password"
+            )
 
     def common_client_config(self) -> dict[str, Any]:
         config: dict[str, Any] = {

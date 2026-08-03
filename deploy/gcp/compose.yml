@@ -176,6 +176,23 @@ services:
       - "${XGBOOST_MODEL_HOST_DIR:?Set XGBOOST_MODEL_HOST_DIR in .env.gcp}:/opt/claims-model"
     logging: *json-logging
 
+  database-migrate:
+    <<: *python-service
+    # Schema changes run once, before any process can read or write claim data.
+    # Keeping DDL out of request and Kafka paths avoids startup races and lets a
+    # deployment fail without partially starting the application.
+    restart: "no"
+    command:
+      - python
+      - -m
+      - integrations.postgres.migrations
+      - upgrade
+    environment:
+      DATABASE_URL: "postgresql://claims:${POSTGRES_PASSWORD}@postgres:5432/claims_registry"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend:
     <<: *python-service
     command:
@@ -202,8 +219,8 @@ services:
       CLAIM_AUTHORIZATION_KEY: ${CLAIM_AUTHORIZATION_KEY:?Set CLAIM_AUTHORIZATION_KEY in .env.gcp}
       DATABASE_URL: "postgresql://claims:${POSTGRES_PASSWORD}@postgres:5432/claims_registry"
     depends_on:
-      postgres:
-        condition: service_healthy
+      database-migrate:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
@@ -211,7 +228,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=10)"
       interval: 15s
       timeout: 5s
       retries: 10
@@ -258,8 +275,8 @@ services:
     depends_on:
       kafka-init:
         condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
+      database-migrate:
+        condition: service_completed_successfully
     volumes:
       # The model directory is never writable from inside the worker. This keeps
       # a reviewed artifact unchanged throughout an experimental run.

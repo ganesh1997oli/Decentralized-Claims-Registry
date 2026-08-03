@@ -30,13 +30,20 @@ from integrations.postgres import (
     AssessmentRecord,
     ClaimFeatureProcessor,
     ClaimFeatureSnapshot,
-    PostgresAssessmentRepository,
+    PostgresRepositories,
 )
 from model.contracts import FraudScore
 from model.xgboost_scorer import XGBoostFraudScorer
-from observability import ScoringMetrics, ShutdownSignal
+from observability import (
+    ScoringMetrics,
+    ShutdownSignal,
+    configure_logging,
+    get_event_logger,
+)
 
 from .events import ClaimSubmittedEvent, KafkaClaimEventConsumer, KafkaSettings
+
+logger = get_event_logger(__name__)
 
 
 class ClaimReader(Protocol):
@@ -197,9 +204,11 @@ class ClaimScoringHandler:
         if existing and existing.processing_status == "completed":
             # Kafka may redeliver a committed event after maintenance or an
             # offset reset. A completed database record makes that a cheap no-op.
-            print(
-                f"[AssessmentAlreadyCompleted] eventId={event.event_id} "
-                f"claimId={event.claim_id}"
+            logger.info(
+                "assessment.already_completed",
+                event_id=event.event_id,
+                claim_id=event.claim_id,
+                transaction_hash=existing.transaction_hash,
             )
             return
 
@@ -237,6 +246,7 @@ class ClaimScoringHandler:
         # Flagged (4) both still require a person; Approved/Rejected are never
         # inferred from a probability.
         desired_status = 4 if record.status == "Flagged" else 1
+        assessment_transaction_hash = record.transaction_hash
         try:
             chain_claim = self.registry.get_claim(event.claim_id)
             if chain_claim.status == 0:
@@ -252,6 +262,7 @@ class ClaimScoringHandler:
                     transaction_hash=assessment.transaction_hash,
                     block_number=assessment.block_number,
                 )
+                assessment_transaction_hash = assessment.transaction_hash
             elif (
                 chain_claim.status == desired_status
                 and chain_claim.fraud_score == record.fraud_score
@@ -271,15 +282,21 @@ class ClaimScoringHandler:
             self.repository.mark_failed(event.event_id, str(exc))
             raise
 
-        print(
-            f"[ClaimAssessed] eventId={event.event_id} claimId={event.claim_id} "
-            f"model={record.model_version} score={record.fraud_score} "
-            f"features={feature_snapshot.feature_version} "
-            f"crossInsurerMatches={len(duplicate_check.matches)}"
+        logger.info(
+            "claim.assessed",
+            event_id=event.event_id,
+            claim_id=event.claim_id,
+            source_transaction_hash=event.transaction_hash,
+            assessment_transaction_hash=assessment_transaction_hash,
+            model_version=record.model_version,
+            fraud_score=record.fraud_score,
+            feature_version=feature_snapshot.feature_version,
+            cross_insurer_matches=len(duplicate_check.matches),
         )
 
 
 def main() -> None:
+    configure_logging("claims-scoring-worker")
     metrics = ScoringMetrics.start_from_env()
     shutdown = ShutdownSignal()
     shutdown.install()
@@ -288,8 +305,7 @@ def main() -> None:
     if not settings.enabled:
         raise SystemExit("Set KAFKA_ENABLED=true before starting the scoring worker")
 
-    repository = PostgresAssessmentRepository.from_env()
-    repository.ensure_schema()
+    repositories = PostgresRepositories.from_env()
     # Keep model-only latency separate from total pipeline time. Blockchain
     # confirmation can take seconds, so combining both would make a 500 ms
     # inference target impossible to interpret fairly.
@@ -297,9 +313,11 @@ def main() -> None:
     handler = ClaimScoringHandler(
         ipfs=IPFSClient.from_env(),
         scorer=scorer,
-        duplicate_detector=CrossInsurerDuplicateDetector.from_env(repository),
-        feature_processor=ClaimFeatureProcessor.from_env(repository),
-        repository=repository,
+        duplicate_detector=CrossInsurerDuplicateDetector.from_env(
+            repositories.duplicates
+        ),
+        feature_processor=ClaimFeatureProcessor.from_env(repositories.features),
+        repository=repositories.assessments,
         registry=SepoliaClaimsRegistry.from_env(
             private_key_env="SEPOLIA_ASSESSOR_PRIVATE_KEY"
         ),
@@ -307,9 +325,11 @@ def main() -> None:
     )
     monitored_handler = MonitoredClaimHandler(handler, metrics)
     consumer = KafkaClaimEventConsumer(settings)
-    print(
-        f"Scoring {settings.topic} from {settings.bootstrap_servers} "
-        f"as group {settings.consumer_group_id}"
+    logger.info(
+        "scoring_worker.started",
+        topic=settings.topic,
+        bootstrap_servers=settings.bootstrap_servers,
+        consumer_group_id=settings.consumer_group_id,
     )
     try:
         while not shutdown.is_set():
@@ -317,7 +337,7 @@ def main() -> None:
     except KeyboardInterrupt:
         # This remains as a defensive fallback for platforms that deliver a
         # KeyboardInterrupt before our SIGINT handler has been installed.
-        print("Stopping scoring worker")
+        logger.info("scoring_worker.stopping", reason="keyboard_interrupt")
     finally:
         consumer.close()
 

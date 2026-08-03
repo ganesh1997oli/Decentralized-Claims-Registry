@@ -144,13 +144,13 @@ def test_broker_events_are_scored_and_matched_across_insurers(
         scorer=DeterministicScorer(),
         duplicate_detector=CrossInsurerDuplicateDetector(
             b"kafka-integration-key-" * 2,
-            postgres_repository,
+            postgres_repository.duplicates,
         ),
         feature_processor=ClaimFeatureProcessor(
             b"kafka-integration-key-" * 2,
-            postgres_repository,
+            postgres_repository.features,
         ),
-        repository=postgres_repository,
+        repository=postgres_repository.assessments,
         registry=registry,
         authorization=AUTHORIZATION,
     )
@@ -173,15 +173,19 @@ def test_broker_events_are_scored_and_matched_across_insurers(
         consumer.close()
 
     assert processed == 2
-    first_record = postgres_repository.get_by_event_id(events[0].event_id)
-    second_record = postgres_repository.get_by_event_id(events[1].event_id)
+    first_record = postgres_repository.assessments.get_by_event_id(events[0].event_id)
+    second_record = postgres_repository.assessments.get_by_event_id(events[1].event_id)
     assert first_record is not None
     assert second_record is not None
     assert first_record.processing_status == "completed"
     assert second_record.processing_status == "completed"
 
-    first_features = postgres_repository.get_feature_snapshot(events[0].event_id)
-    second_features = postgres_repository.get_feature_snapshot(events[1].event_id)
+    first_features = postgres_repository.features.get_feature_snapshot(
+        events[0].event_id
+    )
+    second_features = postgres_repository.features.get_feature_snapshot(
+        events[1].event_id
+    )
     assert first_features is not None
     assert second_features is not None
     assert first_features.report_delay_days == 7
@@ -198,10 +202,10 @@ def test_broker_events_are_scored_and_matched_across_insurers(
         "chain_id": 11_155_111,
         "contract_address": "0x1111111111111111111111111111111111111111",
     }
-    first = postgres_repository.get_duplicate_check_for_claim(
+    first = postgres_repository.duplicates.get_duplicate_check_for_claim(
         **scope, claim_id=7
     )
-    second = postgres_repository.get_duplicate_check_for_claim(
+    second = postgres_repository.duplicates.get_duplicate_check_for_claim(
         **scope, claim_id=8
     )
     assert first is not None

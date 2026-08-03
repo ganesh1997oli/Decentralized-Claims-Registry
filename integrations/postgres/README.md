@@ -9,6 +9,18 @@ It also stores keyed incident fingerprints used to find possible duplicates
 across participating synthetic insurers. PostgreSQL never stores the HMAC key,
 and the fingerprint is not returned to the browser.
 
+## Module boundaries
+
+- `database.py` owns connection configuration and transaction lifetime.
+- `assessment_repository.py` owns only XGBoost assessment persistence.
+- `duplicate_repository.py` owns private incident-fingerprint matching.
+- `feature_repository.py` owns versioned feature snapshots and history.
+- `repositories.py` is the small composition root used by FastAPI and workers.
+- `migrations/` owns versioned, checksummed SQL schema changes.
+
+Each repository exposes one cohesive storage capability. Runtime callers do not
+receive a general-purpose SQL cursor and cannot accidentally create schema.
+
 ## Versioned feature processing
 
 For each new verified Kafka event, `ClaimFeatureProcessor` writes one
@@ -77,15 +89,27 @@ docker compose -f integrations/kafka/compose.yml up -d postgres
 cp .env.example .env.local
 ```
 
-The worker creates the feature, assessment, and fingerprint tables and indexes
-on startup. Load the connection setting where either FastAPI or the worker needs
-access:
+Load the connection setting where FastAPI, the worker, or the migration command
+needs access:
 
 ```bash
 set -a
 source .env.local
 set +a
 ```
+
+Then apply the reviewed migration files explicitly:
+
+```bash
+python -m integrations.postgres.migrations upgrade
+python -m integrations.postgres.migrations check
+```
+
+`upgrade` takes a PostgreSQL advisory lock, applies each pending migration in a
+transaction, and stores its SHA-256 checksum. `check` is read-only and fails if
+a migration is pending, missing, unknown, or changed after application. Add a
+new monotonically numbered SQL file for every schema change; never edit a
+migration that has already reached a shared environment.
 
 ## Test
 

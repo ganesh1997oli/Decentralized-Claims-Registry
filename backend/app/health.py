@@ -1,0 +1,123 @@
+"""Operational liveness and readiness reporting for the FastAPI process.
+
+Liveness must never depend on a remote system: restarting a healthy process
+does not repair PostgreSQL or Sepolia. Readiness is intentionally different. It
+checks every dependency required to accept traffic and returns stable messages
+that do not expose credentials, connection strings or upstream response bodies.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+
+from backend.app.blockchain import SepoliaClaimsRegistry
+from backend.app.submission_auth import ClaimAuthorizationSigner, SubmissionBoundary
+from integrations.ipfs import IPFSClient
+from integrations.postgres import PostgresMigrator, PostgresRepositories
+from observability import get_event_logger
+
+logger = get_event_logger(__name__)
+
+
+@dataclass(frozen=True)
+class ReadinessCheck:
+    """One named check and its fixed public failure description."""
+
+    name: str
+    run: Callable[[], None]
+    failure_message: str
+
+
+@dataclass(frozen=True)
+class ReadinessResult:
+    """The complete result returned through the readiness interface."""
+
+    ready: bool
+    checks: dict[str, str]
+
+
+class ReadinessProbe:
+    """Evaluate required dependencies without exposing their implementations."""
+
+    def __init__(self, checks: Iterable[ReadinessCheck]) -> None:
+        configured = tuple(checks)
+        if not configured:
+            raise ValueError("At least one readiness check is required")
+        names = [check.name for check in configured]
+        if len(names) != len(set(names)):
+            raise ValueError("Readiness check names must be unique")
+        self._checks = configured
+
+    def evaluate(self) -> ReadinessResult:
+        results: dict[str, str] = {}
+        ready = True
+        for check in self._checks:
+            try:
+                check.run()
+            except Exception as exc:  # noqa: BLE001 - adapters normalize failures
+                ready = False
+                results[check.name] = check.failure_message
+                # Logs keep the exception type for diagnosis but intentionally
+                # omit its text, which could contain an upstream URL or secret.
+                logger.warning(
+                    "readiness.check_failed",
+                    check=check.name,
+                    exception_type=type(exc).__name__,
+                )
+            else:
+                results[check.name] = "ok"
+        return ReadinessResult(ready=ready, checks=results)
+
+
+def build_readiness_probe() -> ReadinessProbe:
+    """Build production checks from environment-backed adapters.
+
+    Each invocation of a check opens fresh lightweight connections. A readiness
+    response therefore reflects current dependency availability rather than a
+    successful connection cached during process startup.
+    """
+
+    def check_insurer_authentication() -> None:
+        SubmissionBoundary.from_env()
+
+    def check_postgres() -> None:
+        repositories = PostgresRepositories.from_env()
+        repositories.database.ping()
+        PostgresMigrator(repositories.database).require_current()
+
+    def check_sepolia_contract() -> None:
+        # The write-capable adapter verifies chain ID, bytecode, hardened
+        # interface and SUBMITTER_ROLE without submitting a transaction.
+        SepoliaClaimsRegistry.from_env()
+
+    def check_submission_dependencies() -> None:
+        # Construction validates the Pinata upload configuration and claim
+        # authorization key. Sepolia itself has a dedicated result above.
+        IPFSClient.from_env(require_upload=True)
+        ClaimAuthorizationSigner.from_env()
+
+    return ReadinessProbe(
+        (
+            ReadinessCheck(
+                "insurer_authentication",
+                check_insurer_authentication,
+                "insurer authentication configuration is unavailable",
+            ),
+            ReadinessCheck(
+                "postgres",
+                check_postgres,
+                "PostgreSQL is unavailable or migrations are pending",
+            ),
+            ReadinessCheck(
+                "sepolia_contract",
+                check_sepolia_contract,
+                "the hardened Sepolia deployment is unavailable",
+            ),
+            ReadinessCheck(
+                "submission_dependencies",
+                check_submission_dependencies,
+                "claim submission dependencies are unavailable",
+            ),
+        )
+    )

@@ -6,8 +6,8 @@ import argparse
 from pathlib import Path
 
 from model.download_dataset import (
-    DATASET_REVISION,
     DATASET_REPOSITORY,
+    DATASET_REVISION,
     DEFAULT_DATASET_PATH,
     download_dataset,
     file_sha256,
@@ -17,7 +17,6 @@ from model.research_pipeline import (
     save_training_run,
     train_research_models,
 )
-
 
 DEFAULT_OUTPUT_DIR = (
     Path(__file__).resolve().parent / "artifacts" / "xgboost-african-motor-v1"

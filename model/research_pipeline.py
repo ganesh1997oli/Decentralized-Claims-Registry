@@ -28,7 +28,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from xgboost import XGBClassifier
 
-
 RANDOM_SEED = 20_260_724
 MODEL_VERSION = "african-motor-xgboost-v1"
 TARGET_COLUMN = "fraud_flag"
@@ -271,9 +270,7 @@ def train_research_models(
             "validation_rows": len(split.validation),
             "test_rows": len(split.test),
             "training_fraud_rate": round(split.train[TARGET_COLUMN].mean(), 6),
-            "validation_fraud_rate": round(
-                split.validation[TARGET_COLUMN].mean(), 6
-            ),
+            "validation_fraud_rate": round(split.validation[TARGET_COLUMN].mean(), 6),
             "test_fraud_rate": round(split.test[TARGET_COLUMN].mean(), 6),
         },
         "baseline_logistic_regression": evaluate_model(
@@ -361,9 +358,7 @@ def save_training_run(
     model_digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
     top_features = create_shap_summary(run.xgboost, run.split.test, shap_path)
     claim_frequency = (
-        run.split.train.groupby("country")[
-            "claim_frequency_per_1000_policies"
-        ]
+        run.split.train.groupby("country")["claim_frequency_per_1000_policies"]
         .median()
         .sort_index()
         .round(6)

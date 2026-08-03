@@ -3,9 +3,9 @@
 from .client import (
     DEFAULT_IPFS_GATEWAY,
     PINATA_UPLOAD_URL,
+    InvalidIPFSPointer,
     IPFSClient,
     IPFSError,
-    InvalidIPFSPointer,
 )
 
 __all__ = [

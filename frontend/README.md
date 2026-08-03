@@ -20,6 +20,15 @@ browser code.
 
 The page offers claim-list sizes of 5, 10, 25, or 50.
 
+## Source layout
+
+`App.tsx` is intentionally only the page composition shell. `ClaimForm` owns
+credential-in-memory form state and validation, while `ReceiptCard` and
+`ClaimsDashboard` own presentation. `useClaimsWorkspace` is the single boundary
+for cancellation, list pagination, detail loading, assessment polling, and
+receipt persistence. Shared public insurer labels and IPFS-link formatting live
+in `claim-display.ts`; no component owns authorization policy.
+
 ## Install
 
 Run from the repository root:

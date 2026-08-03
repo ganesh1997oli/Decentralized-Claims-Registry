@@ -21,7 +21,6 @@ from integrations.kafka import (
 )
 from listener.claims_listener import ClaimEventProcessor
 
-
 pytestmark = pytest.mark.integration
 
 CHAIN_ID = 11_155_111

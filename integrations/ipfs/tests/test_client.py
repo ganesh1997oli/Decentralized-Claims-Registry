@@ -1,6 +1,6 @@
 import unittest
 
-from integrations.ipfs import IPFSClient, IPFSError, PINATA_UPLOAD_URL
+from integrations.ipfs import PINATA_UPLOAD_URL, IPFSClient, IPFSError
 
 
 class FakeResponse:
@@ -55,16 +55,12 @@ class IPFSClientTests(unittest.TestCase):
     def test_downloads_an_ipfs_pointer_through_gateway(self):
         session = FakeSession()
         session.get_response = FakeResponse(content=b"claim bytes")
-        client = IPFSClient(
-            gateway="https://example.test/ipfs/", session=session
-        )
+        client = IPFSClient(gateway="https://example.test/ipfs/", session=session)
 
         payload = client.download_pointer("ipfs://bafy-test-cid", attempts=1)
 
         self.assertEqual(payload, b"claim bytes")
-        self.assertEqual(
-            session.get_call[0], "https://example.test/ipfs/bafy-test-cid"
-        )
+        self.assertEqual(session.get_call[0], "https://example.test/ipfs/bafy-test-cid")
 
     def test_rejects_non_ipfs_data_pointer(self):
         with self.assertRaises(IPFSError):

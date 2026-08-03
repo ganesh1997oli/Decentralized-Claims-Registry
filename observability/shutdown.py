@@ -6,6 +6,10 @@ import signal
 import threading
 from types import FrameType
 
+from .logging import get_event_logger
+
+logger = get_event_logger(__name__)
+
 
 class ShutdownSignal:
     """Turn SIGINT and SIGTERM into a small flag that loops can check safely.
@@ -33,8 +37,8 @@ class ShutdownSignal:
         """Remember the request; do not perform unsafe cleanup in the handler."""
 
         signal_name = signal.Signals(signum).name
-        print(f"[ShutdownRequested] received {signal_name}")
         self._event.set()
+        logger.info("shutdown.requested", signal=signal_name)
 
     def is_set(self) -> bool:
         """Return ``True`` after Docker or a person asks the process to stop."""

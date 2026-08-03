@@ -5,10 +5,10 @@ from fastapi.testclient import TestClient
 from backend.app.main import (
     app,
     get_active_deployment,
-    get_assessment_repository,
     get_claim_query_service,
     get_claim_submission_service,
     get_insurer_principal,
+    get_postgres_repositories,
     get_submission_boundary,
 )
 from backend.app.models import (
@@ -144,9 +144,7 @@ class SuccessfulAssessmentRepository:
             block_number=124,
         )
 
-    def get_duplicate_check_for_claim(
-        self, *, chain_id, contract_address, claim_id
-    ):
+    def get_duplicate_check_for_claim(self, *, chain_id, contract_address, claim_id):
         assert chain_id == 11_155_111
         assert contract_address == "0xcontract"
         assert claim_id == 7
@@ -163,9 +161,7 @@ class PendingAssessmentRepository:
         assert contract_address == "0xcontract"
         assert claim_id == 7
 
-    def get_duplicate_check_for_claim(
-        self, *, chain_id, contract_address, claim_id
-    ):
+    def get_duplicate_check_for_claim(self, *, chain_id, contract_address, claim_id):
         assert chain_id == 11_155_111
         assert contract_address == "0xcontract"
         assert claim_id == 7
@@ -194,9 +190,7 @@ class BoundaryProbe:
         self.error = error
         self.calls = []
 
-    def authorize_and_reserve(
-        self, *, api_key, claimed_insurer_id, client_ip
-    ):
+    def authorize_and_reserve(self, *, api_key, claimed_insurer_id, client_ip):
         self.calls.append((api_key, claimed_insurer_id, client_ip))
         if self.error is not None:
             raise self.error
@@ -216,20 +210,14 @@ def test_cors_preflight_allows_the_local_react_app():
         headers={
             "Origin": "http://127.0.0.1:5173",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": (
-                "content-type,x-insurer-api-key"
-            ),
+            "Access-Control-Request-Headers": ("content-type,x-insurer-api-key"),
         },
     )
 
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == (
-        "http://127.0.0.1:5173"
-    )
+    assert response.headers["access-control-allow-origin"] == ("http://127.0.0.1:5173")
     assert "POST" in response.headers["access-control-allow-methods"]
-    assert "X-Insurer-API-Key" in response.headers[
-        "access-control-allow-headers"
-    ]
+    assert "X-Insurer-API-Key" in response.headers["access-control-allow-headers"]
 
 
 def test_submit_claim_returns_created_receipt():
@@ -289,9 +277,7 @@ def test_submit_claim_authenticates_api_key_and_authoritative_insurer():
         app.dependency_overrides.clear()
 
     assert response.status_code == 201
-    assert boundary.calls == [
-        ("test-api-key", "northstar-mutual", "testclient")
-    ]
+    assert boundary.calls == [("test-api-key", "northstar-mutual", "testclient")]
 
 
 def test_submit_claim_requires_an_insurer_api_key():
@@ -317,9 +303,9 @@ def test_authentication_runs_before_submission_service_initialization():
     def unexpected_service_initialization():
         raise AssertionError("Authentication must run before external clients load")
 
-    app.dependency_overrides[
-        get_claim_submission_service
-    ] = unexpected_service_initialization
+    app.dependency_overrides[get_claim_submission_service] = (
+        unexpected_service_initialization
+    )
     app.dependency_overrides[get_submission_boundary] = lambda: boundary
     try:
         response = TestClient(app).post("/claims", json=VALID_CLAIM)
@@ -407,9 +393,11 @@ def test_list_claims_returns_current_on_chain_state():
 
 
 def test_get_claim_assessment_returns_postgres_result():
-    app.dependency_overrides[
-        get_assessment_repository
-    ] = SuccessfulAssessmentRepository
+    repository = SuccessfulAssessmentRepository()
+    app.dependency_overrides[get_postgres_repositories] = lambda: SimpleNamespace(
+        assessments=repository,
+        duplicates=repository,
+    )
     app.dependency_overrides[get_active_deployment] = active_deployment
     try:
         response = TestClient(app).get("/claims/7/assessment")
@@ -449,7 +437,11 @@ def test_get_claim_assessment_returns_postgres_result():
 
 
 def test_get_claim_assessment_returns_not_found_while_pending():
-    app.dependency_overrides[get_assessment_repository] = PendingAssessmentRepository
+    repository = PendingAssessmentRepository()
+    app.dependency_overrides[get_postgres_repositories] = lambda: SimpleNamespace(
+        assessments=repository,
+        duplicates=repository,
+    )
     app.dependency_overrides[get_active_deployment] = active_deployment
     try:
         response = TestClient(app).get("/claims/7/assessment")
@@ -529,9 +521,7 @@ def test_list_claims_reports_missing_read_configuration_as_json_503(monkeypatch)
 
     assert response.status_code == 503
     assert response.json() == {
-        "detail": (
-            "Claims registry is unavailable: SEPOLIA_RPC_URL is not configured"
-        )
+        "detail": ("Claims registry is unavailable: SEPOLIA_RPC_URL is not configured")
     }
 
 

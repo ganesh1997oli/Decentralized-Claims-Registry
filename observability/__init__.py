@@ -6,7 +6,16 @@ the Google Cloud Ops Agent forwards the resulting information. Keeping that
 boundary small also leaves local development straightforward.
 """
 
+from .logging import EventLogger, JsonLogFormatter, configure_logging, get_event_logger
 from .metrics import ListenerMetrics, ScoringMetrics
 from .shutdown import ShutdownSignal
 
-__all__ = ["ListenerMetrics", "ScoringMetrics", "ShutdownSignal"]
+__all__ = [
+    "EventLogger",
+    "JsonLogFormatter",
+    "ListenerMetrics",
+    "ScoringMetrics",
+    "ShutdownSignal",
+    "configure_logging",
+    "get_event_logger",
+]

@@ -36,8 +36,11 @@ Run from the repository root:
 ```bash
 python3 -m venv backend/.venv
 source backend/.venv/bin/activate
-pip install -r backend/requirements.txt
+python -m pip install --require-hashes -r requirements-dev.lock
 ```
+
+The development lock includes the API plus test tooling. The cloud image uses
+the exact hash-checked production graph in `requirements.lock`.
 
 ## Configure
 
@@ -134,14 +137,17 @@ uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 
 Useful local URLs:
 
-- Health check: <http://127.0.0.1:8000/health>
+- Liveness check: <http://127.0.0.1:8000/health/live>
+- Dependency readiness: <http://127.0.0.1:8000/health/ready>
 - Interactive API documentation: <http://127.0.0.1:8000/docs>
 
 ## Endpoints
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/health` | Confirms that the process is running; does not call Sepolia or Pinata |
+| `GET` | `/health` | Backward-compatible process liveness alias |
+| `GET` | `/health/live` | Confirms only that FastAPI can serve requests; never calls a dependency |
+| `GET` | `/health/ready` | Verifies insurer configuration, current PostgreSQL migrations, Pinata/signing configuration, and the selected Sepolia contract; returns 503 when unavailable |
 | `GET` | `/claims?page=1&page_size=10` | Returns current claims newest first; page size is limited to 50 |
 | `GET` | `/claims/{claim_id}/assessment` | Returns the stored XGBoost/SHAP and cross-insurer duplicate result, or 404 while pending |
 | `POST` | `/claims` | Validates, stores and anchors a synthetic motor claim |
