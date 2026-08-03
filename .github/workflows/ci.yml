@@ -28,11 +28,11 @@ jobs:
           cache-dependency-glob: "requirements*.lock"
       - name: Rebuild locks and reject dependency drift
         run: |
-          uv pip compile deploy/gcp/python-requirements.txt \
+          uv pip compile infrastructure/gcp/python-requirements.txt \
             --python-version 3.13 \
             --python-platform x86_64-manylinux_2_28 \
             --generate-hashes \
-            --custom-compile-command 'uv pip compile deploy/gcp/python-requirements.txt --python-version 3.13 --python-platform x86_64-manylinux_2_28 --generate-hashes -o requirements.lock' \
+            --custom-compile-command 'uv pip compile infrastructure/gcp/python-requirements.txt --python-version 3.13 --python-platform x86_64-manylinux_2_28 --generate-hashes -o requirements.lock' \
             -o requirements.lock
           uv pip compile requirements-dev.txt \
             --python-version 3.13 \
@@ -55,19 +55,19 @@ jobs:
           cache-dependency-path: requirements-dev.lock
       - run: python -m pip install --require-hashes -r requirements-dev.lock
       - name: Run Python lint
-        run: ruff check backend duplicates integrations listener model observability --exclude model/notebooks
+        run: ruff check apps packages --exclude packages/model/notebooks
       - name: Run isolated tests with branch coverage
         run: >-
           python -m pytest -m "not integration"
-          --cov=backend.app
-          --cov=duplicates
-          --cov=integrations.ipfs
-          --cov=integrations.kafka
-          --cov=integrations.postgres
-          --cov=listener.block_cursor
-          --cov=listener.claims_listener
-          --cov=model.xgboost_scorer
-          --cov=observability
+          --cov=apps.backend.app
+          --cov=apps.listener.block_cursor
+          --cov=apps.listener.claims_listener
+          --cov=packages.duplicates
+          --cov=packages.integrations.ipfs
+          --cov=packages.integrations.kafka
+          --cov=packages.integrations.postgres
+          --cov=packages.model.xgboost_scorer
+          --cov=packages.observability
           --cov-report=term-missing
 
   integration:
@@ -84,8 +84,8 @@ jobs:
       - run: python -m pip install --require-hashes -r requirements-dev.lock
       - name: Start isolated infrastructure
         run: |
-          docker compose -f integrations/kafka/compose.yml up -d --wait postgres kafka
-          docker compose -f integrations/kafka/compose.yml run --rm kafka-init
+          docker compose -f packages/integrations/kafka/compose.yml up -d --wait postgres kafka
+          docker compose -f packages/integrations/kafka/compose.yml run --rm kafka-init
       - name: Run infrastructure-backed tests
         env:
           TEST_DATABASE_URL: postgresql://claims:claims-local@127.0.0.1:5432/claims_registry
@@ -95,14 +95,14 @@ jobs:
         env:
           DATABASE_URL: postgresql://claims:claims-local@127.0.0.1:5432/claims_registry
         run: |
-          python -m integrations.postgres.migrations upgrade
-          python -m integrations.postgres.migrations check
+          python -m packages.integrations.postgres.migrations upgrade
+          python -m packages.integrations.postgres.migrations check
       - name: Show service logs after a failure
         if: failure()
-        run: docker compose -f integrations/kafka/compose.yml logs --no-color
+        run: docker compose -f packages/integrations/kafka/compose.yml logs --no-color
       - name: Remove test infrastructure
         if: always()
-        run: docker compose -f integrations/kafka/compose.yml down --volumes
+        run: docker compose -f packages/integrations/kafka/compose.yml down --volumes
 
   frontend:
     name: Frontend unit, build, and browser
@@ -110,14 +110,14 @@ jobs:
     timeout-minutes: 20
     defaults:
       run:
-        working-directory: frontend
+        working-directory: apps/frontend
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: apps/frontend/package-lock.json
           package-manager-cache: true
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
@@ -133,14 +133,14 @@ jobs:
     timeout-minutes: 20
     defaults:
       run:
-        working-directory: contract
+        working-directory: apps/contracts
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: contract/package-lock.json
+          cache-dependency-path: apps/contracts/package-lock.json
           package-manager-cache: true
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
@@ -158,10 +158,10 @@ jobs:
       # Placeholder values are safe here because no containers are started.
       - name: Validate the single-VM Compose model
         run: |
-          cp deploy/gcp/.env.gcp.example deploy/gcp/.env.gcp
+          cp infrastructure/gcp/.env.gcp.example infrastructure/gcp/.env.gcp
           docker compose \
-            --env-file deploy/gcp/.env.gcp \
-            --file deploy/gcp/compose.yml \
+            --env-file infrastructure/gcp/.env.gcp \
+            --file infrastructure/gcp/compose.yml \
             --profile training \
             config --quiet
 
@@ -170,14 +170,14 @@ jobs:
       - name: Validate the Compute Engine infrastructure
         run: |
           docker run --rm \
-            -v "$PWD/deploy/gcp:/workspace" \
+            -v "$PWD/infrastructure/gcp:/workspace" \
             -w /workspace/terraform \
             hashicorp/terraform:1.13.5 fmt -check -recursive
           docker run --rm \
-            -v "$PWD/deploy/gcp:/workspace" \
+            -v "$PWD/infrastructure/gcp:/workspace" \
             -w /workspace/terraform \
             hashicorp/terraform:1.13.5 init -backend=false
           docker run --rm \
-            -v "$PWD/deploy/gcp:/workspace" \
+            -v "$PWD/infrastructure/gcp:/workspace" \
             -w /workspace/terraform \
             hashicorp/terraform:1.13.5 validate

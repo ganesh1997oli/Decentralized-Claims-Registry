@@ -1,7 +1,0 @@
--r ../integrations/ipfs/requirements.txt
--r ../integrations/postgres/requirements.txt
-
-web3>=7.0,<8.0
-
-fastapi>=0.139.2,<1.0
-uvicorn[standard]>=0.35,<1.0

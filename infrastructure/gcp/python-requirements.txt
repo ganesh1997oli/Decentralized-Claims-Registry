@@ -1,0 +1,6 @@
+# This is the complete runtime used by the API, listener and scoring worker.
+# The three processes share one image so the VM builds large XGBoost and SHAP
+# dependencies once instead of keeping several almost-identical images.
+-r ../../apps/backend/requirements.txt
+-r ../../apps/listener/requirements.txt
+-r ../../packages/model/requirements.txt
