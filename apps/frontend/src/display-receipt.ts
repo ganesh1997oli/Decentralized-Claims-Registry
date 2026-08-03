@@ -1,3 +1,6 @@
+// A details card may begin with a submission receipt or with a row read from the
+// public contract. This module merges those shapes without inventing a missing
+// transaction or database assessment.
 import type {
   ClaimAssessment,
   ClaimReceipt,
@@ -18,6 +21,8 @@ export function receiptFromCurrentClaim(
   assessment: ClaimAssessment | null,
   currentReceipt?: DisplayReceipt | null,
 ): DisplayReceipt {
+  // Preserve the original submission receipt only when it belongs to this claim;
+  // selecting a historical row must never display another claim's transaction.
   const sameClaimReceipt =
     currentReceipt?.claim_id === claim.claim_id ? currentReceipt : null
 

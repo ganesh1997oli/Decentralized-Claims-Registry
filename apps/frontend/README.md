@@ -1,134 +1,110 @@
 # React frontend
 
-The frontend provides a simple interface for submitting a fictional motor-claim
-test case and reviewing claims already recorded on Sepolia. It calls FastAPI for
-every operation; it does not connect directly to a wallet, Pinata, Kafka, or the
-model. Keeping those integrations server-side is why secrets never need to enter
-browser code.
+The browser lets a researcher submit a fictional motor claim and follow its
+public anchor, screening result, and current Sepolia state. It talks only to
+FastAPI; wallet, Pinata, Kafka, model, and database access stay server-side.
 
-## What the interface shows
+## UI flow
 
-- A research test claim-submission form
-- The confirmed Sepolia transaction and block
-- The IPFS pointer and claim hash
-- A pending state while Kafka processes the anchored claim
-- The cross-insurer duplicate-review result and any matched claim IDs
-- The XGBoost probability and claim-specific SHAP indicators from PostgreSQL
-- The on-chain assessment status and transaction
-- A newest-first, paginated list of submitted claims and fraud scores
-- A selectable details view for every claim in the Sepolia claims list
+```mermaid
+flowchart LR
+    Form["Synthetic claim form"] -->|"API key kept in memory"| API["FastAPI"]
+    API --> Receipt["Anchor receipt"]
+    Receipt --> Pending["Assessment pending"]
+    Pending -->|"poll every 2 seconds"| Result["Duplicate check + score + SHAP"]
+    Result --> Dashboard["Refresh Sepolia claims"]
+    Dashboard --> Details["Open any claim"]
+```
 
-The page offers claim-list sizes of 5, 10, 25, or 50.
+The page never treats a model result as a decision. `UnderReview` and `Flagged`
+both mean a person would need to review the claim.
 
-## Source layout
+## Source map
 
-`App.tsx` is intentionally only the page composition shell. `ClaimForm` owns
-credential-in-memory form state and validation, while `ReceiptCard` and
-`ClaimsDashboard` own presentation. `useClaimsWorkspace` is the single boundary
-for cancellation, list pagination, detail loading, assessment polling, and
-receipt persistence. Shared public insurer labels and IPFS-link formatting live
-in `claim-display.ts`; no component owns authorization policy.
+| File | Owns |
+| --- | --- |
+| `src/App.tsx` | Page composition and research warnings |
+| `src/components/ClaimForm.tsx` | Form state, temporary credential, validation and submission |
+| `src/hooks/useClaimsWorkspace.ts` | Pagination, cancellation, detail loading, polling and receipt persistence |
+| `src/components/ReceiptCard.tsx` | Anchor, duplicate, score and SHAP presentation |
+| `src/components/ClaimsDashboard.tsx` | Newest-first contract list and claim selection |
+| `src/api.ts` | Fetch calls plus runtime response-shape validation |
+| `src/display-receipt.ts` | Safe merge of a browser receipt and current chain state |
+| `src/receipt-storage.ts` | Latest public submission receipt only |
 
-## Install
+## Browser data boundary
 
-Run from the repository root:
+```mermaid
+flowchart TD
+    Memory["React memory"] --> A["Form fields + insurer API key"]
+    Storage["localStorage"] --> B["Latest public receipt only"]
+    Bundle["Vite bundle"] --> C["VITE_API_BASE_URL + VITE_IPFS_GATEWAY"]
+    Never["Never in browser"] --> D["Wallet keys, Pinata JWT, HMAC keys, database credentials"]
+```
+
+The insurer credential is cleared when the form resets and is not written to
+local storage, URLs, analytics, or logs. Browser storage failures are treated as
+a lost convenience, not as an application failure.
+
+## Install and run
+
+From the repository root:
 
 ```bash
 npm --prefix apps/frontend ci
-```
 
-Use `npm --prefix apps/frontend install` instead if you intentionally need to update
-dependencies or the lock file.
-
-## Configure
-
-From the repository root, create the same local file used by the backend:
-
-```bash
 cp .env.example .env.local
 set -a
 source .env.local
 set +a
-```
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `VITE_API_BASE_URL` | `http://127.0.0.1:8000` | FastAPI base URL |
-| `VITE_IPFS_GATEWAY` | `https://gateway.pinata.cloud/ipfs` | Opens receipt CIDs in a browser |
-
-Vite variables are visible in the browser. Never add an insurer API key, wallet
-private key, Pinata JWT, claim-authorization key, or other secret to a `VITE_`
-variable.
-
-## Run locally
-
-Start the FastAPI backend first. From the repository root, load the shared file
-in this terminal and run:
-
-```bash
-set -a
-source .env.local
-set +a
 npm --prefix apps/frontend run dev -- --host 127.0.0.1
 ```
 
-Open <http://127.0.0.1:5173>.
+Start FastAPI first, then open <http://127.0.0.1:5173>.
 
-The form begins with clearly labelled synthetic values. After a successful
-submission, the receipt links to Etherscan and the configured IPFS gateway. In
-asynchronous mode it polls FastAPI for up to one minute while Kafka scores the
-claim, then displays the duplicate check, stored assessment and refreshed
-contract state.
-The form also asks for the selected synthetic insurer's API key. That value is
-sent only in `X-Insurer-API-Key`, remains in React runtime memory, and is cleared
-when the form resets. FastAPI derives the authoritative insurer from the key and
-rejects a selection that does not match. The local-only example keys are listed
-in the [backend guide](../backend/README.md#local-insurer-credentials).
-The header labels the interface **Research test data only** to make clear that
-users must enter fictional test claims; it does not describe where the research
-dataset is hosted.
+| Setting | Default | Browser-visible purpose |
+| --- | --- | --- |
+| `VITE_API_BASE_URL` | `http://127.0.0.1:8000` | FastAPI base URL |
+| `VITE_IPFS_GATEWAY` | `https://gateway.pinata.cloud/ipfs` | Opens the public CID from a receipt |
 
-The browser keeps the latest successful public receipt so its Sepolia details,
-XGBoost score, and SHAP indicators remain visible after a page refresh. A newer
-successful claim replaces it. If that browser receipt is unavailable, the page
-rebuilds the panel from the newest Sepolia claim and its FastAPI assessment.
-Browser storage contains no form fields, wallet key, or Pinata credential and
-can be cleared through the browser's site-data tools.
+Every `VITE_` value is bundled into JavaScript. Never use that prefix for a
+secret.
 
-Select any claim number in **All submitted claims** to reopen its Sepolia hash,
-IPFS pointer, on-chain score, duplicate check, model result, and SHAP indicators.
-Older claims created before the current PostgreSQL assessment history may only
-have their on-chain status and score; the page labels that limitation instead
-of inventing missing XGBoost, duplicate or SHAP details.
+## State behaviour
 
-## Verify the frontend
+- A successful submission displays the transaction, block, hash, and CID
+  immediately.
+- The workspace polls for up to one minute while the Kafka worker finishes.
+- The newest successful public receipt survives a refresh.
+- If storage is empty, the newest contract claim becomes the details view.
+- Selecting an older claim shows its chain state immediately, then adds the
+  PostgreSQL assessment if one exists.
+- Older claims may have an on-chain score without current SHAP or duplicate
+  history; the UI says that the detail is unavailable instead of inventing it.
+- In-flight list and detail requests are cancelled when dependencies change or
+  the component unmounts.
+
+## Verify
 
 ```bash
-cd frontend
-npm test
-npm run lint
-npm run build
-npx playwright install chromium
-npm run test:e2e
+npm --prefix apps/frontend test
+npm --prefix apps/frontend run lint
+npm --prefix apps/frontend run build
+npm --prefix apps/frontend exec -- playwright install chromium
+npm --prefix apps/frontend run test:e2e
 ```
 
-- `npm test` checks the backend client and response validation.
-- `npm run lint` checks the source for common mistakes.
-- `npm run build` runs TypeScript compilation and creates the production bundle.
-- `npm run test:e2e` opens the application in Chromium and verifies submission,
-  assessment polling and the review-only cross-insurer match experience.
+Vitest covers API validation, receipt merging and browser storage. Playwright
+intercepts `/api` calls and verifies submission, polling, pagination, and the
+review-only duplicate experience without contacting Sepolia.
 
-## Safety and limitations
+## Safety limits
 
-- Enter fictional test information only. Do not use real policyholder data.
-- Evidence uploads are intentionally absent while storage is public and
-  unencrypted. Hiding a CID would not make a photograph or document private.
-- The displayed XGBoost score comes from synthetic training data and must not be
-  used to decide a real claim.
-- A matching incident fingerprint is only a human-review signal; it does not
-  establish that either synthetic claim is fraudulent.
-- The dashboard reads current Sepolia state through FastAPI; it is not a
-  production search or reporting system.
+- Evidence upload is intentionally absent while IPFS is public and unencrypted.
+- The dashboard is a small direct-contract view, not a production search tool.
+- A duplicate match and XGBoost score are review signals only.
+- Use only fictional policy, claimant, and incident information.
 
-See the [backend guide](../backend/README.md) for the API setup and the
-[root project guide](../../README.md) for the complete run order.
+See the [backend guide](../backend/README.md) for local credentials and the
+[root runbook](../../README.md) for the complete process order.

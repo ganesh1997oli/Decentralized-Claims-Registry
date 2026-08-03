@@ -23,6 +23,10 @@ function CopyButton({ label, value }: { label: string; value: string }) {
   )
 }
 
+/**
+ * Present one claim across its two timelines: the immediate public anchor and
+ * the later PostgreSQL-backed screening result written back to Sepolia.
+ */
 export function ReceiptCard({ receipt }: { receipt: DisplayReceipt }) {
   const transactionUrl = receipt.transaction_hash
     ? `https://sepolia.etherscan.io/tx/${receipt.transaction_hash}`

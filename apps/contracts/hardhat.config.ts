@@ -1,3 +1,5 @@
+// Hardhat owns compilation, test networks, and deployment connectivity. Runtime
+// services select a checked-in Ignition artifact instead of importing this file.
 import hardhatToolboxViemPlugin from "@nomicfoundation/hardhat-toolbox-viem";
 import { defineConfig, configVariable } from "hardhat/config";
 

@@ -174,6 +174,7 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         );
     }
 
+    /// @notice Return the current compact public record for one claim.
     function getClaim(
         uint256 claimId
     )
@@ -202,6 +203,7 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         );
     }
 
+    /// @notice Compare supplied off-chain bytes with the permanent claim hash.
     function verifyClaimData(
         uint256 claimId,
         bytes calldata payload
@@ -211,14 +213,17 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         return keccak256(payload) == claim.claimHash;
     }
 
+    /// @notice Report whether an account may create new claim anchors.
     function isSubmitter(address account) external view returns (bool) {
         return hasRole(SUBMITTER_ROLE, account);
     }
 
+    /// @notice Report whether an account may assess claims in its insurer scope.
     function isAssessor(address account) external view returns (bool) {
         return hasRole(ASSESSOR_ROLE, account);
     }
 
+    /// @notice Return the submitter whose claims this assessor may update.
     function assessorInsurer(
         address assessor
     ) external view returns (address insurer) {
@@ -228,6 +233,7 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         return address(0);
     }
 
+    /// @notice Grant or revoke claim-submission permission.
     function setSubmitter(
         address submitter,
         bool authorized
@@ -247,6 +253,7 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         emit SubmitterUpdated(submitter, authorized);
     }
 
+    /// @notice Grant a scoped assessor or revoke its existing scope.
     function setAssessor(
         address assessor,
         address insurer,
@@ -276,6 +283,7 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         emit AssessorUpdated(assessor, insurer, authorized);
     }
 
+    /// @notice Start OpenZeppelin's delayed two-step admin transfer.
     function beginDefaultAdminTransfer(
         address newAdmin
     ) public override onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -291,6 +299,7 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         super.beginDefaultAdminTransfer(newAdmin);
     }
 
+    /// @notice Accept admin control after the configured delay has elapsed.
     function acceptDefaultAdminTransfer() public override {
         if (
             hasRole(SUBMITTER_ROLE, msg.sender) ||
@@ -313,6 +322,7 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         super.grantRole(role, account);
     }
 
+    /// @dev See grantRole: scoped roles must use the invariant-preserving APIs.
     function revokeRole(
         bytes32 role,
         address account
@@ -323,6 +333,7 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         super.revokeRole(role, account);
     }
 
+    /// @dev Final states deliberately have no outgoing transitions.
     function _isAllowedTransition(
         Status currentStatus,
         Status requestedStatus

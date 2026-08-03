@@ -1,70 +1,55 @@
 # Kafka integration
 
-This module streams verified blockchain claim events through Kafka. Kafka does
-not contain the full claim document; each message carries the blockchain and
-IPFS references needed by a downstream worker.
+Kafka separates the permanent claim anchor from slower duplicate screening and
+model work. Messages contain blockchain and IPFS references—not the full claim.
 
-## What is included
+## Event path
 
-- `events.py`: versioned event schema, configuration, producer, and consumer
-- `consumer.py`: demonstration worker that downloads the IPFS bytes and checks
-  their Keccak-256 hash
-- `scoring_worker.py`: idempotent duplicate detection, XGBoost, SHAP,
-  PostgreSQL and Sepolia workflow
-- `compose.yml`: Kafka, PostgreSQL and a Kafka dashboard for local development
-- `tests/`: isolated adapter tests and an optional live-broker smoke test
-
-The listener imports the public interface from `packages.integrations.kafka`, keeping
-broker configuration and message encoding out of the blockchain polling code.
-
-## Event flow
-
-```text
-Sepolia ClaimSubmitted
-        │
-        ▼
-blockchain listener
-        │ verify CID bytes against the on-chain hash
-        ▼
-claims.submitted.v1
-        │
-        ▼
-XGBoost scoring worker
-        │ verify CID and signed claim schema v4 authorization
-        ▼
-private incident HMAC + cross-insurer lookup
-        │
-        ▼
-XGBoost probability + local SHAP
-        │
-        ▼
-PostgreSQL assessment
-        │
-        ▼
-Sepolia assessClaim
-        ▼
-commit Kafka offset
+```mermaid
+flowchart LR
+    Chain["Confirmed ClaimSubmitted"] --> Listener["Listener verifies IPFS hash"]
+    Listener --> Topic[("claims.submitted.v1")]
+    Topic --> Worker["Scoring worker"]
+    Worker --> Verify["Reverify hash + signed insurer authorization"]
+    Verify --> Duplicate["Cross-insurer duplicate check"]
+    Duplicate --> Features["Versioned feature snapshot"]
+    Features --> Model["XGBoost + local SHAP"]
+    Model --> DB[("PostgreSQL")]
+    DB --> Write["Sepolia assessment"]
+    Write --> Commit["Commit Kafka offset"]
 ```
 
-The listener advances its block checkpoint only after Kafka acknowledges every
-event. The worker commits its offset only after PostgreSQL and Sepolia agree.
-PostgreSQL treats the deterministic `event_id` as a unique idempotency key. A
-chain read also makes a replay safe if the process stopped after the transaction
-but before updating PostgreSQL.
+## Delivery guarantees
 
-## Install
-
-Use the same Python environment as the listener:
-
-```bash
-source apps/backend/.venv/bin/activate
-pip install -r apps/listener/requirements.txt -r packages/model/requirements.txt \
-  -r apps/backend/requirements.txt
+```mermaid
+flowchart TD
+    Event["Blockchain log"] --> ID["event_id = chain + tx hash + log index"]
+    ID --> Publish{"Kafka acknowledged?"}
+    Publish -->|No| SameBlock["Checkpoint stays; publish again"]
+    Publish -->|Yes| Handle{"Worker completed?"}
+    Handle -->|No| SameOffset["Offset stays; handle again"]
+    Handle -->|Yes| Done["Commit offset"]
+    SameOffset --> Existing{"Existing database / chain state?"}
+    Existing -->|Completed| Done
+    Existing -->|Partial| Repair["Resume without changing saved score"]
 ```
 
-Docker Desktop is required for local Kafka and PostgreSQL.
+This is at-least-once delivery with application-level idempotency. PostgreSQL
+uses the deterministic event ID and chain/contract/claim identity as uniqueness
+boundaries. A replay after the chain write checks the existing status before
+submitting another transaction.
 
-## Start the local broker
+## Files
+
+| File | Responsibility |
+| --- | --- |
+| `events.py` | Versioned schema, configuration, producer and manual-commit consumer |
+| `scoring_worker.py` | Complete idempotent screening and write-back handler |
+| `consumer.py` | Small verification-only diagnostic consumer |
+| `compose.yml` | Local Kafka, PostgreSQL and Kafka UI |
+| `tests/` | Schema, adapter, listener bridge and scoring integration tests |
+
+## Start local services
 
 From the repository root:
 
@@ -73,27 +58,8 @@ docker compose -f packages/integrations/kafka/compose.yml up -d
 docker compose -f packages/integrations/kafka/compose.yml ps
 ```
 
-## View Kafka in the browser
-
-Open `http://127.0.0.1:8081` after the Compose services have started. The
-dashboard connects to the local cluster as `claims-local`.
-
-To inspect claim events:
-
-1. Open **Topics**.
-2. Select `claims.submitted.v1`.
-3. Open the **Messages** tab.
-4. Select all partitions and load the messages.
-
-The dashboard also shows partitions, offsets, consumer groups, and consumer
-lag. A lag of zero for `claims-registry-scorer-v1` means that the scoring worker
-has processed every available event.
-
-Kafka stores the events in the `claims-kafka-data` Docker volume. The dashboard
-only reads and displays those events; it does not create a second copy.
-
-The initialization container creates `claims.submitted.v1` with three partitions
-and seven-day retention. Confirm that it exists:
+The initialization service creates `claims.submitted.v1` with three partitions
+and seven-day retention. Kafka UI is available at <http://127.0.0.1:8081>.
 
 ```bash
 docker compose -f packages/integrations/kafka/compose.yml exec kafka \
@@ -102,83 +68,52 @@ docker compose -f packages/integrations/kafka/compose.yml exec kafka \
   --describe --topic claims.submitted.v1
 ```
 
-## Configure Kafka
-
-Create the one shared local environment file from the repository root:
+## Configure and run
 
 ```bash
 cp .env.example .env.local
+set -a
+source .env.local
+set +a
+
+python -m packages.integrations.postgres.migrations upgrade
+python -m packages.integrations.postgres.migrations check
 ```
 
-The example already contains the settings used by the local broker:
+The local example uses:
 
 ```dotenv
 KAFKA_ENABLED="true"
 KAFKA_BOOTSTRAP_SERVERS="127.0.0.1:9092"
 KAFKA_CLAIM_SUBMITTED_TOPIC="claims.submitted.v1"
+KAFKA_CONSUMER_GROUP_ID="claims-registry-scorer-v1"
 KAFKA_SECURITY_PROTOCOL="PLAINTEXT"
 ```
 
-Load the root file before starting the scoring worker:
+Start the worker and listener in separate configured terminals:
 
 ```bash
-set -a
-source .env.local
-set +a
-```
-
-Additional variables support the client ID, consumer group, delivery timeout,
-poll interval, and TLS/SASL credentials. Their names and safe local defaults are
-documented in the root `.env.example`.
-
-## Run the event flow
-
-Start both processes before submitting a new fictional test claim.
-
-Terminal A, scoring worker:
-
-```bash
-source apps/backend/.venv/bin/activate
-set -a
-source .env.local
-set +a
 python -m packages.integrations.kafka.scoring_worker
-```
-
-Terminal B:
-
-```bash
-source apps/backend/.venv/bin/activate
-set -a
-source .env.local
-set +a
 python -m apps.listener.claims_listener
 ```
 
-Submit through the React form or authenticated `POST /claims`. The worker
-verifies both the document hash and the gateway HMAC authorization before it
-trusts `insurerId`, performs duplicate screening, saves a versioned PostgreSQL
-feature snapshot, runs XGBoost/SHAP, and writes the assessment. It receives
-`CLAIM_AUTHORIZATION_KEY`, but it does not receive raw insurer API keys or their
-digests. A successful flow prints `KafkaPublished` in the listener and
-`ClaimAssessed` in the worker; the latter includes
-`features=claim-processing-v1`.
+The worker needs the assessor wallet, IPFS gateway, PostgreSQL, model artifact,
+`CLAIM_AUTHORIZATION_KEY`, and `DUPLICATE_FINGERPRINT_KEY`. It does not receive
+raw insurer API keys, their digests, the submitter wallet, or Pinata JWT.
 
-The older verification-only consumer remains useful for inspecting events. Do
-not run it with the scorer's consumer-group ID because members of the same Kafka
-group divide messages between themselves.
+Do not run `consumer.py` with the scorer's group ID: consumers in one Kafka
+group divide partitions and would take messages away from the scoring worker.
 
 ## Test
 
-Run the isolated tests without a broker:
+Isolated tests:
 
 ```bash
 source apps/backend/.venv/bin/activate
-python -m pytest packages/integrations/kafka/tests packages/integrations/postgres/tests -q
+python -m pytest packages/integrations/kafka/tests -m "not integration" -q
 ```
 
-Run all broker- and database-backed integration tests after the local services
-are healthy:
+Broker- and database-backed tests:
 
 ```bash
 TEST_DATABASE_URL=postgresql://claims:claims-local@127.0.0.1:5432/claims_registry \
@@ -186,31 +121,22 @@ TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
   python -m pytest -m integration
 ```
 
-The integration suite covers three distinct boundaries:
+The integration suite exercises a schema round trip, the real listener-to-topic
+bridge, scoring persistence, replay recovery, feature history, and concurrent
+cross-insurer matching.
 
-- a Kafka producer/consumer schema round trip;
-- the Week 5 bridge from a simulated confirmed blockchain log, through the real
-  `ClaimEventProcessor`, into a real Kafka topic; and
-- the downstream Kafka/PostgreSQL scoring and cross-insurer matching workflow.
-
-The listener bridge keeps Sepolia and IPFS deterministic so CI does not depend
-on public services, but it uses the production listener processor, publisher,
-message schema and consumer unchanged.
-
-## Stop local infrastructure
+## Stop
 
 ```bash
 docker compose -f packages/integrations/kafka/compose.yml down
 ```
 
-Add `--volumes` only when you deliberately want to delete the local Kafka data.
+Add `--volumes` only when you intentionally want to remove local Kafka and
+PostgreSQL data.
 
-## Production considerations
+The local single broker uses plaintext inside the development boundary. A
+production design needs managed or replicated brokers, TLS/SASL, monitoring,
+retry policy, and a dead-letter workflow.
 
-The Compose file is a development environment, not a production cluster. A real
-deployment needs a managed or multi-broker setup, TLS/SASL, secret-managed
-credentials, replication, monitoring, alerting, retry handling, a dead-letter
-strategy, and idempotent persistence of processed events.
-
-See the [listener guide](../../../apps/listener/README.md) for checkpoint behaviour and
-the [root project guide](../../../README.md) for the complete application flow.
+See the [listener guide](../../../apps/listener/README.md) and the
+[PostgreSQL guide](../postgres/README.md).

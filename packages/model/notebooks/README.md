@@ -1,23 +1,37 @@
 # Research notebooks
 
-These notebooks sit on top of the tested Python pipeline:
+The notebooks are a visual route through the tested model pipeline, not a
+second implementation.
 
-1. `01_dataset_exploration.ipynb` checks the dataset, target balance, selected
-   features and chronological split.
-2. `02_xgboost_and_shap.ipynb` trains the baseline and XGBoost models, compares
-   their test metrics and creates a SHAP summary.
+```mermaid
+flowchart LR
+    N1["01 Dataset exploration"] -->|"quality, balance, time split"| Pipeline["research_pipeline.py"]
+    Pipeline --> N2["02 XGBoost and SHAP"]
+    N2 --> Output["metrics + explanation charts"]
+```
 
-The notebooks work locally and in Google Colab. In Colab, the setup cell clones
-the repository and installs the research requirements. Locally, start Jupyter
-from the repository root:
+| Notebook | Use it to inspect |
+| --- | --- |
+| `01_dataset_exploration.ipynb` | Required columns, target balance, selected features and chronological split |
+| `02_xgboost_and_shap.ipynb` | Baseline comparison, XGBoost metrics and global SHAP behaviour |
+
+## Run locally
+
+From the repository root:
 
 ```bash
 source apps/backend/.venv/bin/activate
-pip install jupyterlab
+python -m pip install jupyterlab
 jupyter lab packages/model/notebooks
 ```
 
-Run the cells in order. Generated data and model artifacts remain ignored by
-Git. The source notebooks are committed without execution output so their
-results can always be reproduced from the pinned dataset.
+Run cells in order. The notebooks are committed without outputs; downloaded
+data, trained artifacts, and generated charts remain ignored and reproducible
+from the pinned dataset.
 
+The setup cells also support Google Colab. Review any clone and install command
+before running it in a hosted notebook.
+
+All figures describe synthetic research data only. See the
+[model guide](../README.md) for the serving boundary and [RESULTS.md](../RESULTS.md)
+for the checked-in evaluation summary.

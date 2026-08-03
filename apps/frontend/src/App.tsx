@@ -1,3 +1,5 @@
+// Page composition stays here; request coordination and domain-specific UI live
+// in the workspace hook and focused components below this boundary.
 import { ClaimForm } from './components/ClaimForm.tsx'
 import { ClaimsDashboard } from './components/ClaimsDashboard.tsx'
 import { ReceiptCard } from './components/ReceiptCard.tsx'

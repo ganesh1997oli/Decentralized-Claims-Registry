@@ -1,3 +1,6 @@
+// Typed boundary between the browser and FastAPI. TypeScript disappears in the
+// built application, so every untrusted JSON response is checked again before
+// React is allowed to render or persist it.
 export type ClaimPayload = {
   insurerId: string
   claimReference: string
