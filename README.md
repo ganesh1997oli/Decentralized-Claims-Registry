@@ -69,18 +69,34 @@ React ──► FastAPI ──► IPFS + Sepolia claim anchor
 
 ## Project structure
 
+The repository is organized as a monorepo. Deployable processes live in
+`apps/`, reusable Python modules and external-system adapters live in
+`packages/`, and environment-specific deployment code lives in
+`infrastructure/`:
+
+```text
+.
+├── apps/             # API, web UI, listener, and smart contracts
+├── packages/         # Shared Python modules and external adapters
+├── infrastructure/   # Google Cloud, Docker, Terraform, and monitoring
+├── docs/             # Dissertation and project documentation
+└── .github/           # Continuous-integration workflows
+```
+
 | Directory | Responsibility | Documentation |
 | --- | --- | --- |
-| `contract/` | Solidity contract, tests and Ignition deployments | [Contract guide](contract/README.md) |
-| `backend/` | FastAPI validation, scoring, IPFS and Sepolia workflow | [Backend guide](backend/README.md) |
-| `frontend/` | React claim form, receipt and claims dashboard | [Frontend guide](frontend/README.md) |
-| `duplicates/` | Private cross-insurer incident fingerprinting | This guide |
-| `model/` | XGBoost/SHAP training, evaluation, and scoring | [Model guide](model/README.md) |
-| `listener/` | Blockchain event polling, verification and checkpoints | [Listener guide](listener/README.md) |
-| `integrations/ipfs/` | Shared Pinata and IPFS adapter | [IPFS guide](integrations/ipfs/README.md) |
-| `integrations/kafka/` | Kafka messages, producer, consumer and local broker | [Kafka guide](integrations/kafka/README.md) |
-| `integrations/postgres/` | Versioned feature, duplicate, and assessment storage | [PostgreSQL guide](integrations/postgres/README.md) |
-| `deploy/gcp/` | Single-VM Google Cloud research deployment and monitoring | [Google Cloud guide](deploy/gcp/README.md) |
+| `apps/backend/` | FastAPI validation, scoring, IPFS and Sepolia workflow | [Backend guide](apps/backend/README.md) |
+| `apps/frontend/` | React claim form, receipt and claims dashboard | [Frontend guide](apps/frontend/README.md) |
+| `apps/listener/` | Blockchain event polling, verification and checkpoints | [Listener guide](apps/listener/README.md) |
+| `apps/contracts/` | Solidity contract, tests and Ignition deployments | [Contract guide](apps/contracts/README.md) |
+| `packages/duplicates/` | Private cross-insurer incident fingerprinting | This guide |
+| `packages/model/` | XGBoost/SHAP training, evaluation, and scoring | [Model guide](packages/model/README.md) |
+| `packages/integrations/ipfs/` | Shared Pinata and IPFS adapter | [IPFS guide](packages/integrations/ipfs/README.md) |
+| `packages/integrations/kafka/` | Kafka messages, producer, consumer and local broker | [Kafka guide](packages/integrations/kafka/README.md) |
+| `packages/integrations/postgres/` | Versioned feature, duplicate, and assessment storage | [PostgreSQL guide](packages/integrations/postgres/README.md) |
+| `packages/observability/` | Structured logging, Prometheus metrics, and shutdown handling | This guide |
+| `infrastructure/gcp/` | Single-VM Google Cloud research deployment and monitoring | [Google Cloud guide](infrastructure/gcp/README.md) |
+| `docs/` | Dissertation and supporting documents | — |
 
 ## Hardened Sepolia deployment
 
@@ -121,15 +137,15 @@ Unit and integration tests do not require a live deployment. Running the
 end-to-end flow uses the checked-in hardened deployment by default; the supplied
 submitter and assessor wallets must already have their intended roles on that
 contract. To use a different hardened deployment, check its Ignition artifact
-into `contract/ignition/deployments/` and select its directory name explicitly.
+into `apps/contracts/ignition/deployments/` and select its directory name explicitly.
 
 Run the following commands from the repository root.
 
 ### 1. Create the Python environment
 
 ```bash
-python3 -m venv backend/.venv
-source backend/.venv/bin/activate
+python3 -m venv apps/backend/.venv
+source apps/backend/.venv/bin/activate
 python -m pip install --require-hashes -r requirements-dev.lock
 ```
 
@@ -146,7 +162,7 @@ brew install libomp
 ### 2. Install the frontend
 
 ```bash
-npm --prefix frontend ci
+npm --prefix apps/frontend ci
 ```
 
 `npm ci` uses the committed lock file, which makes a clean installation more
@@ -166,7 +182,7 @@ Open `.env.local` and add:
 
 The example also provides three explicitly fictional local insurer API keys,
 their digest-only server records, and a local claim-authorization key. See the
-[backend credential guide](backend/README.md#local-insurer-credentials) before
+[backend credential guide](apps/backend/README.md#local-insurer-credentials) before
 replacing them for a hosted run. The raw insurer keys belong with the submitting
 operators; never add them to server environment variables or `VITE_` values.
 
@@ -188,13 +204,13 @@ than continuing to use it.
 On a fresh clone, create the reviewed artifact with:
 
 ```bash
-source backend/.venv/bin/activate
-python -m model.train_xgboost --download
+source apps/backend/.venv/bin/activate
+python -m packages.model.train_xgboost --download
 ```
 
 This command downloads the pinned Hugging Face dataset revision, verifies its
 SHA-256 digest, trains the pipeline, and writes the model, metadata, and SHAP
-summary under `model/artifacts/xgboost-african-motor-v1/`.
+summary under `packages/model/artifacts/xgboost-african-motor-v1/`.
 
 Confirm that the application can load it:
 
@@ -202,7 +218,7 @@ Confirm that the application can load it:
 set -a
 source .env.local
 set +a
-python -c "from model.xgboost_scorer import XGBoostFraudScorer; m=XGBoostFraudScorer.from_env(); print('Model loaded:', m.model_version); print('Threshold:', m.threshold)"
+python -c "from packages.model.xgboost_scorer import XGBoostFraudScorer; m=XGBoostFraudScorer.from_env(); print('Model loaded:', m.model_version); print('Threshold:', m.threshold)"
 ```
 
 The expected model is `african-motor-xgboost-v1`. The current reviewed threshold
@@ -218,8 +234,8 @@ separate terminal for each process makes failures much easier to identify.
 Start Docker Desktop, then run:
 
 ```bash
-docker compose -f integrations/kafka/compose.yml up -d
-docker compose -f integrations/kafka/compose.yml ps
+docker compose -f packages/integrations/kafka/compose.yml up -d
+docker compose -f packages/integrations/kafka/compose.yml ps
 ```
 
 Wait until Kafka and PostgreSQL report healthy. The optional Kafka dashboard is
@@ -232,8 +248,8 @@ application process:
 set -a
 source .env.local
 set +a
-python -m integrations.postgres.migrations upgrade
-python -m integrations.postgres.migrations check
+python -m packages.integrations.postgres.migrations upgrade
+python -m packages.integrations.postgres.migrations check
 ```
 
 The command records a SHA-256 checksum for each migration and refuses unknown
@@ -243,11 +259,11 @@ one-shot prerequisite for FastAPI and the scoring worker.
 ### 2. Start FastAPI — terminal A
 
 ```bash
-source backend/.venv/bin/activate
+source apps/backend/.venv/bin/activate
 set -a
 source .env.local
 set +a
-uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+uvicorn apps.backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Confirm process liveness at <http://127.0.0.1:8000/health/live> and dependency
@@ -261,7 +277,7 @@ means the process is alive but should not receive claim traffic.
 set -a
 source .env.local
 set +a
-npm --prefix frontend run dev -- --host 127.0.0.1
+npm --prefix apps/frontend run dev -- --host 127.0.0.1
 ```
 
 Open <http://127.0.0.1:5173>. The browser talks only to FastAPI; it never
@@ -272,11 +288,11 @@ in the page's runtime memory and is cleared when the form resets.
 ### 4. Start the blockchain listener — terminal C
 
 ```bash
-source backend/.venv/bin/activate
+source apps/backend/.venv/bin/activate
 set -a
 source .env.local
 set +a
-python listener/claims_listener.py
+python -m apps.listener.claims_listener
 ```
 
 A healthy listener logs the contract address, Kafka topic, and checkpoint as
@@ -286,11 +302,11 @@ The checkpoint lets it resume after a restart without beginning from block zero.
 ### 5. Start the scoring worker — terminal D
 
 ```bash
-source backend/.venv/bin/activate
+source apps/backend/.venv/bin/activate
 set -a
 source .env.local
 set +a
-python -m integrations.kafka.scoring_worker
+python -m packages.integrations.kafka.scoring_worker
 ```
 
 The first import may build a Matplotlib font cache; that is normal. A healthy
@@ -322,42 +338,40 @@ After the first-time installation, run the checks from the repository root:
 
 ```bash
 # Python unit tests and the enforced branch-coverage threshold
-source backend/.venv/bin/activate
+source apps/backend/.venv/bin/activate
 python -m pip install --require-hashes -r requirements-dev.lock
-ruff check backend duplicates integrations listener model observability \
-  --exclude model/notebooks
+ruff check apps packages \
+  --exclude packages/model/notebooks
 python -m pytest -m "not integration" \
-  --cov=backend.app --cov=duplicates \
-  --cov=integrations.ipfs --cov=integrations.kafka \
-  --cov=integrations.postgres --cov=listener.block_cursor \
-  --cov=listener.claims_listener \
-  --cov=model.xgboost_scorer --cov-report=term-missing
+  --cov=apps.backend.app --cov=packages.duplicates \
+  --cov=packages.integrations.ipfs --cov=packages.integrations.kafka \
+  --cov=packages.integrations.postgres --cov=apps.listener.block_cursor \
+  --cov=apps.listener.claims_listener \
+  --cov=packages.model.xgboost_scorer --cov-report=term-missing
 
 # Smart contract
-cd contract
-npm ci
-npx hardhat test
+npm --prefix apps/contracts ci
+npm --prefix apps/contracts exec -- hardhat test
 
 # Frontend
-cd ../frontend
-npm ci
-npm test
-npm run lint
-npm run build
-npx playwright install chromium
-npm run test:e2e
+npm --prefix apps/frontend ci
+npm --prefix apps/frontend test
+npm --prefix apps/frontend run lint
+npm --prefix apps/frontend run build
+npm --prefix apps/frontend exec -- playwright install chromium
+npm --prefix apps/frontend run test:e2e
 ```
 
 The infrastructure-backed suite uses disposable PostgreSQL schemas and isolated
 Kafka topics. Start the local services, then run:
 
 ```bash
-docker compose -f integrations/kafka/compose.yml up -d --wait postgres kafka
-docker compose -f integrations/kafka/compose.yml run --rm kafka-init
+docker compose -f packages/integrations/kafka/compose.yml up -d --wait postgres kafka
+docker compose -f packages/integrations/kafka/compose.yml run --rm kafka-init
 
 TEST_DATABASE_URL=postgresql://claims:claims-local@127.0.0.1:5432/claims_registry \
 TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
-  backend/.venv/bin/python -m pytest -m integration
+  apps/backend/.venv/bin/python -m pytest -m integration
 ```
 
 GitHub Actions runs dependency-lock drift, Python coverage, infrastructure
@@ -458,7 +472,7 @@ Kafka is still starting its internal coordinator. Wait a few seconds and leave
 the process running. If it continues, check:
 
 ```bash
-docker compose -f integrations/kafka/compose.yml ps
+docker compose -f packages/integrations/kafka/compose.yml ps
 ```
 
 ### The worker fails on an older `schemaVersion`
@@ -471,7 +485,7 @@ Stop the worker and, only if those old local test messages are no longer needed,
 move this development consumer group to the latest offsets:
 
 ```bash
-docker compose -f integrations/kafka/compose.yml exec kafka \
+docker compose -f packages/integrations/kafka/compose.yml exec kafka \
   /opt/kafka/bin/kafka-consumer-groups.sh \
   --bootstrap-server localhost:9092 \
   --group claims-registry-scorer-v1 \
@@ -486,8 +500,8 @@ quarantine incompatible messages in a dead-letter workflow instead.
 
 ### A claim remains `Submitted`
 
-Check that both `listener/claims_listener.py` and
-`integrations.kafka/scoring_worker.py` are running. Then confirm Kafka consumer
+Check that both `apps/listener/claims_listener.py` and
+`packages/integrations/kafka/scoring_worker.py` are running. Then confirm Kafka consumer
 lag in <http://127.0.0.1:8081>.
 
 ### Every new claim is `UnderReview`
@@ -511,7 +525,7 @@ Then restart the Python process.
 Stop each foreground process with `Ctrl+C`, then stop Docker services:
 
 ```bash
-docker compose -f integrations/kafka/compose.yml down
+docker compose -f packages/integrations/kafka/compose.yml down
 ```
 
 Do not add `--volumes` unless you deliberately want to delete local Kafka

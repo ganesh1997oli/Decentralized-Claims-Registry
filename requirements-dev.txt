@@ -1,6 +1,6 @@
--r backend/requirements.txt
--r listener/requirements.txt
--r model/requirements.txt
+-r apps/backend/requirements.txt
+-r apps/listener/requirements.txt
+-r packages/model/requirements.txt
 
 # Test-only HTTP client and runner stay out of the production container.
 httpx2>=2.0,<3.0

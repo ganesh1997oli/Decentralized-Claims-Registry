@@ -8,7 +8,7 @@ coverage-html/
 .env
 .env.*
 !.env.example
-!deploy/gcp/.env.gcp.example
+!infrastructure/gcp/.env.gcp.example
 
 # Terraform state can contain infrastructure details and is specific to one
 # Google Cloud project. Keep only the human-readable example variables in Git.
@@ -20,4 +20,11 @@ coverage-html/
 
 # Evidence bundles contain run-specific host names and transaction identifiers.
 # Review them before deliberately copying selected results into the dissertation.
-deploy/gcp/evidence/
+infrastructure/gcp/evidence/
+
+# macOS Finder metadata is local machine clutter, not project source.
+.DS_Store
+**/.DS_Store
+
+# Microsoft Word creates this lock file while a document is open.
+~$*.docx

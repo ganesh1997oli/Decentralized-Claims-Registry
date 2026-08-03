@@ -1,0 +1,325 @@
+# One-VM research deployment for the dissertation.
+#
+# This intentionally favours a reproducible, affordable demonstration over high
+# availability. Kafka and PostgreSQL each have one node and must not be described
+# as a production cluster.
+name: ${COMPOSE_PROJECT_NAME:-decentralized-claims-cloud}
+
+x-json-logging: &json-logging
+  # Docker stores bounded JSON log files. The Google Ops Agent reads these files
+  # and sends them to Cloud Logging without allowing logs to fill the VM disk.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# These maps make each process receive only the settings it actually uses.
+# Keeping them separate is a simple form of least privilege even on one VM.
+x-chain-read-environment: &chain-read-environment
+  SEPOLIA_RPC_URL: ${SEPOLIA_RPC_URL:?Set SEPOLIA_RPC_URL in .env.gcp}
+  CLAIMS_DEPLOYMENT_ID: ${CLAIMS_DEPLOYMENT_ID:?Set CLAIMS_DEPLOYMENT_ID in .env.gcp}
+  RECEIPT_TIMEOUT: ${RECEIPT_TIMEOUT:-180}
+
+x-kafka-environment: &kafka-environment
+  KAFKA_ENABLED: ${KAFKA_ENABLED:-true}
+  KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+  KAFKA_CLAIM_SUBMITTED_TOPIC: ${KAFKA_CLAIM_SUBMITTED_TOPIC:-claims.submitted.v1}
+  KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-claims-registry-cloud}
+  KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID:-claims-registry-scorer-v1}
+  KAFKA_DELIVERY_TIMEOUT_MS: ${KAFKA_DELIVERY_TIMEOUT_MS:-30000}
+  KAFKA_CONSUMER_POLL_SECONDS: ${KAFKA_CONSUMER_POLL_SECONDS:-1}
+  KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
+  KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM:-}
+  KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME:-}
+  KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD:-}
+
+x-python-service: &python-service
+  image: decentralized-claims-app:local
+  build:
+    context: ../..
+    dockerfile: infrastructure/gcp/Dockerfile.app
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  logging: *json-logging
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: claims_registry
+      POSTGRES_USER: claims
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.gcp}
+    volumes:
+      - claims-postgres-data:/var/lib/postgresql/data
+    # The port is useful for VM-local troubleshooting but cannot be reached from
+    # another computer. Application containers use postgres:5432 internally.
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claims -d claims_registry"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    logging: *json-logging
+
+  kafka:
+    image: apache/kafka:4.2.0
+    restart: unless-stopped
+    environment:
+      # KRaft combines one broker and one controller for this research VM.
+      # Production would use replicated brokers in separate failure zones.
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_LISTENERS: "CONTROLLER://:29093,PLAINTEXT://:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: "1"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx1g"
+      CLUSTER_ID: "4L6g3nShT-eMCtK--X86sw"
+    volumes:
+      - claims-kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    logging: *json-logging
+
+  kafka-init:
+    image: apache/kafka:4.2.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:9092 \
+          --create \
+          --if-not-exists \
+          --topic claims.submitted.v1 \
+          --partitions 3 \
+          --replication-factor 1 \
+          --config cleanup.policy=delete \
+          --config retention.ms=604800000
+    logging: *json-logging
+
+  # A one-off root container gives the non-root listener ownership of its named
+  # volume. It exits immediately and never has network access.
+  listener-state-init:
+    image: alpine:3.22
+    restart: "no"
+    network_mode: none
+    command: ["sh", "-c", "chown -R 10001:10001 /state"]
+    volumes:
+      - claims-listener-state:/state
+    logging: *json-logging
+
+  # Training is an explicit profile because it should happen only when a person
+  # intends to create a reviewed artifact, not during every normal deployment.
+  model-artifact-init:
+    image: alpine:3.22
+    profiles: ["training"]
+    restart: "no"
+    network_mode: none
+    command: ["sh", "-c", "chown -R 10001:10001 /model"]
+    volumes:
+      - "${XGBOOST_MODEL_HOST_DIR:?Set XGBOOST_MODEL_HOST_DIR in .env.gcp}:/model"
+    logging: *json-logging
+
+  model-trainer:
+    # This service deliberately does not read .env.gcp: model training needs no
+    # wallet, Pinata token, database password or duplicate-fingerprint key.
+    image: decentralized-claims-app:local
+    build:
+      context: ../..
+      dockerfile: infrastructure/gcp/Dockerfile.app
+    profiles: ["training"]
+    restart: "no"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - python
+      - -m
+      - packages.model.train_xgboost
+      - --download
+      - --output-dir
+      - /opt/claims-model
+    depends_on:
+      model-artifact-init:
+        condition: service_completed_successfully
+    volumes:
+      - "${XGBOOST_MODEL_HOST_DIR:?Set XGBOOST_MODEL_HOST_DIR in .env.gcp}:/opt/claims-model"
+    logging: *json-logging
+
+  database-migrate:
+    <<: *python-service
+    # Schema changes run once, before any process can read or write claim data.
+    # Keeping DDL out of request and Kafka paths avoids startup races and lets a
+    # deployment fail without partially starting the application.
+    restart: "no"
+    command:
+      - python
+      - -m
+      - packages.integrations.postgres.migrations
+      - upgrade
+    environment:
+      DATABASE_URL: "postgresql://claims:${POSTGRES_PASSWORD}@postgres:5432/claims_registry"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    <<: *python-service
+    command:
+      - uvicorn
+      - apps.backend.app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+    environment:
+      <<: *chain-read-environment
+      # Only the API uploads new claim documents, so only this service receives
+      # the Pinata token.
+      SEPOLIA_SUBMITTER_PRIVATE_KEY: ${SEPOLIA_SUBMITTER_PRIVATE_KEY:?Set SEPOLIA_SUBMITTER_PRIVATE_KEY in .env.gcp}
+      PINATA_JWT: ${PINATA_JWT:?Set PINATA_JWT in .env.gcp}
+      IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:?Set FRONTEND_ORIGINS in .env.gcp}
+      INSURER_CREDENTIALS_JSON: ${INSURER_CREDENTIALS_JSON:?Set INSURER_CREDENTIALS_JSON in .env.gcp}
+      INSURER_RATE_LIMIT_PER_MINUTE: ${INSURER_RATE_LIMIT_PER_MINUTE:-5}
+      IP_RATE_LIMIT_PER_MINUTE: ${IP_RATE_LIMIT_PER_MINUTE:-20}
+      MAX_CLAIM_BODY_BYTES: ${MAX_CLAIM_BODY_BYTES:-16384}
+      CLAIM_AUTHORIZATION_KEY: ${CLAIM_AUTHORIZATION_KEY:?Set CLAIM_AUTHORIZATION_KEY in .env.gcp}
+      DATABASE_URL: "postgresql://claims:${POSTGRES_PASSWORD}@postgres:5432/claims_registry"
+    depends_on:
+      database-migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=10)"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    stop_grace_period: 240s
+
+  listener:
+    <<: *python-service
+    command: ["python", "-m", "apps.listener.claims_listener"]
+    environment:
+      <<: [*chain-read-environment, *kafka-environment]
+      # The listener verifies public IPFS bytes and publishes Kafka events. It
+      # cannot submit transactions because it receives no wallet private key.
+      IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
+      LISTENER_STATE_DIR: ${LISTENER_STATE_DIR:-/var/lib/claims-listener}
+      LISTENER_START_BLOCK: ${LISTENER_START_BLOCK:-}
+      POLL_INTERVAL: ${POLL_INTERVAL:-5}
+      CONFIRMATION_BLOCKS: ${CONFIRMATION_BLOCKS:-2}
+      MAX_BLOCK_RANGE: ${MAX_BLOCK_RANGE:-50}
+      METRICS_PORT: "9101"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      listener-state-init:
+        condition: service_completed_successfully
+    volumes:
+      - claims-listener-state:/var/lib/claims-listener
+    ports:
+      - "127.0.0.1:9101:9101"
+    stop_grace_period: 30s
+
+  scoring-worker:
+    <<: *python-service
+    command: ["python", "-m", "packages.integrations.kafka.scoring_worker"]
+    environment:
+      <<: [*chain-read-environment, *kafka-environment]
+      SEPOLIA_ASSESSOR_PRIVATE_KEY: ${SEPOLIA_ASSESSOR_PRIVATE_KEY:?Set SEPOLIA_ASSESSOR_PRIVATE_KEY in .env.gcp}
+      IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
+      DUPLICATE_FINGERPRINT_KEY: ${DUPLICATE_FINGERPRINT_KEY:?Set DUPLICATE_FINGERPRINT_KEY in .env.gcp}
+      CLAIM_AUTHORIZATION_KEY: ${CLAIM_AUTHORIZATION_KEY:?Set CLAIM_AUTHORIZATION_KEY in .env.gcp}
+      DATABASE_URL: "postgresql://claims:${POSTGRES_PASSWORD}@postgres:5432/claims_registry"
+      XGBOOST_MODEL_DIR: ${XGBOOST_MODEL_DIR:-/opt/claims-model}
+      XGBOOST_MODEL_SHA256: ${XGBOOST_MODEL_SHA256:-}
+      METRICS_PORT: "9102"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      database-migrate:
+        condition: service_completed_successfully
+    volumes:
+      # The model directory is never writable from inside the worker. This keeps
+      # a reviewed artifact unchanged throughout an experimental run.
+      - "${XGBOOST_MODEL_HOST_DIR:?Set XGBOOST_MODEL_HOST_DIR in .env.gcp}:/opt/claims-model:ro"
+    ports:
+      - "127.0.0.1:9102:9102"
+    stop_grace_period: 240s
+
+  # kafka-exporter translates broker offsets and consumer-group lag into a small
+  # Prometheus endpoint. Only the VM's Ops Agent can reach the bound host port.
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.9.0
+    restart: unless-stopped
+    command:
+      - --kafka.server=kafka:9092
+      - --group.filter=claims-registry-scorer-v1
+      - --topic.filter=claims.submitted.v1
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:9308:9308"
+    logging: *json-logging
+
+  frontend:
+    image: decentralized-claims-frontend:local
+    build:
+      context: ../..
+      dockerfile: infrastructure/gcp/Dockerfile.frontend
+      args:
+        VITE_API_BASE_URL: /api
+        VITE_IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-80}:8080"
+    security_opt:
+      - no-new-privileges:true
+    logging: *json-logging
+
+volumes:
+  claims-postgres-data:
+  claims-kafka-data:
+  claims-listener-state:
