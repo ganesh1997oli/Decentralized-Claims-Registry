@@ -289,7 +289,7 @@ Confirm in the console that the VM and boot disk are gone.
 | Symptom | First check |
 | --- | --- |
 | Worker restarts | Model files/checksum, database URL, assessor role, RPC availability |
-| Listener misses history | Checkpoint path and intentional `LISTENER_START_BLOCK` |
+| Listener misses history | PostgreSQL checkpoint and deployment `LISTENER_START_BLOCK` |
 | Metrics stay local | Ports `9101`, `9102`, `9308`, then Ops Agent status/logs |
 | Browser unavailable | Frontend health, port 80 firewall, current external IP |
 | API alive but not ready | `/health/ready` and `database-migrate` result |

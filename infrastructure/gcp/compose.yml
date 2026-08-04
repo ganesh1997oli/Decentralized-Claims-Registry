@@ -124,8 +124,8 @@ services:
           --config retention.ms=604800000
     logging: *json-logging
 
-  # A one-off root container gives the non-root listener ownership of its named
-  # volume. It exits immediately and never has network access.
+  # A one-off root container gives the non-root listener ownership of its
+  # dead-letter volume. The block checkpoint itself lives in PostgreSQL.
   listener-state-init:
     image: alpine:3.22
     restart: "no"
@@ -243,14 +243,17 @@ services:
       # The listener verifies public IPFS bytes and publishes Kafka events. It
       # cannot submit transactions because it receives no wallet private key.
       IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
+      DATABASE_URL: "postgresql://claims:${POSTGRES_PASSWORD}@postgres:5432/claims_registry"
       LISTENER_STATE_DIR: ${LISTENER_STATE_DIR:-/var/lib/claims-listener}
-      LISTENER_START_BLOCK: ${LISTENER_START_BLOCK:-}
+      LISTENER_START_BLOCK: ${LISTENER_START_BLOCK:?Set LISTENER_START_BLOCK to the contract deployment block}
       POLL_INTERVAL: ${POLL_INTERVAL:-5}
-      CONFIRMATION_BLOCKS: ${CONFIRMATION_BLOCKS:-2}
+      CONFIRMATION_BLOCKS: ${CONFIRMATION_BLOCKS:-12}
       MAX_BLOCK_RANGE: ${MAX_BLOCK_RANGE:-50}
       METRICS_PORT: "9101"
     depends_on:
       kafka-init:
+        condition: service_completed_successfully
+      database-migrate:
         condition: service_completed_successfully
       listener-state-init:
         condition: service_completed_successfully

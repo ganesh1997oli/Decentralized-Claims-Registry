@@ -4,9 +4,39 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from packages.model.contracts import FraudReason, FraudScore
+
+
+@dataclass(frozen=True)
+class IndexedClaim:
+    """Current public contract state reconstructed from confirmed event logs.
+
+    The record intentionally mirrors the compact Solidity ``Claim`` structure.
+    It contains no downloaded IPFS document or insurer credential, so returning
+    it from the public dashboard cannot widen the existing data boundary.
+    """
+
+    claim_id: int
+    claimant: str
+    claim_hash: str
+    data_pointer: str
+    status: int
+    fraud_score: int
+    submitted_at: int
+    updated_at: int
+
+
+@dataclass(frozen=True)
+class ClaimIndexStatus:
+    """Durable progress of one chain-and-contract projection."""
+
+    chain_id: int
+    contract_address: str
+    last_processed_block: int
+    updated_at: datetime
 
 
 @dataclass(frozen=True)

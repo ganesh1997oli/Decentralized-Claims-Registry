@@ -39,8 +39,8 @@ COPY apps/contracts/ignition/deployments/sepolia-security-audit-v1 \
     apps/contracts/ignition/deployments/sepolia-security-audit-v1
 
 # A compromised web request or claim payload should not obtain root privileges
-# inside the container. The listener's writable checkpoint is prepared by a
-# small one-off init service in Compose.
+# inside the container. The listener's writable dead-letter volume is prepared
+# by a small one-off init service; its checkpoint lives in PostgreSQL.
 RUN useradd --create-home --uid 10001 claims
 USER claims
 

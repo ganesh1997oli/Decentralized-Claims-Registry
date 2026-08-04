@@ -429,11 +429,34 @@ class SepoliaClaimsRegistry:
                 f"Could not read claims from Sepolia: {exc}"
             ) from exc
 
-    def get_claim(self, claim_id: int) -> ChainClaim:
+    def claim_count(self, *, block_identifier: int | None = None) -> int:
+        """Read the authoritative registry size for reconciliation tooling."""
+
+        try:
+            call = self.contract.functions.claimCount()
+            value = (
+                call.call()
+                if block_identifier is None
+                else call.call(block_identifier=block_identifier)
+            )
+            return int(value)
+        except Exception as exc:
+            raise BlockchainSubmissionError(
+                "Could not read the Sepolia claim count"
+            ) from exc
+
+    def get_claim(
+        self, claim_id: int, *, block_identifier: int | None = None
+    ) -> ChainClaim:
         """Read one claim so an at-least-once worker can avoid a second write."""
 
         try:
-            claim = self.contract.functions.getClaim(claim_id).call()
+            call = self.contract.functions.getClaim(claim_id)
+            claim = (
+                call.call()
+                if block_identifier is None
+                else call.call(block_identifier=block_identifier)
+            )
             return ChainClaim(
                 claim_id=claim_id,
                 claimant=Web3.to_checksum_address(claim[0]),

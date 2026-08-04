@@ -80,6 +80,7 @@ const claimPage: ClaimPage = {
   page_size: 5,
   total_items: 6,
   total_pages: 2,
+  indexed_through_block: 11_400_000,
 }
 
 afterEach(() => {

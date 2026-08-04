@@ -8,13 +8,13 @@ worker own the later model assessment.
 
 from __future__ import annotations
 
+import os
 from typing import Protocol
 
 from web3 import Web3
 
 from apps.backend.app.blockchain import (
     BlockchainSubmissionError,
-    ChainClaim,
     ChainSubmission,
     SepoliaClaimsRegistry,
 )
@@ -29,7 +29,18 @@ from apps.backend.app.submission_auth import (
     InsurerPrincipal,
     SubmissionAuthConfigurationError,
 )
+from packages.integrations.ethereum import (
+    DeploymentConfigurationError,
+    load_claims_deployment,
+)
 from packages.integrations.ipfs import IPFSClient, IPFSError
+from packages.integrations.postgres import (
+    ClaimIndexStatus,
+    IndexedClaim,
+    PostgresConfigurationError,
+    PostgresRepositories,
+    PostgresStorageError,
+)
 
 
 class ClaimSubmissionServiceError(RuntimeError):
@@ -52,10 +63,19 @@ class ClaimsRegistryWriter(Protocol):
     def submit_claim(self, claim_hash: bytes, data_pointer: str) -> ChainSubmission: ...
 
 
-class ClaimsRegistryReader(Protocol):
+class ClaimsIndexReader(Protocol):
     def list_claims(
-        self, *, page: int, page_size: int
-    ) -> tuple[list[ChainClaim], int]: ...
+        self,
+        *,
+        chain_id: int,
+        contract_address: str,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[IndexedClaim], int]: ...
+
+    def get_status(
+        self, *, chain_id: int, contract_address: str
+    ) -> ClaimIndexStatus | None: ...
 
 
 def canonical_claim_bytes(
@@ -69,29 +89,46 @@ def canonical_claim_bytes(
 
 
 class ClaimQueryService:
-    """Read public claim history without receiving upload or wallet credentials.
+    """Read the confirmed-event projection without wallet or upload credentials.
 
-    A blockchain registry is public by design. Keeping this small read service
-    separate from submission means opening the dashboard cannot accidentally
-    gain access to the Pinata token or transaction-signing account.
+    PostgreSQL is a rebuildable query layer, not a competing source of truth.
+    Keeping it separate from submission means dashboard reads remain fast and
+    cannot accidentally gain access to Pinata or a transaction-signing account.
     """
 
-    def __init__(self, *, registry: ClaimsRegistryReader) -> None:
-        self.registry = registry
+    def __init__(
+        self,
+        *,
+        index: ClaimsIndexReader,
+        chain_id: int,
+        contract_address: str,
+    ) -> None:
+        self.index = index
+        self.chain_id = chain_id
+        self.contract_address = contract_address
 
     @classmethod
     def from_env(cls) -> ClaimQueryService:
-        """Build the read-only Sepolia client from public configuration."""
+        """Build the deployment-scoped PostgreSQL read path."""
 
         try:
+            deployment = load_claims_deployment(os.environ)
+            repositories = PostgresRepositories.from_env()
             return cls(
-                registry=SepoliaClaimsRegistry.from_env(require_private_key=False)
+                index=repositories.claims,
+                chain_id=deployment.chain_id,
+                contract_address=deployment.address,
             )
-        except (BlockchainSubmissionError, ValueError) as exc:
+        except (
+            DeploymentConfigurationError,
+            PostgresConfigurationError,
+            PostgresStorageError,
+            ValueError,
+        ) as exc:
             raise ClaimQueryServiceError(str(exc)) from exc
 
     def list_claims(self, *, page: int, page_size: int) -> ClaimPageResponse:
-        """Build one browser page from the current public contract state."""
+        """Build one browser page from the confirmed blockchain index."""
 
         # Solidity stores statuses as compact enum numbers. Translate them at
         # this boundary so the browser works with understandable domain words.
@@ -103,10 +140,17 @@ class ClaimQueryService:
             "Flagged",
         ]
         try:
-            claims, total_items = self.registry.list_claims(
-                page=page, page_size=page_size
+            claims, total_items = self.index.list_claims(
+                chain_id=self.chain_id,
+                contract_address=self.contract_address,
+                page=page,
+                page_size=page_size,
             )
-        except BlockchainSubmissionError as exc:
+            index_status = self.index.get_status(
+                chain_id=self.chain_id,
+                contract_address=self.contract_address,
+            )
+        except PostgresStorageError as exc:
             raise ClaimQueryServiceError(str(exc)) from exc
 
         items = [
@@ -135,6 +179,11 @@ class ClaimQueryService:
             page_size=page_size,
             total_items=total_items,
             total_pages=total_pages,
+            indexed_through_block=(
+                index_status.last_processed_block
+                if index_status is not None
+                else None
+            ),
         )
 
 

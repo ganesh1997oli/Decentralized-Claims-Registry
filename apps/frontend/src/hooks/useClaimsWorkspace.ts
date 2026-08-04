@@ -37,6 +37,9 @@ export function useClaimsWorkspace() {
   const [pageSize, setPageSize] = useState(10)
   const [totalItems, setTotalItems] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
+  const [indexedThroughBlock, setIndexedThroughBlock] = useState<number | null>(
+    null,
+  )
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedClaimId, setSelectedClaimId] = useState<number | null>(null)
@@ -81,6 +84,7 @@ export function useClaimsWorkspace() {
         setPage(result.page)
         setTotalItems(result.total_items)
         setTotalPages(result.total_pages)
+        setIndexedThroughBlock(result.indexed_through_block)
       } catch (loadingError) {
         if (isAbortError(loadingError)) return
         setError(
@@ -102,8 +106,9 @@ export function useClaimsWorkspace() {
   }, [loadPage, page, pageSize])
 
   useEffect(() => {
-    // On a fresh page, the contract list is the source of truth. Restore the
-    // newest claim unless the user deliberately selected an older row.
+    // On a fresh page, restore the newest confirmed indexed claim unless the
+    // user deliberately selected an older row. PostgreSQL is only a projection;
+    // its values originate from confirmed contract events.
     if (
       selectedClaimId !== null ||
       page !== 1 ||
@@ -341,6 +346,7 @@ export function useClaimsWorkspace() {
     pageSize,
     totalItems,
     totalPages,
+    indexedThroughBlock,
     isLoading,
     error,
     openingClaimId,

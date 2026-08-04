@@ -157,13 +157,17 @@ class ClaimListItemResponse(BaseModel):
 
 
 class ClaimPageResponse(BaseModel):
-    """One page of claims, with the newest claims first."""
+    """One page from the confirmed-event index, with newest claims first."""
 
     items: list[ClaimListItemResponse]
     page: int = Field(ge=1)
     page_size: int = Field(ge=1, le=50)
     total_items: int = Field(ge=0)
     total_pages: int = Field(ge=1)
+    # ``None`` is an explicit uninitialized state, not block zero. Exposing the
+    # checkpoint lets operators and the UI detect an index that has not started
+    # without requiring another RPC call in the dashboard request path.
+    indexed_through_block: int | None = Field(default=None, ge=0)
 
 
 class HealthResponse(BaseModel):

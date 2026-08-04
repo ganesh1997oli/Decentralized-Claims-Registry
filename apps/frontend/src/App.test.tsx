@@ -120,6 +120,7 @@ describe('Historical claim details', () => {
         pageSize={10}
         totalItems={1}
         totalPages={1}
+        indexedThroughBlock={11_400_000}
         isLoading={false}
         error={null}
         selectedClaimId={5}

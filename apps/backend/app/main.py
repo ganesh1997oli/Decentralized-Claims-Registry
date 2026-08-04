@@ -242,7 +242,7 @@ ClaimServiceDependency = Annotated[
 
 @lru_cache
 def get_claim_query_service() -> ClaimQueryService:
-    """Create a public read client with no wallet or Pinata credential."""
+    """Create the deployment-scoped index reader with no wallet credential."""
 
     try:
         return ClaimQueryService.from_env()
@@ -332,7 +332,10 @@ def list_claims(
         return service.list_claims(page=page, page_size=page_size)
     except ClaimQueryServiceError as exc:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
+            # The query path now depends on the local read-model database, so a
+            # transient failure means this API instance is unavailable rather
+            # than that an upstream blockchain gateway returned a bad response.
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
 

@@ -1,7 +1,6 @@
-from apps.backend.app.blockchain import (
-    ChainClaim,
-    ChainSubmission,
-)
+from datetime import UTC, datetime
+
+from apps.backend.app.blockchain import ChainSubmission
 from apps.backend.app.models import ClaimSubmission
 from apps.backend.app.service import (
     ClaimQueryService,
@@ -10,6 +9,7 @@ from apps.backend.app.service import (
     canonical_claim_bytes,
 )
 from apps.backend.app.submission_auth import ClaimAuthorizationSigner, InsurerPrincipal
+from packages.integrations.postgres import ClaimIndexStatus, IndexedClaim
 
 AUTHORIZATION = ClaimAuthorizationSigner(
     b"service-test-claim-authorization-key-32-bytes"
@@ -72,12 +72,16 @@ class FakeRegistry:
             block_number=100,
         )
 
-    def list_claims(self, *, page, page_size):
+    def list_claims(
+        self, *, chain_id, contract_address, page, page_size
+    ):
+        assert chain_id == 11_155_111
+        assert contract_address == "0xcontract"
         assert page == 1
         assert page_size == 10
         return (
             [
-                ChainClaim(
+                IndexedClaim(
                     claim_id=3,
                     claimant="0x0000000000000000000000000000000000000001",
                     claim_hash="0xhash",
@@ -89,6 +93,16 @@ class FakeRegistry:
                 )
             ],
             14,
+        )
+
+    def get_status(self, *, chain_id, contract_address):
+        assert chain_id == 11_155_111
+        assert contract_address == "0xcontract"
+        return ClaimIndexStatus(
+            chain_id=chain_id,
+            contract_address=contract_address,
+            last_processed_block=11_400_000,
+            updated_at=datetime(2026, 8, 4, tzinfo=UTC),
         )
 
 
@@ -140,7 +154,11 @@ def test_service_refuses_to_anchor_corrupt_ipfs_round_trip():
 
 
 def test_service_lists_current_claim_state():
-    service = ClaimQueryService(registry=FakeRegistry())
+    service = ClaimQueryService(
+        index=FakeRegistry(),
+        chain_id=11_155_111,
+        contract_address="0xcontract",
+    )
 
     claims = service.list_claims(page=1, page_size=10)
 
@@ -150,3 +168,4 @@ def test_service_lists_current_claim_state():
     assert claims.items[0].fraud_score == 8500
     assert claims.total_items == 14
     assert claims.total_pages == 2
+    assert claims.indexed_through_block == 11_400_000

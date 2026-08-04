@@ -12,7 +12,7 @@ flowchart LR
     API --> Receipt["Anchor receipt"]
     Receipt --> Pending["Assessment pending"]
     Pending -->|"poll every 2 seconds"| Result["Duplicate check + score + SHAP"]
-    Result --> Dashboard["Refresh Sepolia claims"]
+    Result --> Dashboard["Refresh confirmed claim index"]
     Dashboard --> Details["Open any claim"]
 ```
 
@@ -27,7 +27,7 @@ both mean a person would need to review the claim.
 | `src/components/ClaimForm.tsx` | Form state, temporary credential, validation and submission |
 | `src/hooks/useClaimsWorkspace.ts` | Pagination, cancellation, detail loading, polling and receipt persistence |
 | `src/components/ReceiptCard.tsx` | Anchor, duplicate, score and SHAP presentation |
-| `src/components/ClaimsDashboard.tsx` | Newest-first contract list and claim selection |
+| `src/components/ClaimsDashboard.tsx` | Newest-first indexed list, checkpoint and selection |
 | `src/api.ts` | Fetch calls plus runtime response-shape validation |
 | `src/display-receipt.ts` | Safe merge of a browser receipt and current chain state |
 | `src/receipt-storage.ts` | Latest public submission receipt only |
@@ -77,7 +77,7 @@ secret.
   immediately.
 - The workspace polls for up to one minute while the Kafka worker finishes.
 - The newest successful public receipt survives a refresh.
-- If storage is empty, the newest contract claim becomes the details view.
+- If storage is empty, the newest indexed claim becomes the details view.
 - Selecting an older claim shows its chain state immediately, then adds the
   PostgreSQL assessment if one exists.
 - Older claims may have an on-chain score without current SHAP or duplicate
@@ -102,7 +102,8 @@ review-only duplicate experience without contacting Sepolia.
 ## Safety limits
 
 - Evidence upload is intentionally absent while IPFS is public and unencrypted.
-- The dashboard is a small direct-contract view, not a production search tool.
+- The dashboard uses a confirmed-event PostgreSQL projection. It reports the
+  indexed-through block and can temporarily lag the chain.
 - A duplicate match and XGBoost score are review signals only.
 - Use only fictional policy, claimant, and incident information.
 

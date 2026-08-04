@@ -75,6 +75,7 @@ export type ClaimPage = {
   page_size: number
   total_items: number
   total_pages: number
+  indexed_through_block: number | null
 }
 
 export type ClaimReceipt = {
@@ -188,7 +189,9 @@ function isClaimPage(value: unknown): value is ClaimPage {
     typeof value.page === 'number' &&
     typeof value.page_size === 'number' &&
     typeof value.total_items === 'number' &&
-    typeof value.total_pages === 'number'
+    typeof value.total_pages === 'number' &&
+    (typeof value.indexed_through_block === 'number' ||
+      value.indexed_through_block === null)
   )
 }
 

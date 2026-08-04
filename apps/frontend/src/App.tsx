@@ -165,6 +165,7 @@ function App() {
           pageSize={workspace.pageSize}
           totalItems={workspace.totalItems}
           totalPages={workspace.totalPages}
+          indexedThroughBlock={workspace.indexedThroughBlock}
           isLoading={workspace.isLoading}
           error={workspace.error}
           selectedClaimId={workspace.receipt?.claim_id ?? null}

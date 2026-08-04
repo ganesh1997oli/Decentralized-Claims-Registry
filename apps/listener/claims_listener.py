@@ -5,10 +5,11 @@ document and checks its Keccak-256 hash against the value stored by the contract
 Only verified events are published to Kafka. ``ClaimAssessed`` events are also
 printed so an operator can follow the claim lifecycle from one terminal.
 
-The listener reads small confirmed block ranges and saves a durable checkpoint.
-That makes public RPC failures and normal restarts recoverable without relying
-on an in-memory event filter. Configuration and run instructions live in
-``apps/listener/README.md`` and the root project guide.
+The listener reads small confirmed block ranges, projects each public event into
+PostgreSQL, and saves a deployment-scoped database checkpoint. That makes public
+RPC failures, container replacement, and normal restarts recoverable without
+relying on an in-memory event filter. Configuration and run instructions live
+in ``apps/listener/README.md`` and the root project guide.
 """
 
 import json
@@ -21,15 +22,12 @@ from typing import Any, Protocol
 
 from web3 import Web3
 
-if __package__:
-    from .block_cursor import BlockCursor
-else:
+if not __package__:
     # A directly executed script sees only this folder. Add the repository root
     # so it can reach the shared integrations without requiring installation.
     repository_root = str(Path(__file__).resolve().parents[2])
     if repository_root not in sys.path:
         sys.path.insert(0, repository_root)
-    from block_cursor import BlockCursor
 
 from packages.integrations.ethereum import (
     DeploymentConfigurationError,
@@ -43,6 +41,10 @@ from packages.integrations.kafka import (
     ClaimSubmittedEvent,
     KafkaSettings,
     create_publisher,
+)
+from packages.integrations.postgres import (
+    PostgresClaimIndexCheckpoint,
+    PostgresRepositories,
 )
 from packages.observability import (
     ListenerMetrics,
@@ -63,7 +65,7 @@ RPC_URL = (
 )
 
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
-CONFIRMATION_BLOCKS = int(os.environ.get("CONFIRMATION_BLOCKS", "2"))
+CONFIRMATION_BLOCKS = int(os.environ.get("CONFIRMATION_BLOCKS", "12"))
 # Fifty blocks is deliberately conservative for an unauthenticated public RPC.
 # Raising this to 250 or 500 can drain a stale checkpoint in fewer requests, but
 # it also makes each eth_getLogs call heavier and more likely to hit a provider's
@@ -112,6 +114,32 @@ def deployment_state_paths(
     return state_path, dead_letter_path
 
 
+def required_listener_start_block(settings: Mapping[str, str]) -> int:
+    """Require an explicit replay origin before external adapters are created.
+
+    Guessing the current safe head is operationally convenient but unsafe for
+    an index: the service would report a healthy checkpoint while every earlier
+    claim was absent. Deployment configuration must therefore carry its known
+    creation block.
+    """
+
+    raw_value = settings.get("LISTENER_START_BLOCK", "").strip()
+    if not raw_value:
+        raise ValueError(
+            "LISTENER_START_BLOCK is required for the PostgreSQL claim index; "
+            "set it to the ClaimsRegistry deployment block"
+        )
+    try:
+        block_number = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(
+            "LISTENER_START_BLOCK must be a non-negative integer"
+        ) from exc
+    if block_number < 0:
+        raise ValueError("LISTENER_START_BLOCK must be a non-negative integer")
+    return block_number
+
+
 class ClaimPayloadReader(Protocol):
     def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes: ...
 
@@ -122,6 +150,14 @@ class BlockRangeProcessor(Protocol):
 
 class BlockCheckpoint(Protocol):
     def save(self, block_number: int) -> None: ...
+
+
+class ClaimIndexWriter(Protocol):
+    """Narrow persistence boundary used while handling confirmed logs."""
+
+    def index_claim_submitted(self, **values: Any) -> None: ...
+
+    def index_claim_assessed(self, **values: Any) -> None: ...
 
 
 class PermanentClaimEventError(RuntimeError):
@@ -172,6 +208,7 @@ class ClaimEventProcessor:
         contract: Any,
         ipfs: ClaimPayloadReader,
         publisher: ClaimEventPublisher | None,
+        indexer: ClaimIndexWriter | None = None,
         metrics: ListenerMetrics | None = None,
         dead_letter: DeadLetterSink | None = None,
     ) -> None:
@@ -186,6 +223,7 @@ class ClaimEventProcessor:
         self.contract = contract
         self.ipfs = ipfs
         self.publisher = publisher
+        self.indexer = indexer
         self.metrics = metrics
         self.dead_letter = dead_letter
 
@@ -289,6 +327,23 @@ class ClaimEventProcessor:
             block_number=event["blockNumber"],
             transaction_hash=hx(event["transactionHash"]),
         )
+        # Index the immutable public log before the slower IPFS/Kafka work. If a
+        # later adapter fails, the range is replayed; the database upsert is
+        # deliberately idempotent and cannot regress a newer assessment.
+        if self.indexer is not None:
+            self.indexer.index_claim_submitted(
+                chain_id=self.chain_id,
+                contract_address=self.contract_address,
+                claim_id=args["claimId"],
+                claimant=args["claimant"],
+                claim_hash=hx(args["claimHash"]),
+                data_pointer=args["dataPointer"],
+                block_number=event["blockNumber"],
+                block_hash=hx(event["blockHash"]),
+                transaction_hash=hx(event["transactionHash"]),
+                log_index=event["logIndex"],
+                event_timestamp=args["timestamp"],
+            )
         self._verified_payload(
             claim_id=args["claimId"],
             pointer=args["dataPointer"],
@@ -338,6 +393,19 @@ class ClaimEventProcessor:
             if raw_status < len(STATUS_NAMES)
             else f"?{raw_status}"
         )
+        if self.indexer is not None:
+            self.indexer.index_claim_assessed(
+                chain_id=self.chain_id,
+                contract_address=self.contract_address,
+                claim_id=args["claimId"],
+                status=raw_status,
+                fraud_score=args["fraudScore"],
+                block_number=event["blockNumber"],
+                block_hash=hx(event["blockHash"]),
+                transaction_hash=hx(event["transactionHash"]),
+                log_index=event["logIndex"],
+                event_timestamp=args["timestamp"],
+            )
         logger.info(
             "claim.assessed",
             claim_id=args["claimId"],
@@ -424,6 +492,11 @@ def main():
     shutdown.install()
 
     try:
+        configured_start_block = required_listener_start_block(os.environ)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    try:
         deployment = load_claims_deployment(os.environ)
     except DeploymentConfigurationError as exc:
         raise SystemExit(str(exc)) from exc
@@ -437,20 +510,26 @@ def main():
     contract_address = deployment.address
     kafka_settings = KafkaSettings.from_env()
     claim_event_publisher = create_publisher(kafka_settings)
+    repositories = PostgresRepositories.from_env()
     chain_id = deployment.chain_id
-    state_path, dead_letter_path = deployment_state_paths(
+    _, dead_letter_path = deployment_state_paths(
         os.environ,
         deployment_id=deployment.deployment_id,
         chain_id=chain_id,
         contract_address=contract_address,
     )
-    cursor = BlockCursor(state_path, chain_id, contract_address)
+    cursor = PostgresClaimIndexCheckpoint(
+        repositories.claims,
+        chain_id=chain_id,
+        contract_address=contract_address,
+    )
     processor = ClaimEventProcessor(
         chain_id=chain_id,
         contract_address=contract_address,
         contract=contract,
         ipfs=IPFSClient.from_env(),
         publisher=claim_event_publisher,
+        indexer=repositories.claims,
         metrics=metrics,
         dead_letter=JsonlDeadLetterSink(dead_letter_path),
     )
@@ -475,13 +554,11 @@ def main():
             bootstrap_servers=kafka_settings.bootstrap_servers,
         )
 
-    first_safe_block = max(0, w3.eth.block_number - CONFIRMATION_BLOCKS)
-    start_block = os.environ.get("LISTENER_START_BLOCK")
-    first_run_default = int(start_block) - 1 if start_block else first_safe_block
+    first_run_default = configured_start_block - 1
     last_processed = cursor.load(default=first_run_default)
     logger.info(
         "listener.checkpoint_loaded",
-        checkpoint_path=str(state_path),
+        checkpoint_store="postgresql",
         last_processed_block=last_processed,
     )
     logger.info("listener.dead_letter_ready", path=str(dead_letter_path))

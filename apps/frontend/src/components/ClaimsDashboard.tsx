@@ -29,6 +29,7 @@ type ClaimsDashboardProps = {
   pageSize: number
   totalItems: number
   totalPages: number
+  indexedThroughBlock: number | null
   isLoading: boolean
   error: string | null
   selectedClaimId: number | null
@@ -46,6 +47,7 @@ export function ClaimsDashboard({
   pageSize,
   totalItems,
   totalPages,
+  indexedThroughBlock,
   isLoading,
   error,
   selectedClaimId,
@@ -214,8 +216,10 @@ export function ClaimsDashboard({
 
       <div className="flex flex-col gap-3 border-t border-ink/8 bg-sand/45 px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-8">
         <p className="text-xs leading-5 text-slate">
-          Page {page} of {totalPages}. This prototype reads the requested claims
-          directly from the contract; use an indexer at production scale.
+          Page {page} of {totalPages}. Confirmed contract events indexed through{' '}
+          {indexedThroughBlock === null
+            ? 'an unavailable checkpoint'
+            : `block ${indexedThroughBlock.toLocaleString()}`}.
         </p>
         <nav aria-label="Claims pagination" className="flex items-center gap-2">
           <button

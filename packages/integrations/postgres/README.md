@@ -1,12 +1,32 @@
 # PostgreSQL claim-processing storage
 
-Sepolia keeps the compact public result. PostgreSQL keeps the richer, versioned
-record needed to explain and safely replay off-chain screening.
+Sepolia remains authoritative. PostgreSQL keeps a rebuildable public claim
+projection for fast API reads plus the richer, versioned records needed to
+explain and safely replay off-chain screening.
 
 ## Stored records
 
 ```mermaid
 erDiagram
+    INDEXED_CLAIMS {
+        bigint chain_id PK
+        text contract_address PK
+        bigint claim_id PK
+        smallint status
+        int fraud_score
+        bigint state_block_number
+    }
+    CLAIM_INDEX_EVENTS {
+        text event_id PK
+        bigint block_number
+        int log_index
+        text event_type
+    }
+    CLAIM_INDEX_CHECKPOINTS {
+        bigint chain_id PK
+        text contract_address PK
+        bigint last_processed_block
+    }
     CLAIM_ASSESSMENTS {
         text event_id PK
         bigint chain_id
@@ -44,6 +64,7 @@ number reused by a new deployment cannot expose the old contract's result.
 | File | Owns |
 | --- | --- |
 | `database.py` | Connection configuration and one-transaction cursor lifetime |
+| `claim_index_repository.py` | Idempotent event projection, indexed pages, and database checkpoint |
 | `assessment_repository.py` | Score, SHAP, processing state and chain receipt |
 | `duplicate_repository.py` | Private incident fingerprint and current matches |
 | `feature_processor.py` | Validation, direct features and policy HMAC |
@@ -53,6 +74,23 @@ number reused by a new deployment cannot expose the old contract's result.
 
 Runtime callers receive focused repositories, not a general SQL cursor or
 permission to create schema.
+
+## Blockchain claims index
+
+`ClaimSubmitted` appends an immutable `claim_index_events` row and creates the
+corresponding `indexed_claims` projection. `ClaimAssessed` appends another audit
+row and advances status, score, and timestamps. The update compares block number
+and log index, so replaying an older range cannot overwrite a later state.
+
+The listener persists `claim_index_checkpoints` only after the complete confirmed
+range has also passed IPFS verification and Kafka publication. A failure leaves
+the checkpoint unchanged; retrying is safe because event IDs and claim keys are
+unique. API pagination uses the deployment-scoped, newest-first database index
+and includes `indexed_through_block` in its response.
+
+This projection stores only public contract-event values. It does not download
+claim bodies into PostgreSQL. Use `python -m apps.listener.reconcile_claim_index`
+while the caught-up listener is stopped to compare it with contract state.
 
 ## Feature snapshot
 
