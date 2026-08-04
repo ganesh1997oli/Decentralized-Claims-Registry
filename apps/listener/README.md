@@ -81,6 +81,16 @@ claim.assessed
 State filenames include deployment ID, chain ID, and contract address. Switching
 deployments cannot accidentally reuse another contract's checkpoint.
 
+`MAX_BLOCK_RANGE` is a query-size control, not a required value. At `50`, a
+3,600-block backlog needs 72 bounded ranges; `250` reduces that to 15 ranges and
+`500` to 8. Fewer ranges can accelerate a controlled catch-up because the
+listener makes fewer RPC round trips. The trade-off is that each `eth_getLogs`
+query becomes heavier and may exceed the provider's timeout, response-size, or
+rate-limit policy. Keep `50` as the conservative public-RPC default, test a
+temporary increase against the selected provider, and reduce it again if
+`listener.poll_failed` appears. A failed range does not advance the durable
+checkpoint, so it is retried rather than skipped.
+
 The normal listener needs no wallet, Pinata upload token, insurer credential,
 or claim-authorization key. It has only public chain/IPFS read access and Kafka
 publication access.

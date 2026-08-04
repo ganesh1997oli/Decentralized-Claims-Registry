@@ -151,7 +151,11 @@ function App() {
                 could not be loaded: {workspace.detailsError}
               </div>
             )}
-            <ReceiptCard receipt={workspace.receipt} />
+            <ReceiptCard
+              receipt={workspace.receipt}
+              assessmentPollingError={workspace.assessmentPollingError}
+              onCheckAssessment={workspace.checkPendingAssessment}
+            />
           </div>
         )}
 

@@ -14,6 +14,10 @@ import {
 } from '../display-receipt.ts'
 import { loadLastReceipt, saveLastReceipt } from '../receipt-storage.ts'
 
+const RAPID_ASSESSMENT_POLL_INTERVAL_MS = 2_000
+const RAPID_ASSESSMENT_POLL_WINDOW_MS = 60_000
+const PATIENT_ASSESSMENT_POLL_INTERVAL_MS = 10_000
+
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError'
 }
@@ -38,7 +42,13 @@ export function useClaimsWorkspace() {
   const [selectedClaimId, setSelectedClaimId] = useState<number | null>(null)
   const [openingClaimId, setOpeningClaimId] = useState<number | null>(null)
   const [detailsError, setDetailsError] = useState<string | null>(null)
+  const [assessmentPollingError, setAssessmentPollingError] = useState<
+    string | null
+  >(null)
   const detailsRequest = useRef<AbortController | null>(null)
+  // The polling effect owns the request lifecycle; this ref gives the UI a
+  // narrow, stable way to ask that effect for an immediate retry.
+  const assessmentCheckNow = useRef<(() => void) | null>(null)
 
   const pendingAssessmentClaimId =
     receipt &&
@@ -130,45 +140,141 @@ export function useClaimsWorkspace() {
   }, [claims, isLoading, page, receipt, selectedClaimId])
 
   useEffect(() => {
-    if (pendingAssessmentClaimId === null) return
+    if (pendingAssessmentClaimId === null) {
+      assessmentCheckNow.current = null
+      setAssessmentPollingError(null)
+      return
+    }
 
-    // Submission precedes the Kafka worker. Poll for at most one minute so the
-    // UI can transition from "anchored" to its final XGBoost/SHAP assessment.
+    // Submission precedes the Kafka worker. Poll quickly for the normal path,
+    // then reduce the request rate without silently abandoning a delayed job.
     const claimId = pendingAssessmentClaimId
     const controller = new AbortController()
     let timer: number | undefined
-    let attempts = 0
+    let requestInFlight = false
+    let immediateCheckQueued = false
+    const rapidPollingStartedAt = Date.now()
+
+    function clearScheduledPoll() {
+      if (timer === undefined) return
+      window.clearTimeout(timer)
+      timer = undefined
+    }
+
+    function scheduleNextPoll() {
+      if (
+        controller.signal.aborted ||
+        document.visibilityState === 'hidden'
+      ) {
+        return
+      }
+
+      const rapidWindowIsOpen =
+        Date.now() - rapidPollingStartedAt < RAPID_ASSESSMENT_POLL_WINDOW_MS
+      const delay = rapidWindowIsOpen
+        ? RAPID_ASSESSMENT_POLL_INTERVAL_MS
+        : PATIENT_ASSESSMENT_POLL_INTERVAL_MS
+
+      clearScheduledPoll()
+      timer = window.setTimeout(() => {
+        timer = undefined
+        void pollAssessment()
+      }, delay)
+    }
+
+    function requestImmediatePoll() {
+      if (
+        controller.signal.aborted ||
+        document.visibilityState === 'hidden'
+      ) {
+        return
+      }
+
+      clearScheduledPoll()
+      if (requestInFlight) {
+        // Do not start overlapping reads. One extra check immediately after
+        // the current request is enough to honour a focus event or button click.
+        immediateCheckQueued = true
+        return
+      }
+      void pollAssessment()
+    }
 
     async function pollAssessment() {
+      if (
+        controller.signal.aborted ||
+        requestInFlight ||
+        document.visibilityState === 'hidden'
+      ) {
+        return
+      }
+
+      requestInFlight = true
+      let assessmentIsTerminal = false
       try {
         const assessment = await getClaimAssessment(claimId, controller.signal)
+        setAssessmentPollingError(null)
         if (assessment) {
           setReceipt((current) =>
             current?.claim_id === claimId
               ? { ...current, assessment }
               : current,
           )
-          if (assessment.on_chain || assessment.error) {
+          assessmentIsTerminal = assessment.on_chain || Boolean(assessment.error)
+          if (assessmentIsTerminal) {
             void loadPage(1, pageSize)
-            return
           }
         }
       } catch (pollingError) {
-        if (isAbortError(pollingError)) return
-      }
-
-      attempts += 1
-      if (attempts < 30 && !controller.signal.aborted) {
-        timer = window.setTimeout(pollAssessment, 2_000)
+        if (!isAbortError(pollingError)) {
+          // A temporary API/network failure must not strand the receipt. Keep
+          // retrying at the adaptive interval and tell the user what is happening.
+          setAssessmentPollingError(
+            'The assessment service could not be reached. Automatic checks will continue.',
+          )
+        }
+      } finally {
+        requestInFlight = false
+        if (!controller.signal.aborted && !assessmentIsTerminal) {
+          if (immediateCheckQueued) {
+            immediateCheckQueued = false
+            requestImmediatePoll()
+          } else {
+            scheduleNextPoll()
+          }
+        }
       }
     }
 
-    void pollAssessment()
+    function handleVisibilityChange() {
+      if (document.visibilityState === 'hidden') {
+        // Background tabs can be heavily throttled. Pause scheduled requests
+        // and issue a fresh check as soon as the user returns instead.
+        clearScheduledPoll()
+      } else {
+        requestImmediatePoll()
+      }
+    }
+
+    setAssessmentPollingError(null)
+    assessmentCheckNow.current = requestImmediatePoll
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    requestImmediatePoll()
+
     return () => {
       controller.abort()
-      if (timer !== undefined) window.clearTimeout(timer)
+      clearScheduledPoll()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      if (assessmentCheckNow.current === requestImmediatePoll) {
+        assessmentCheckNow.current = null
+      }
     }
   }, [loadPage, pageSize, pendingAssessmentClaimId])
+
+  const checkPendingAssessment = useCallback(() => {
+    setAssessmentPollingError(null)
+    assessmentCheckNow.current?.()
+  }, [])
 
   const showClaimDetails = useCallback(async (claim: ClaimSummary) => {
     detailsRequest.current?.abort()
@@ -215,6 +321,7 @@ export function useClaimsWorkspace() {
       detailsRequest.current?.abort()
       setSelectedClaimId(null)
       setDetailsError(null)
+      setAssessmentPollingError(null)
       setReceipt(submittedReceipt)
       if (page === 1) void loadPage(1, pageSize)
       else setPage(1)
@@ -238,7 +345,9 @@ export function useClaimsWorkspace() {
     error,
     openingClaimId,
     detailsError,
+    assessmentPollingError,
     refresh: () => loadPage(page, pageSize),
+    checkPendingAssessment,
     showClaimDetails,
     acceptSubmittedReceipt,
     setPage,

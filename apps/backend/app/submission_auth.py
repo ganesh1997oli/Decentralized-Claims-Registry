@@ -21,6 +21,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from apps.backend.app.models import ClaimSubmission, StoredClaimDocument
+from packages.observability import get_event_logger
 
 AUTHORIZATION_VERSION = "insurer-principal-hmac-sha256-v1"
 SUBMIT_CLAIM_OPERATION = "submit_claim"
@@ -28,6 +29,8 @@ _MINIMUM_API_KEY_LENGTH = 24
 _MINIMUM_AUTHORIZATION_KEY_BYTES = 32
 _INSURER_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]\Z")
 _CREDENTIAL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
+
+logger = get_event_logger(__name__)
 
 
 class SubmissionAuthConfigurationError(ValueError):
@@ -56,12 +59,17 @@ class ClaimAuthorizationVerificationError(ValueError):
 
 @dataclass(frozen=True)
 class InsurerPrincipal:
-    """The authoritative insurer identity established from one API credential."""
+    """The authoritative insurer identity established from one API credential.
+
+    ``rate_limit_exempt`` records credential policy only. It never activates a
+    bypass by itself; the server-wide master switch must also be enabled.
+    """
 
     insurer_id: str
     credential_id: str
     permitted_operations: frozenset[str]
     daily_quota: int
+    rate_limit_exempt: bool = False
 
 
 @dataclass(frozen=True)
@@ -88,6 +96,19 @@ def _required_text(value: Any, *, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SubmissionAuthConfigurationError(f"{name} must be a non-empty string")
     return value.strip()
+
+
+def _boolean_setting(value: Any, *, name: str) -> bool:
+    """Parse an explicit true/false environment value and reject ambiguity."""
+
+    if not isinstance(value, str):
+        raise SubmissionAuthConfigurationError(f"{name} must be true or false")
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise SubmissionAuthConfigurationError(f"{name} must be true or false")
 
 
 def _parse_credentials(raw_json: str) -> tuple[_Credential, ...]:
@@ -150,6 +171,14 @@ def _parse_credentials(raw_json: str) -> tuple[_Credential, ...]:
         daily_quota = _positive_integer(
             raw.get("dailyQuota", 25), name=f"dailyQuota at index {index}"
         )
+        rate_limit_exempt = raw.get("rateLimitExempt", False)
+        # Require a JSON Boolean rather than coercing strings or integers. A
+        # permissive conversion would make a configuration typo capable of
+        # changing a security-sensitive policy.
+        if not isinstance(rate_limit_exempt, bool):
+            raise SubmissionAuthConfigurationError(
+                f"rateLimitExempt at index {index} must be a boolean"
+            )
         if credential_id in credential_ids:
             raise SubmissionAuthConfigurationError(
                 f"Duplicate credentialId {credential_id!r}"
@@ -172,6 +201,7 @@ def _parse_credentials(raw_json: str) -> tuple[_Credential, ...]:
                     credential_id=credential_id,
                     permitted_operations=permitted_operations,
                     daily_quota=daily_quota,
+                    rate_limit_exempt=rate_limit_exempt,
                 ),
                 api_key_sha256=api_key_sha256,
             )
@@ -188,16 +218,28 @@ class SubmissionBoundary:
         *,
         insurer_rate_limit_per_minute: int,
         ip_rate_limit_per_minute: int,
+        allow_rate_limit_bypass: bool,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._credentials = credentials
         self._insurer_rate_limit = insurer_rate_limit_per_minute
         self._ip_rate_limit = ip_rate_limit_per_minute
+        self._allow_rate_limit_bypass = allow_rate_limit_bypass
         self._clock = clock
+        # The prototype intentionally holds rolling-window and daily counters
+        # in one API process. The lock keeps the check-and-reserve operation
+        # atomic when concurrent requests arrive in that process; it does not
+        # coordinate multiple workers or survive a restart.
         self._lock = threading.Lock()
         self._ip_attempts: dict[str, deque[datetime]] = defaultdict(deque)
         self._insurer_attempts: dict[str, deque[datetime]] = defaultdict(deque)
         self._daily_usage: dict[tuple[str, date], int] = defaultdict(int)
+
+    @property
+    def rate_limit_bypass_enabled(self) -> bool:
+        """Expose only the non-secret master-switch state for startup logging."""
+
+        return self._allow_rate_limit_bypass
 
     @classmethod
     def from_mapping(
@@ -221,6 +263,10 @@ class SubmissionBoundary:
                 settings.get("IP_RATE_LIMIT_PER_MINUTE", "20"),
                 name="IP_RATE_LIMIT_PER_MINUTE",
             ),
+            allow_rate_limit_bypass=_boolean_setting(
+                settings.get("ALLOW_RATE_LIMIT_BYPASS", "false"),
+                name="ALLOW_RATE_LIMIT_BYPASS",
+            ),
             clock=clock,
         )
 
@@ -230,10 +276,14 @@ class SubmissionBoundary:
 
     @staticmethod
     def _prune(attempts: deque[datetime], cutoff: datetime) -> None:
+        """Remove entries outside the rolling window, including its boundary."""
+
         while attempts and attempts[0] <= cutoff:
             attempts.popleft()
 
     def _reserve_ip_attempt(self, *, client_ip: str, now: datetime) -> None:
+        """Atomically consume one source-IP attempt or report when it reopens."""
+
         cutoff = now - timedelta(minutes=1)
         attempts = self._ip_attempts[client_ip]
         self._prune(attempts, cutoff)
@@ -260,6 +310,8 @@ class SubmissionBoundary:
         return match
 
     def _reserve_principal(self, principal: InsurerPrincipal, *, now: datetime) -> None:
+        """Consume minute and UTC-day capacity for an authenticated principal."""
+
         cutoff = now - timedelta(minutes=1)
         attempts = self._insurer_attempts[principal.credential_id]
         self._prune(attempts, cutoff)
@@ -279,6 +331,8 @@ class SubmissionBoundary:
                 "This insurer has reached its daily submission quota",
                 retry_after=int((tomorrow - now).total_seconds()),
             )
+        # Mutate both counters only after both checks pass. This prevents a
+        # rejected daily-quota request from consuming insurer-minute capacity.
         attempts.append(now)
         self._daily_usage[daily_key] += 1
 
@@ -295,7 +349,11 @@ class SubmissionBoundary:
         claimed_insurer_id: str,
         client_ip: str,
     ) -> InsurerPrincipal:
-        """Authenticate, authorize, and reserve capacity before external writes."""
+        """Authenticate, authorize, and reserve capacity before external writes.
+
+        Authentication and insurer authorisation always run. Only a valid
+        principal with both bypass controls enabled skips the three counters.
+        """
 
         now = self._clock()
         if now.tzinfo is None:
@@ -304,18 +362,51 @@ class SubmissionBoundary:
             )
         now = now.astimezone(UTC)
         normalized_ip = client_ip.strip() or "unknown"
+        bypassed = False
+        # Keep authentication, policy evaluation, and counter reservation in a
+        # single critical section. In particular, two concurrent requests must
+        # not both observe the final available slot and then both reserve it.
         with self._lock:
-            self._reserve_ip_attempt(client_ip=normalized_ip, now=now)
-            principal = self._find_principal((api_key or "").strip())
+            try:
+                principal = self._find_principal((api_key or "").strip())
+            except SubmissionAuthenticationError:
+                # Unknown credentials never inherit a bypass. Count their
+                # attempts before returning the authentication failure so the
+                # IP boundary still protects against credential guessing.
+                self._reserve_ip_attempt(client_ip=normalized_ip, now=now)
+                raise
             if SUBMIT_CLAIM_OPERATION not in principal.permitted_operations:
+                self._reserve_ip_attempt(client_ip=normalized_ip, now=now)
                 raise SubmissionAuthorizationError(
                     "This insurer credential cannot submit claims"
                 )
             if not hmac.compare_digest(principal.insurer_id, claimed_insurer_id):
+                self._reserve_ip_attempt(client_ip=normalized_ip, now=now)
                 raise SubmissionAuthorizationError(
                     "The selected insurer does not match the authenticated credential"
                 )
-            self._reserve_principal(principal, now=now)
+
+            # Both controls must opt in: marking a credential as exempt is
+            # harmless while the server-wide switch remains false. This
+            # fail-closed pairing prevents an accidentally copied credential
+            # record from silently disabling normal abuse protection.
+            bypassed = (
+                self._allow_rate_limit_bypass and principal.rate_limit_exempt
+            )
+            if not bypassed:
+                self._reserve_ip_attempt(client_ip=normalized_ip, now=now)
+                self._reserve_principal(principal, now=now)
+
+        if bypassed:
+            # Logging happens after releasing the counter lock so log-handler
+            # latency cannot serialize otherwise independent submissions.
+            # Record only non-secret identifiers. The raw API key and its digest
+            # must never enter logs, even for an authorised performance test.
+            logger.warning(
+                "submission.rate_limit_bypassed",
+                insurer_id=principal.insurer_id,
+                bypass_scope="ip,insurer_minute,daily_quota",
+            )
         return principal
 
 

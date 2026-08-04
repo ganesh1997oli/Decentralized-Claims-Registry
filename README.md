@@ -291,6 +291,7 @@ and monitored model.
 | Area | Guide |
 | --- | --- |
 | FastAPI and insurer credentials | [Backend](apps/backend/README.md) |
+| Claim limits and controlled test bypass | [Rate-limit runbook](docs/rate-limiting-and-authorised-test-bypass.md) |
 | Browser behaviour | [Frontend](apps/frontend/README.md) |
 | Block polling and recovery | [Listener](apps/listener/README.md) |
 | Roles and lifecycle rules | [Smart contract](apps/contracts/README.md) |

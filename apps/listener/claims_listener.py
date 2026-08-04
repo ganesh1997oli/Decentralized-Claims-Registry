@@ -64,6 +64,11 @@ RPC_URL = (
 
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 CONFIRMATION_BLOCKS = int(os.environ.get("CONFIRMATION_BLOCKS", "2"))
+# Fifty blocks is deliberately conservative for an unauthenticated public RPC.
+# Raising this to 250 or 500 can drain a stale checkpoint in fewer requests, but
+# it also makes each eth_getLogs call heavier and more likely to hit a provider's
+# timeout, result-size, or rate-limit boundary. This is an operator-tuned query
+# size, not a confirmation rule or a universal production recommendation.
 MAX_BLOCK_RANGE = int(os.environ.get("MAX_BLOCK_RANGE", "50"))
 
 # Keep this order the same as the Status enum in the Solidity contract.

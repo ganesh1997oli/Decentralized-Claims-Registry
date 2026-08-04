@@ -184,6 +184,18 @@ The API uses one process, so its minute limits and daily quotas are process-loca
 and reset on restart. Nginx and FastAPI both enforce a 16 KiB request limit;
 change both settings together.
 
+Keep `ALLOW_RATE_LIMIT_BYPASS="false"` for normal deployments. A controlled
+performance-test deployment may enable it only when
+`INSURER_CREDENTIALS_JSON` contains a dedicated synthetic test credential with
+`rateLimitExempt: true`; normal insurer credentials remain limited. Disable the
+switch after testing and use a local chain instead of Sepolia for sustained
+load whenever possible.
+
+Follow the dedicated
+[rate-limiting and authorised test-bypass runbook](../../docs/rate-limiting-and-authorised-test-bypass.md)
+for credential preparation, activation checks, audit events, and the shutdown
+procedure.
+
 ### 5. Train, deploy, and verify
 
 ```bash
