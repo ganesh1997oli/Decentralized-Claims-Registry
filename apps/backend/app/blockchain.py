@@ -401,7 +401,7 @@ class SepoliaClaimsRegistry:
         try:
             claim_count = self.contract.functions.claimCount().call()
             claims: list[ChainClaim] = []
-            # Claim IDs grow from zero. Walking backwards avoids reading the whole
+              # Claim IDs grow from zero. Walking backwards avoids reading the whole
             # registry just to render one dashboard page. A production application
             # would normally serve this view from an event index instead.
             first_claim_id = claim_count - 1 - ((page - 1) * page_size)
