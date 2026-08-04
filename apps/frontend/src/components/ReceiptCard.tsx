@@ -27,7 +27,17 @@ function CopyButton({ label, value }: { label: string; value: string }) {
  * Present one claim across its two timelines: the immediate public anchor and
  * the later PostgreSQL-backed screening result written back to Sepolia.
  */
-export function ReceiptCard({ receipt }: { receipt: DisplayReceipt }) {
+type ReceiptCardProps = {
+  receipt: DisplayReceipt
+  assessmentPollingError?: string | null
+  onCheckAssessment?: () => void
+}
+
+export function ReceiptCard({
+  receipt,
+  assessmentPollingError = null,
+  onCheckAssessment,
+}: ReceiptCardProps) {
   const transactionUrl = receipt.transaction_hash
     ? `https://sepolia.etherscan.io/tx/${receipt.transaction_hash}`
     : null
@@ -286,8 +296,27 @@ export function ReceiptCard({ receipt }: { receipt: DisplayReceipt }) {
           </h3>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate">
             Kafka will pass this claim to the XGBoost worker. This page checks
-            PostgreSQL for the score and claim-specific SHAP reasons.
+            PostgreSQL automatically and will show the score and claim-specific
+            SHAP reasons as soon as they are ready. You can safely leave this tab
+            and return later.
           </p>
+          {assessmentPollingError ? (
+            <p
+              role="alert"
+              className="mt-3 max-w-2xl rounded-xl border border-coral/25 bg-coral-pale px-4 py-3 text-sm font-semibold text-coral-dark"
+            >
+              {assessmentPollingError}
+            </p>
+          ) : null}
+          {onCheckAssessment ? (
+            <button
+              type="button"
+              onClick={onCheckAssessment}
+              className="mt-4 rounded-full border border-teal/25 bg-white px-4 py-2 text-sm font-semibold text-teal transition hover:border-teal hover:bg-mint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
+            >
+              Check again now
+            </button>
+          ) : null}
         </section>
       )}
 

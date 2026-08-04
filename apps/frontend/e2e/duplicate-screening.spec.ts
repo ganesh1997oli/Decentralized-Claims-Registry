@@ -1,5 +1,12 @@
 import { expect, test } from '@playwright/test'
 
+/**
+ * Browser contract for claim submission and cross-insurer duplicate screening.
+ *
+ * API responses are controlled at the browser boundary so the scenario can
+ * verify request security and user-visible review messaging without depending
+ * on Sepolia, IPFS, Kafka, PostgreSQL, or a running FastAPI process.
+ */
 const claimPage = {
   items: [
     {
@@ -63,6 +70,8 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
     const request = route.request()
     const path = new URL(request.url()).pathname
 
+    // Capture both request channels: ordinary claim data belongs in JSON, while
+    // the insurer credential must be confined to the authentication header.
     if (request.method() === 'POST' && path === '/api/claims') {
       submittedPayload = request.postDataJSON() as Record<string, unknown>
       submittedApiKey = request.headers()['x-insurer-api-key']
@@ -99,6 +108,7 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
       return
     }
 
+    // Prevent an incomplete mock from falling through to a real local service.
     await route.abort('failed')
   })
 
@@ -122,6 +132,8 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
       'This is a review signal only. Similar synthetic incident details do not prove that either claim is fraudulent.',
     ),
   ).toBeVisible()
+  // The credential/header assertions protect the browser-side security boundary;
+  // the duplicate-message assertions above protect the user-facing behavior.
   expect(submittedPayload).toMatchObject({
     insurerId: 'harbour-shield',
     claimReference: 'harbour-production-test',

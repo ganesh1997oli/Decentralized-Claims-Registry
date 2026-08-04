@@ -165,6 +165,9 @@ async def lifespan(_app: FastAPI):
     logger.info(
         "api.submission_boundary_configured",
         boundary_type=type(boundary).__name__,
+        # This is deliberately the global, non-secret switch only. Credential
+        # exemptions and API-key material must not be disclosed at startup.
+        rate_limit_bypass_enabled=boundary.rate_limit_bypass_enabled,
     )
     yield
 
