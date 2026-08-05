@@ -77,8 +77,14 @@ MAX_BLOCK_RANGE = int(os.environ.get("MAX_BLOCK_RANGE", "50"))
 STATUS_NAMES = ["Submitted", "UnderReview", "Approved", "Rejected", "Flagged"]
 
 
-def hx(b) -> str:
-    """Hex string with a single 0x prefix, whatever .hex() returns."""
+def hx(b: Any) -> str:
+    """Normalize a Web3 byte value to one lower-level ``0x`` hex representation.
+
+    ``HexBytes.hex()`` and ``bytes.hex()`` differ on whether they include the
+    prefix. Keeping that compatibility detail here prevents event identifiers,
+    database values, and structured logs from representing the same chain value
+    in two different forms.
+    """
     s = b.hex()
     return s if s.startswith("0x") else f"0x{s}"
 
@@ -90,7 +96,14 @@ def deployment_state_paths(
     chain_id: int,
     contract_address: str,
 ) -> tuple[Path, Path]:
-    """Derive isolated listener files from the selected deployment identity."""
+    """Derive deployment-scoped paths for local operational artifacts.
+
+    The PostgreSQL checkpoint is authoritative; the checkpoint-shaped path is
+    retained for compatibility with older tooling. The dead-letter path must be
+    scoped by deployment, chain, and normalized contract address so switching a
+    local environment cannot mix quarantined events from two registries.
+    Explicit environment values override the generated defaults.
+    """
 
     state_dir = Path(
         settings.get(
@@ -132,32 +145,51 @@ def required_listener_start_block(settings: Mapping[str, str]) -> int:
     try:
         block_number = int(raw_value)
     except ValueError as exc:
-        raise ValueError(
-            "LISTENER_START_BLOCK must be a non-negative integer"
-        ) from exc
+        raise ValueError("LISTENER_START_BLOCK must be a non-negative integer") from exc
     if block_number < 0:
         raise ValueError("LISTENER_START_BLOCK must be a non-negative integer")
     return block_number
 
 
 class ClaimPayloadReader(Protocol):
-    def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes: ...
+    """Minimal IPFS read capability required by the event processor."""
+
+    def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes:
+        """Return exact content bytes or raise a typed pointer/download error."""
+
+        ...
 
 
 class BlockRangeProcessor(Protocol):
-    def process_range(self, from_block: int, to_block: int) -> None: ...
+    """Process every watched log in one inclusive blockchain range."""
+
+    def process_range(self, from_block: int, to_block: int) -> None:
+        """Finish all side effects for the range or raise before checkpointing."""
+
+        ...
 
 
 class BlockCheckpoint(Protocol):
-    def save(self, block_number: int) -> None: ...
+    """Durably record the last block whose entire range completed."""
+
+    def save(self, block_number: int) -> None:
+        """Persist the inclusive end block without allowing regression."""
+
+        ...
 
 
 class ClaimIndexWriter(Protocol):
     """Narrow persistence boundary used while handling confirmed logs."""
 
-    def index_claim_submitted(self, **values: Any) -> None: ...
+    def index_claim_submitted(self, **values: Any) -> None:
+        """Idempotently project one confirmed ``ClaimSubmitted`` log."""
 
-    def index_claim_assessed(self, **values: Any) -> None: ...
+        ...
+
+    def index_claim_assessed(self, **values: Any) -> None:
+        """Idempotently apply one confirmed ``ClaimAssessed`` log."""
+
+        ...
 
 
 class PermanentClaimEventError(RuntimeError):
@@ -165,16 +197,36 @@ class PermanentClaimEventError(RuntimeError):
 
 
 class DeadLetterSink(Protocol):
-    def record(self, event: Any, error: PermanentClaimEventError) -> None: ...
+    """Persist immutable events that cannot succeed on a later replay."""
+
+    def record(self, event: Any, error: PermanentClaimEventError) -> None:
+        """Record enough public provenance to diagnose or explicitly replay."""
+
+        ...
 
 
 class JsonlDeadLetterSink:
     """Durably record rejected public chain events for operator review."""
 
     def __init__(self, path: Path) -> None:
+        """Target an append-only JSONL file without creating it prematurely.
+
+        The parent directory and file are created only when a permanent failure
+        occurs. That keeps a healthy listener from creating unused local state
+        files while making each rejected log independently parseable and recoverable.
+        """
+
         self.path = path
 
     def record(self, event: Any, error: PermanentClaimEventError) -> None:
+        """Append the public event identity and rejection reason as one record.
+
+        The raw downloaded document is deliberately excluded: it is not needed
+        to replay the blockchain log and may contain private claim information.
+        ``transactionHash:logIndex`` lets an operator correlate this entry with
+        both Etherscan and the database audit stream.
+        """
+
         args = event["args"]
         transaction_hash = hx(event["transactionHash"])
         entry = {
@@ -214,8 +266,11 @@ class ClaimEventProcessor:
     ) -> None:
         """Keep the external adapters needed to process confirmed logs.
 
-        Metrics are optional so the same processor stays lightweight in local
-        scripts and tests. The cloud entry point supplies them explicitly.
+        ``contract`` supplies confirmed logs, ``ipfs`` verifies submitted bytes,
+        and ``publisher`` forwards verified work to scoring. ``indexer`` is
+        optional for isolated tests but the production entry point always
+        supplies it. Optional metrics and dead-letter adapters keep the core
+        ordering rules testable without starting infrastructure.
         """
 
         self.chain_id = chain_id
@@ -228,7 +283,14 @@ class ClaimEventProcessor:
         self.dead_letter = dead_letter
 
     def process_range(self, from_block: int, to_block: int) -> None:
-        """Handle all watched logs in canonical blockchain order."""
+        """Handle every watched log in an inclusive range in canonical order.
+
+        Web3 exposes one event type per query, so results are merged and sorted
+        by ``(blockNumber, logIndex)`` before dispatch. A permanent content error
+        is quarantined and processing continues; any transient adapter failure
+        escapes, preventing the poller from advancing its checkpoint and causing
+        the whole idempotent range to be retried.
+        """
 
         entries = []
         for name in self.event_names:
@@ -271,6 +333,14 @@ class ClaimEventProcessor:
         pointer: str,
         expected_hash: Any,
     ) -> bytes:
+        """Download and byte-verify the IPFS document anchored by one event.
+
+        Invalid pointers and hash mismatches are permanent because the confirmed
+        log cannot change. Gateway/network failures remain retryable. Hashing the
+        exact response bytes—without JSON parsing or normalization—preserves the
+        Solidity commitment's byte-for-byte meaning.
+        """
+
         try:
             payload = self.ipfs.download_pointer(pointer)
         except InvalidIPFSPointer as exc:
@@ -315,6 +385,14 @@ class ClaimEventProcessor:
         return payload
 
     def _handle_claim_submitted(self, event: Any) -> None:
+        """Project, verify, and optionally publish one submission in that order.
+
+        PostgreSQL is written first so the public audit log is captured even if
+        IPFS or Kafka is temporarily unavailable. The checkpoint advances only
+        after all three stages succeed; on replay, the database upsert and the
+        Kafka event ID are deterministic, allowing downstream idempotency.
+        """
+
         # The log carries both the pointer and expected hash, so verification
         # does not trust a browser receipt or a separate backend response.
         args = event["args"]
@@ -386,6 +464,13 @@ class ClaimEventProcessor:
         )
 
     def _handle_claim_assessed(self, event: Any) -> None:
+        """Apply the latest assessment state and record its immutable audit log.
+
+        Assessment logs contain no IPFS payload and are not scoring inputs, so
+        they update only the PostgreSQL projection and observability stream. The
+        repository enforces chain-position ordering during a range replay.
+        """
+
         args = event["args"]
         raw_status = args["newStatus"]
         status = (
@@ -430,6 +515,14 @@ class ConfirmedBlockPoller:
         confirmation_blocks: int,
         max_block_range: int | None = None,
     ) -> None:
+        """Configure confirmation depth and the maximum inclusive query range.
+
+        ``confirmation_blocks`` defines the safe head; ``max_block_range`` only
+        limits provider workload and does not weaken confirmation semantics.
+        Checkpoint persistence is injected so advancement can be tested without
+        a live PostgreSQL database.
+        """
+
         if confirmation_blocks < 0:
             raise ValueError("confirmation_blocks cannot be negative")
         if max_block_range is not None and max_block_range < 1:
@@ -440,6 +533,14 @@ class ConfirmedBlockPoller:
         self.max_block_range = max_block_range
 
     def process_latest(self, *, latest_block: int, last_processed: int) -> int:
+        """Process at most one safe range and return its durable end block.
+
+        Blocks newer than ``latest_block - confirmation_blocks`` are ignored to
+        reduce reorganization risk. The checkpoint is saved only after the full
+        range succeeds, so an exception leaves ``last_processed`` authoritative
+        and makes the next poll replay exactly the unfinished range.
+        """
+
         safe_block = latest_block - self.confirmation_blocks
         if safe_block <= last_processed:
             return last_processed
@@ -464,7 +565,12 @@ class ConfirmedBlockPoller:
         last_processed: int,
         should_stop: Callable[[], bool] | None = None,
     ) -> int:
-        """Drain a stale checkpoint to the confirmed head in bounded ranges."""
+        """Drain a stale checkpoint to the confirmed head in bounded ranges.
+
+        Historical chunks run back-to-back rather than waiting the live polling
+        interval between them. ``should_stop`` is checked at chunk boundaries so
+        shutdown is prompt without abandoning a partially processed range.
+        """
 
         safe_block = latest_block - self.confirmation_blocks
         while last_processed < safe_block:
@@ -483,7 +589,16 @@ class ConfirmedBlockPoller:
         return last_processed
 
 
-def main():
+def main() -> None:
+    """Run the production listener until an operating-system shutdown signal.
+
+    Startup fails before polling if the replay origin, deployment identity,
+    contract bytecode, or required adapters are invalid. The first checkpoint is
+    one block before ``LISTENER_START_BLOCK`` so the deployment block itself is
+    included. Runtime adapter failures are logged and retried from PostgreSQL;
+    the Kafka producer is flushed and closed during orderly shutdown.
+    """
+
     configure_logging("claims-listener")
     # Metrics contain no claimant data. The Ops Agent reads this private
     # endpoint on the VM and forwards the samples to Cloud Monitoring.

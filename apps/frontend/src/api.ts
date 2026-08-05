@@ -172,6 +172,8 @@ const API_BASE_URL = (
 ).replace(/\/$/, '')
 
 function isRecord(value: unknown): value is Record<string, unknown> {
+  // JSON values must be narrowed to a non-null object before property access;
+  // arrays are rejected later by shape-specific validators where relevant.
   return typeof value === 'object' && value !== null
 }
 
@@ -192,6 +194,8 @@ export function isClaimReceipt(value: unknown): value is ClaimReceipt {
 }
 
 function isDuplicateDetection(value: unknown): value is DuplicateDetection {
+  // Enforce the backend invariant that the boolean summary agrees with whether
+  // concrete matches exist, avoiding a contradictory review message in the UI.
   if (!isRecord(value) || !Array.isArray(value.matches)) return false
 
   const matchesAreValid = value.matches.every(
@@ -210,6 +214,8 @@ function isDuplicateDetection(value: unknown): value is DuplicateDetection {
 }
 
 function isClaimAssessment(value: unknown): value is ClaimAssessment {
+  // Assessment polling crosses independently deployed API/worker versions. Check
+  // every field before merging a result into a persisted browser receipt.
   if (!isRecord(value)) return false
 
   return (
@@ -237,6 +243,8 @@ function isClaimAssessment(value: unknown): value is ClaimAssessment {
 }
 
 function isClaimSummary(value: unknown): value is ClaimSummary {
+  // A claim summary is public projected state. Restrict status to the known domain
+  // vocabulary while validating every value rendered in the dashboard table.
   if (!isRecord(value)) return false
 
   const statuses: ClaimStatus[] = [
@@ -261,6 +269,8 @@ function isClaimSummary(value: unknown): value is ClaimSummary {
 }
 
 function isClaimPage(value: unknown): value is ClaimPage {
+  // Validate pagination metadata together with all rows so the workspace never
+  // navigates using totals from an incompatible or partial response.
   if (!isRecord(value)) return false
 
   return (
@@ -276,18 +286,22 @@ function isClaimPage(value: unknown): value is ClaimPage {
 }
 
 function isNullableNumber(value: unknown): value is number | null {
+  // RPC/checkpoint fields use null as an explicit unavailable state, not zero.
   return typeof value === 'number' || value === null
 }
 
 function isNullableTimestamp(value: unknown): value is string | null {
+  // Timestamps remain ISO strings until locale formatting at the display boundary.
   return typeof value === 'string' || value === null
 }
 
 function isNumberArray(value: unknown): value is number[] {
+  // Reconciliation ID lists must be homogeneous before their counts are trusted.
   return Array.isArray(value) && value.every((item) => typeof item === 'number')
 }
 
 function isClaimStatusCounts(value: unknown): value is ClaimStatusCounts {
+  // Validate all five Solidity enum buckets as a unit before drawing percentages.
   if (!isRecord(value)) return false
   return [
     value.submitted,
@@ -299,6 +313,9 @@ function isClaimStatusCounts(value: unknown): value is ClaimStatusCounts {
 }
 
 function isClaimIndexEvent(value: unknown): value is ClaimIndexEvent {
+  // This validator is the runtime trust boundary for an individual audit row.
+  // It intentionally accepts the backend's status string so a future unknown
+  // Solidity enum remains visible instead of invalidating the entire response.
   if (!isRecord(value)) return false
   return (
     typeof value.event_id === 'string' &&
@@ -316,6 +333,8 @@ function isClaimIndexEvent(value: unknown): value is ClaimIndexEvent {
 }
 
 function isClaimIndexEventPage(value: unknown): value is ClaimIndexEventPage {
+  // Validate both the bounded items and the opaque continuation token. The
+  // browser never decodes the token; it only returns it to the same API.
   if (!isRecord(value)) return false
   return (
     Array.isArray(value.items) &&
@@ -328,6 +347,8 @@ function isClaimIndexEventPage(value: unknown): value is ClaimIndexEventPage {
 function isClaimIndexReconciliation(
   value: unknown,
 ): value is ClaimIndexReconciliation {
+  // Reconciliation is durable audit evidence, so reject partial deployments
+  // instead of rendering missing difference arrays as a false success.
   if (!isRecord(value)) return false
   return (
     typeof value.indexed_through_block === 'number' &&
@@ -343,6 +364,10 @@ function isClaimIndexReconciliation(
 }
 
 function isIndexerOperations(value: unknown): value is IndexerOperations {
+  // TypeScript types are erased in production. This full structural check keeps
+  // an older/incompatible backend from being interpreted as healthy telemetry.
+  // Nullable RPC-derived fields are valid because PostgreSQL data survives an
+  // RPC outage and the backend deliberately returns a degraded snapshot.
   if (!isRecord(value)) return false
   const states: IndexerState[] = [
     'healthy',
@@ -380,6 +405,8 @@ function isIndexerOperations(value: unknown): value is IndexerOperations {
 }
 
 function errorMessage(body: unknown, status: number): string {
+  // FastAPI can return a plain detail or a validation-error array. Normalize both
+  // without exposing arbitrary response objects through React error rendering.
   if (isRecord(body) && typeof body.detail === 'string') {
     return body.detail
   }
@@ -400,6 +427,9 @@ export async function submitClaim(
   insurerApiKey: string,
   signal?: AbortSignal,
 ): Promise<ClaimReceipt> {
+  // The insurer key is header-only and the canonical claim is JSON request data.
+  // Network, non-JSON, HTTP, and response-shape failures are separated so the form
+  // can present an actionable message without trusting unvalidated server output.
   let response: Response
   try {
     response = await fetch(`${API_BASE_URL}/claims`, {
@@ -437,6 +467,9 @@ export async function getClaimAssessment(
   claimId: number,
   signal?: AbortSignal,
 ): Promise<ClaimAssessment | null> {
+  // A 404 is the normal asynchronous "not scored yet" state and maps to null.
+  // Other failures remain errors so the adaptive polling loop can disclose them
+  // while retaining the last known receipt.
   let response: Response
   try {
     response = await fetch(`${API_BASE_URL}/claims/${claimId}/assessment`, {
@@ -467,6 +500,8 @@ export async function listClaims(
   pageSize = 10,
   signal?: AbortSignal,
 ): Promise<ClaimPage> {
+  // Page controls are encoded as query parameters and the whole response is
+  // runtime-validated before it can replace workspace pagination state.
   const parameters = new URLSearchParams({
     page: String(page),
     page_size: String(pageSize),
@@ -500,6 +535,9 @@ export async function getIndexerOperations(
   operationsApiKey: string,
   signal?: AbortSignal,
 ): Promise<IndexerOperations> {
+  // The raw operator key travels only in a request header: never in the URL,
+  // query logs, or Vite build configuration. AbortError is preserved so React
+  // can discard superseded refreshes without showing a network-failure banner.
   let response: Response
   try {
     response = await fetch(`${API_BASE_URL}/operations/indexer`, {
@@ -532,6 +570,9 @@ export async function searchIndexerEvents(
   cursor: string | null = null,
   signal?: AbortSignal,
 ): Promise<ClaimIndexEventPage> {
+  // Search parameters contain only public chain metadata. The opaque keyset
+  // cursor is forwarded without interpretation, while the operations key remains
+  // isolated in its header. The backend repeats all validation before SQL.
   const parameters = new URLSearchParams({ limit: String(filters.limit) })
   if (filters.claimId !== null) {
     parameters.set('claim_id', String(filters.claimId))

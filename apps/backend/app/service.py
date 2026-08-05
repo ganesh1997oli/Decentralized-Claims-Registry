@@ -52,18 +52,31 @@ class ClaimQueryServiceError(RuntimeError):
 
 
 class IPFSStore(Protocol):
-    def upload_bytes(
-        self, payload: bytes, *, filename: str, content_type: str
-    ) -> str: ...
+    """Narrow content-addressed storage interface used during submission."""
 
-    def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes: ...
+    def upload_bytes(self, payload: bytes, *, filename: str, content_type: str) -> str:
+        """Upload exact bytes and return their content identifier."""
+
+        ...
+
+    def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes:
+        """Resolve an IPFS pointer to exact bytes with bounded retries."""
+
+        ...
 
 
 class ClaimsRegistryWriter(Protocol):
-    def submit_claim(self, claim_hash: bytes, data_pointer: str) -> ChainSubmission: ...
+    """Minimal on-chain write capability required by claim submission."""
+
+    def submit_claim(self, claim_hash: bytes, data_pointer: str) -> ChainSubmission:
+        """Anchor a hash/pointer pair and return the confirmed contract receipt."""
+
+        ...
 
 
 class ClaimsIndexReader(Protocol):
+    """Read current claims and progress from the rebuildable event projection."""
+
     def list_claims(
         self,
         *,
@@ -71,11 +84,17 @@ class ClaimsIndexReader(Protocol):
         contract_address: str,
         page: int,
         page_size: int,
-    ) -> tuple[list[IndexedClaim], int]: ...
+    ) -> tuple[list[IndexedClaim], int]:
+        """Return one bounded newest-first page and its total row count."""
+
+        ...
 
     def get_status(
         self, *, chain_id: int, contract_address: str
-    ) -> ClaimIndexStatus | None: ...
+    ) -> ClaimIndexStatus | None:
+        """Return the projection checkpoint or ``None`` before first progress."""
+
+        ...
 
 
 def canonical_claim_bytes(
@@ -83,7 +102,12 @@ def canonical_claim_bytes(
     principal: InsurerPrincipal,
     authorization: ClaimAuthorizationSigner,
 ) -> bytes:
-    """Create stable, gateway-authorized bytes for IPFS and Sepolia."""
+    """Create the one authorized byte representation used by IPFS and Sepolia.
+
+    Canonicalization, insurer binding, and the authorization signature happen
+    before either external write. The returned bytes must be uploaded and hashed
+    unchanged or the listener's later Keccak verification will reject the event.
+    """
 
     return authorization.authorized_claim_bytes(claim, principal)
 
@@ -103,13 +127,24 @@ class ClaimQueryService:
         chain_id: int,
         contract_address: str,
     ) -> None:
+        """Bind the query service permanently to one chain/contract projection.
+
+        The injected interface excludes upload and signing operations. Deployment
+        scope is stored once so no request can choose another contract through
+        user-controlled query parameters.
+        """
+
         self.index = index
         self.chain_id = chain_id
         self.contract_address = contract_address
 
     @classmethod
     def from_env(cls) -> ClaimQueryService:
-        """Build the deployment-scoped PostgreSQL read path."""
+        """Build the deployment-scoped PostgreSQL read path.
+
+        Adapter-specific configuration/storage failures are normalized to the
+        service exception translated by FastAPI into a 503 response.
+        """
 
         try:
             deployment = load_claims_deployment(os.environ)
@@ -128,7 +163,13 @@ class ClaimQueryService:
             raise ClaimQueryServiceError(str(exc)) from exc
 
     def list_claims(self, *, page: int, page_size: int) -> ClaimPageResponse:
-        """Build one browser page from the confirmed blockchain index."""
+        """Build one browser page from the confirmed blockchain index.
+
+        The projection supplies current claim rows, count, and durable progress
+        without an RPC scan. Numeric Solidity statuses are translated here so
+        persistence remains contract-shaped while the API stays domain-readable.
+        Unknown future enum values remain visible rather than failing the page.
+        """
 
         # Solidity stores statuses as compact enum numbers. Translate them at
         # this boundary so the browser works with understandable domain words.
@@ -180,9 +221,7 @@ class ClaimQueryService:
             total_items=total_items,
             total_pages=total_pages,
             indexed_through_block=(
-                index_status.last_processed_block
-                if index_status is not None
-                else None
+                index_status.last_processed_block if index_status is not None else None
             ),
         )
 
@@ -197,12 +236,24 @@ class ClaimSubmissionService:
         registry: ClaimsRegistryWriter,
         authorization: ClaimAuthorizationSigner,
     ) -> None:
+        """Bind upload, contract-write, and authorization adapters.
+
+        Keeping these write-capable dependencies separate from ``ClaimQueryService``
+        prevents ordinary dashboard reads from acquiring Pinata or wallet authority.
+        """
+
         self.ipfs = ipfs
         self.registry = registry
         self.authorization = authorization
 
     @classmethod
     def from_env(cls) -> ClaimSubmissionService:
+        """Build the production write workflow and normalize unsafe configuration.
+
+        Construction validates upload credentials, the hardened deployment,
+        submitter role, and claim-authorization signer before accepting a request.
+        """
+
         try:
             return cls(
                 ipfs=IPFSClient.from_env(require_upload=True),
@@ -224,6 +275,14 @@ class ClaimSubmissionService:
         claim: ClaimSubmission,
         principal: InsurerPrincipal,
     ) -> ClaimSubmissionResponse:
+        """Authorize, pin, verify, and anchor one claim in irreversible order.
+
+        The exact canonical bytes are read back from IPFS before their Keccak hash
+        is sent to Sepolia. A successful return means the anchor was mined and its
+        ``ClaimSubmitted`` event decoded; model assessment remains asynchronous and
+        is represented by ``assessment=None``.
+        """
+
         # These exact bytes are uploaded to IPFS and hashed for the contract.
         payload = canonical_claim_bytes(claim, principal, self.authorization)
         try:

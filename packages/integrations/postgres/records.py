@@ -41,7 +41,11 @@ class ClaimIndexStatus:
 
 @dataclass(frozen=True)
 class ClaimIndexEventRecord:
-    """One immutable public contract event shown to index operators."""
+    """One immutable public contract event shown to index operators.
+
+    ``event_id`` is the cross-retry identity; block number, log index, and event
+    ID together form the newest-first keyset pagination position.
+    """
 
     event_id: str
     claim_id: int
@@ -57,7 +61,11 @@ class ClaimIndexEventRecord:
 
 @dataclass(frozen=True)
 class ClaimIndexEventPage:
-    """One stable newest-first slice of the immutable event audit stream."""
+    """One stable newest-first slice of the immutable event audit stream.
+
+    ``has_more`` comes from fetching one row beyond the requested limit. The
+    service converts the last returned event into an opaque browser cursor.
+    """
 
     events: tuple[ClaimIndexEventRecord, ...]
     has_more: bool
@@ -80,7 +88,12 @@ class ClaimIndexReconciliationRecord:
 
 @dataclass(frozen=True)
 class ClaimIndexOperationsSnapshot:
-    """One bounded database snapshot for the authenticated operations UI."""
+    """One bounded database snapshot for the authenticated operations UI.
+
+    This record contains only durable PostgreSQL facts. The service layer adds a
+    best-effort chain-head sample and derives lag/state without contaminating the
+    repository with RPC availability concerns.
+    """
 
     checkpoint: ClaimIndexStatus | None
     total_claims: int
@@ -121,6 +134,13 @@ class AssessmentRecord:
         claim_id: int,
         score: FraudScore,
     ) -> AssessmentRecord:
+        """Create the initial durable worker record from a deterministic score.
+
+        Status is derived once from the model's flagged decision and contract scope
+        is normalized for later idempotent lookups. On-chain receipt fields remain
+        empty until the worker completes write-back.
+        """
+
         return cls(
             event_id=event_id,
             chain_id=chain_id,

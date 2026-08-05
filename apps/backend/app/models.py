@@ -108,12 +108,16 @@ class ClaimSubmissionResponse(BaseModel):
 
 
 class AssessmentReasonResponse(BaseModel):
+    """One human-readable feature contribution from the fraud model."""
+
     feature: str
     label: str
     contribution: float
 
 
 class DuplicateMatchResponse(BaseModel):
+    """One earlier public claim associated with a duplicate fingerprint."""
+
     claim_id: int = Field(ge=0)
     insurer_id: str
 
@@ -171,6 +175,8 @@ class ClaimPageResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    """Process-only health response retained for simple load-balancer probes."""
+
     status: str
 
 
@@ -207,7 +213,11 @@ class ClaimIndexEventResponse(BaseModel):
 
 
 class ClaimIndexEventPageResponse(BaseModel):
-    """One keyset-paginated slice of the authenticated event audit stream."""
+    """One keyset-paginated slice of the authenticated event audit stream.
+
+    ``next_cursor`` is an opaque position for the next older page, not a page
+    number, secret, or stable bookmark across projection rebuilds.
+    """
 
     items: list[ClaimIndexEventResponse]
     page_size: int = Field(ge=1, le=50)
@@ -229,7 +239,12 @@ class ClaimIndexReconciliationResponse(BaseModel):
 
 
 class IndexerOperationsResponse(BaseModel):
-    """Authenticated, bounded telemetry for one indexer deployment."""
+    """Authenticated, bounded telemetry for one indexer deployment.
+
+    Durable PostgreSQL fields remain populated when RPC sampling fails; chain
+    head, safe head, and lag then become null and ``state`` becomes ``degraded``.
+    The response exposes no IPFS payload, private key, or repair capability.
+    """
 
     state: Literal["healthy", "catching_up", "stalled", "uninitialized", "degraded"]
     rpc_status: Literal["available", "unavailable"]

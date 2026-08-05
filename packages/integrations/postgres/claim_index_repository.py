@@ -43,6 +43,8 @@ def claim_index_event_id(
 
 
 def _claim_from_row(row) -> IndexedClaim:
+    """Convert one trusted SQL row into the transport-independent claim record."""
+
     return IndexedClaim(
         claim_id=int(row["claim_id"]),
         claimant=str(row["claimant"]),
@@ -56,6 +58,12 @@ def _claim_from_row(row) -> IndexedClaim:
 
 
 def _event_from_row(row) -> ClaimIndexEventRecord:
+    """Convert one event row and reject an invalid driver timestamp early.
+
+    Type checks at this adapter boundary keep corrupt schema/driver output from
+    being serialized as plausible API telemetry farther up the stack.
+    """
+
     indexed_at = row["indexed_at"]
     if not isinstance(indexed_at, datetime):
         raise PostgresStorageError(
@@ -76,6 +84,13 @@ def _event_from_row(row) -> ClaimIndexEventRecord:
 
 
 def _reconciliation_from_row(row) -> ClaimIndexReconciliationRecord:
+    """Convert the latest reconciliation join into its typed audit record.
+
+    The SQL query aliases reconciliation columns because checkpoint and audit
+    timestamps coexist in one snapshot row. Keeping that mapping here prevents
+    API code from depending on database-specific names or array representations.
+    """
+
     checked_at = row["reconciliation_checked_at"]
     if not isinstance(checked_at, datetime):
         raise PostgresStorageError(
@@ -98,6 +113,13 @@ class PostgresClaimIndexRepository:
     """Persist and query the deployment-scoped public claims projection."""
 
     def __init__(self, database: PostgresDatabase) -> None:
+        """Retain the transaction-owning database adapter used by every operation.
+
+        Repository methods intentionally acquire their own cursor so related SQL
+        statements commit atomically and callers cannot accidentally advance a
+        projection outside the database adapter's rollback behavior.
+        """
+
         self.database = database
 
     @staticmethod
@@ -117,7 +139,13 @@ class PostgresClaimIndexRepository:
         status: int,
         fraud_score: int,
     ) -> None:
-        """Append an immutable audit event, tolerating an exact listener replay."""
+        """Append an immutable audit event, tolerating an exact listener replay.
+
+        ``event_id`` is derived from chain ID, transaction hash, and log index.
+        ``ON CONFLICT DO NOTHING`` is safe because those values identify immutable
+        confirmed log content; the projection update in the same transaction still
+        executes and independently enforces state ordering.
+        """
 
         cursor.execute(
             """
@@ -295,7 +323,14 @@ class PostgresClaimIndexRepository:
         log_index: int,
         event_timestamp: int,
     ) -> None:
-        """Apply a lifecycle event without allowing an older replay to regress it."""
+        """Apply a lifecycle event without allowing an older replay to regress it.
+
+        The audit append and current-state update share one transaction. Tuple
+        ordering on ``(block_number, log_index)`` accepts the same event again and
+        newer assessments, but ignores older replays. A missing submission is not
+        treated as a replay: it signals an incomplete backfill and stops checkpoint
+        advancement so the operator can rebuild from the deployment block.
+        """
 
         normalized_contract = contract_address.lower()
         normalized_transaction = transaction_hash.lower()
@@ -376,7 +411,13 @@ class PostgresClaimIndexRepository:
         page: int,
         page_size: int,
     ) -> tuple[list[IndexedClaim], int]:
-        """Read one newest-first page from the indexed contract projection."""
+        """Read one newest-first OFFSET page and its statement-consistent total.
+
+        Claim IDs are immutable and monotonically allocated by the contract, so
+        newest-first ordering is deterministic for the public claims dashboard.
+        This bounded page-number API is separate from the high-churn event stream,
+        which uses keyset cursors to avoid insertion drift.
+        """
 
         normalized_contract = contract_address.lower()
         offset = (page - 1) * page_size
@@ -433,7 +474,11 @@ class PostgresClaimIndexRepository:
     def get_claim(
         self, *, chain_id: int, contract_address: str, claim_id: int
     ) -> IndexedClaim | None:
-        """Return one projected claim for reconciliation and focused reads."""
+        """Return one deployment-scoped claim or ``None`` when it is not indexed.
+
+        Absence is data for reconciliation rather than a storage failure, so this
+        method does not translate a missing row into an exception.
+        """
 
         with self.database.cursor() as cursor:
             cursor.execute(
@@ -450,7 +495,12 @@ class PostgresClaimIndexRepository:
     def get_status(
         self, *, chain_id: int, contract_address: str
     ) -> ClaimIndexStatus | None:
-        """Return the checkpoint visible to API instances and operators."""
+        """Return the deployment checkpoint visible to APIs and operators.
+
+        ``None`` means the listener has never completed a range for this exact
+        chain/contract pair. The timestamp is validated because snapshot age is
+        later used to distinguish catching up from stalled.
+        """
 
         with self.database.cursor() as cursor:
             cursor.execute(
@@ -732,7 +782,13 @@ class PostgresClaimIndexRepository:
         consistent: bool,
         duration_ms: int,
     ) -> None:
-        """Append one reconciliation audit result without changing projection."""
+        """Append one reconciliation audit result without changing projection.
+
+        Difference arrays are persisted as PostgreSQL integer arrays so the last
+        check remains inspectable after process restart. Reconciliation history is
+        append-only: a later successful comparison must not erase evidence of an
+        earlier mismatch.
+        """
 
         with self.database.cursor() as cursor:
             cursor.execute(
@@ -762,7 +818,12 @@ class PostgresClaimIndexRepository:
     def load_checkpoint(
         self, *, chain_id: int, contract_address: str, default: int
     ) -> int:
-        """Load durable progress, using the configured deployment start once."""
+        """Load durable progress, using the configured replay origin only once.
+
+        ``default`` is normally one block before the deployment block. It is used
+        only when no checkpoint row exists; configuration changes cannot silently
+        move a projection that has already begun indexing.
+        """
 
         status = self.get_status(
             chain_id=chain_id,
@@ -773,7 +834,12 @@ class PostgresClaimIndexRepository:
     def save_checkpoint(
         self, *, chain_id: int, contract_address: str, block_number: int
     ) -> None:
-        """Advance progress monotonically after the entire block range succeeds."""
+        """Advance progress monotonically after an entire block range succeeds.
+
+        The conditional upsert makes late/retried workers unable to move the shared
+        checkpoint backward. Callers must still obey the poller's rule that all
+        events and side effects in the range finish before invoking this method.
+        """
 
         with self.database.cursor() as cursor:
             cursor.execute(
@@ -802,11 +868,19 @@ class PostgresClaimIndexCheckpoint:
         chain_id: int,
         contract_address: str,
     ) -> None:
+        """Bind the generic poller checkpoint to one deployment scope.
+
+        Normalization and SQL behavior remain in the repository; this adapter only
+        supplies the chain and contract identity required by its narrow protocol.
+        """
+
         self.repository = repository
         self.chain_id = chain_id
         self.contract_address = contract_address
 
     def load(self, *, default: int) -> int:
+        """Return the durable block or the caller's first-run replay origin."""
+
         return self.repository.load_checkpoint(
             chain_id=self.chain_id,
             contract_address=self.contract_address,
@@ -814,6 +888,8 @@ class PostgresClaimIndexCheckpoint:
         )
 
     def save(self, block_number: int) -> None:
+        """Persist a successfully processed inclusive range end monotonically."""
+
         self.repository.save_checkpoint(
             chain_id=self.chain_id,
             contract_address=self.contract_address,

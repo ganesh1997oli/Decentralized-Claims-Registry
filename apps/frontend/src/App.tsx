@@ -12,6 +12,9 @@ export { IndexerOperationsView } from './components/IndexerOperationsDashboard.t
 export { ReceiptCard } from './components/ReceiptCard.tsx'
 
 function DataBoundaryAside() {
+  // Keep the prototype's privacy boundary visible beside submission: public IPFS
+  // and Sepolia must receive synthetic data only, while the browser retains no
+  // backend credential or model artifact.
   return (
     <aside className="space-y-5 lg:sticky lg:top-6">
       <section className="rounded-3xl bg-ink p-6 text-white">
@@ -196,6 +199,8 @@ function RegistryApp() {
 }
 
 function OperationsApp() {
+  // The operations route has a separate shell so its authenticated telemetry is
+  // not mounted, polled, or given a credential while a user visits the claims UI.
   return (
     <div className="min-h-screen">
       <header className="border-b border-white/10 bg-ink text-white">
@@ -236,6 +241,9 @@ function OperationsApp() {
 }
 
 function App() {
+  // This small deployment has two entry surfaces and needs no client-side router.
+  // Normalize only the trailing slash; every non-operations path falls back to the
+  // claims application so static hosting refreshes remain predictable.
   const pathname =
     typeof window === 'undefined' ? '/' : (window.location?.pathname ?? '/')
   return pathname.replace(/\/$/, '') === '/operations' ? (

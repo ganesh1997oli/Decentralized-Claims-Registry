@@ -108,6 +108,12 @@ def load_submission_boundary() -> SubmissionBoundary:
 
 
 def get_submission_boundary() -> SubmissionBoundary:
+    """Translate unsafe insurer-auth configuration into service unavailability.
+
+    A missing boundary is a server deployment problem, not a bad caller key, so it
+    returns 503 before request-specific authentication and quota reservation.
+    """
+
     try:
         return load_submission_boundary()
     except SubmissionAuthConfigurationError as exc:
@@ -165,6 +171,13 @@ InsurerPrincipalDependency = Annotated[
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    """Validate critical local configuration before the API accepts traffic.
+
+    Deployment metadata and insurer authentication are deterministic startup
+    prerequisites. Remote dependencies remain readiness checks so a temporary
+    outage does not force a process restart loop.
+    """
+
     configure_logging("claims-api")
     # Artifact selection is local and fast. Refuse to start with a missing,
     # legacy, or incompatible contract instead of discovering it on first use.
@@ -305,6 +318,13 @@ def load_indexer_operations_boundary() -> IndexerOperationsBoundary:
 
 
 def get_indexer_operations_boundary() -> IndexerOperationsBoundary:
+    """Translate digest configuration failure into a dependency-level 503.
+
+    Authentication cannot be attempted safely without a valid configured digest.
+    Treating that as service unavailability distinguishes operator error from an
+    incorrect browser credential, which returns 401 later in the dependency chain.
+    """
+
     try:
         return load_indexer_operations_boundary()
     except IndexerOperationsConfigurationError as exc:
@@ -347,6 +367,13 @@ IndexerOperationsAccessDependency = Annotated[
 
 @lru_cache
 def get_indexer_operations_service() -> IndexerOperationsService:
+    """Construct and cache the read-only indexer operations service.
+
+    The service owns environment-backed PostgreSQL and RPC adapters. FastAPI
+    caches it per process, while each request still performs fresh database and
+    chain reads through those adapters.
+    """
+
     try:
         return IndexerOperationsService.from_env()
     except IndexerOperationsServiceError as exc:
@@ -371,6 +398,8 @@ def get_readiness_probe() -> ReadinessProbe:
 
 @app.get("/health", response_model=HealthResponse, tags=["operations"])
 def health() -> HealthResponse:
+    """Preserve the legacy process-only health endpoint for existing monitors."""
+
     return HealthResponse(status="ok")
 
 
@@ -390,7 +419,12 @@ def health_live() -> HealthResponse:
 def health_ready(
     probe: Annotated[ReadinessProbe, Depends(get_readiness_probe)],
 ) -> ReadinessResponse | JSONResponse:
-    """Report whether every dependency required for traffic is usable."""
+    """Report whether every dependency required for traffic is currently usable.
+
+    A not-ready result deliberately returns the same structured body with HTTP
+    503, allowing load balancers to stop routing traffic while operators retain
+    per-dependency diagnostics.
+    """
 
     result = probe.evaluate()
     body = ReadinessResponse(
@@ -417,7 +451,12 @@ def get_indexer_operations(
     _access: IndexerOperationsAccessDependency,
     service: IndexerOperationsServiceDependency,
 ) -> IndexerOperationsResponse:
-    """Return a bounded read-only indexer snapshot for trusted operators."""
+    """Return a bounded read-only indexer snapshot for a trusted operator.
+
+    The access dependency executes before this function and before a snapshot is
+    assembled, so unauthenticated requests cannot trigger PostgreSQL or RPC work.
+    Service failures become sanitized 503 responses rather than partial JSON.
+    """
 
     try:
         return service.snapshot()
@@ -459,7 +498,12 @@ def search_indexer_events(
     cursor: Annotated[str | None, Query(min_length=1, max_length=512)] = None,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> ClaimIndexEventPageResponse:
-    """Search confirmed immutable events using an opaque keyset cursor."""
+    """Search confirmed immutable events using an opaque keyset cursor.
+
+    FastAPI performs primitive range/pattern validation, then the service applies
+    cross-field and cursor validation. Filters describe public blockchain data;
+    the operator key remains exclusively in the authentication header.
+    """
 
     try:
         return service.search_events(
@@ -490,6 +534,13 @@ def list_claims(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> ClaimPageResponse:
+    """Return one validated page from the deployment-scoped PostgreSQL index.
+
+    This route performs no blockchain RPC scan. The response includes the durable
+    checkpoint so consumers can distinguish confirmed projection progress from
+    the volatile latest chain head shown on the operations surface.
+    """
+
     # FastAPI checks the page values before this function is called.
     try:
         return service.list_claims(page=page, page_size=page_size)
@@ -513,6 +564,13 @@ def get_claim_assessment(
     repositories: PostgresRepositoriesDependency,
     deployment: ActiveDeploymentDependency,
 ) -> ClaimAssessmentResponse:
+    """Return the latest durable assessment and duplicate-review context.
+
+    Both reads are scoped to the active chain and contract. A missing assessment is
+    an expected asynchronous state and returns 404 for the browser polling loop;
+    storage failure is operational unavailability and returns 503.
+    """
+
     try:
         query = {
             "chain_id": deployment.chain_id,
@@ -579,6 +637,13 @@ def submit_claim(
     principal: InsurerPrincipalDependency,
     service: ClaimServiceDependency,
 ) -> ClaimSubmissionResponse:
+    """Submit one authenticated insurer claim through the write workflow.
+
+    Authentication and quota reservation run as dependencies before this handler.
+    The service owns canonicalization, IPFS verification, and confirmed Sepolia
+    anchoring; this route only maps a workflow failure to an upstream 502 response.
+    """
+
     # The service owns the workflow; this route only translates failures into
     # an HTTP response the frontend can understand.
     try:

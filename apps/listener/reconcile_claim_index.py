@@ -33,17 +33,30 @@ logger = get_event_logger(__name__)
 
 
 class ContractClaimReader(Protocol):
-    def claim_count(self, *, block_identifier: int | None = None) -> int: ...
+    """Read authoritative claim state at one optional historical block."""
+
+    def claim_count(self, *, block_identifier: int | None = None) -> int:
+        """Return the registry's next claim ID at the selected block."""
+
+        ...
 
     def get_claim(
         self, claim_id: int, *, block_identifier: int | None = None
-    ) -> ChainClaim: ...
+    ) -> ChainClaim:
+        """Return one authoritative public claim at the selected block."""
+
+        ...
 
 
 class IndexedClaimReader(Protocol):
+    """Read the deployment-scoped PostgreSQL projection and checkpoint."""
+
     def get_claim(
         self, *, chain_id: int, contract_address: str, claim_id: int
-    ) -> IndexedClaim | None: ...
+    ) -> IndexedClaim | None:
+        """Return one projected claim or ``None`` when it is missing."""
+
+        ...
 
     def list_claims(
         self,
@@ -52,16 +65,28 @@ class IndexedClaimReader(Protocol):
         contract_address: str,
         page: int,
         page_size: int,
-    ) -> tuple[list[IndexedClaim], int]: ...
+    ) -> tuple[list[IndexedClaim], int]:
+        """Return one bounded page and the projection's statement-time total."""
+
+        ...
 
     def get_status(
         self, *, chain_id: int, contract_address: str
-    ) -> ClaimIndexStatus | None: ...
+    ) -> ClaimIndexStatus | None:
+        """Return the durable comparison block or ``None`` before initialization."""
+
+        ...
 
 
 @dataclass(frozen=True)
 class ClaimIndexReconciliation:
-    """Small machine-readable result suitable for CI or an operator script."""
+    """Machine-readable differences between one chain and index snapshot.
+
+    Claim IDs are kept in separate categories so an operator can distinguish a
+    missing backfill, an impossible extra row, and a stale current-state row.
+    The checkpoint block records exactly which historical contract state was
+    compared; the result never implies agreement with blocks mined afterward.
+    """
 
     indexed_through_block: int
     chain_claims: int
@@ -72,6 +97,8 @@ class ClaimIndexReconciliation:
 
     @property
     def consistent(self) -> bool:
+        """Return true only when every difference category is empty."""
+
         return not (
             self.missing_claim_ids
             or self.unexpected_claim_ids
@@ -80,7 +107,13 @@ class ClaimIndexReconciliation:
 
 
 def _same_public_state(chain: ChainClaim, indexed: IndexedClaim) -> bool:
-    """Compare only fields represented by both authoritative and derived state."""
+    """Compare only public fields represented by both state models.
+
+    Ethereum addresses and hashes are case-insensitive hexadecimal values, while
+    the IPFS pointer is an exact string. Database-only provenance such as block
+    position and indexing time is intentionally excluded from this contract
+    state comparison.
+    """
 
     return (
         chain.claim_id == indexed.claim_id
@@ -104,11 +137,30 @@ class ClaimIndexReconciler:
         contract: ContractClaimReader,
         index: IndexedClaimReader,
     ) -> None:
+        """Bind one deployment to its authoritative and projected readers.
+
+        Dependency injection makes it possible to exercise reconciliation with
+        deterministic snapshots. The deployment identity is reused for every
+        database query so claims from another chain or contract cannot enter the
+        comparison.
+        """
+
         self.deployment = deployment
         self.contract = contract
         self.index = index
 
     def reconcile(self) -> ClaimIndexReconciliation:
+        """Compare all indexed claims with contract state at the checkpoint.
+
+        Every contract call is pinned to ``last_processed_block``. Indexed rows
+        are fetched in bounded pages, then chain IDs ``0..claim_count-1`` are
+        checked individually. The method performs no writes; callers may safely
+        decide whether and where to persist the resulting audit record.
+
+        Raises:
+            RuntimeError: If no durable checkpoint exists yet.
+        """
+
         scope = {
             "chain_id": self.deployment.chain_id,
             "contract_address": self.deployment.address,
@@ -136,9 +188,7 @@ class ClaimIndexReconciler:
                 page=page,
                 page_size=1_000,
             )
-            indexed_by_id.update(
-                (claim.claim_id, claim) for claim in indexed_page
-            )
+            indexed_by_id.update((claim.claim_id, claim) for claim in indexed_page)
             if not indexed_page:
                 break
             page += 1
@@ -169,6 +219,14 @@ class ClaimIndexReconciler:
 
 
 def main() -> None:
+    """Run one reconciliation, persist its audit result, and signal consistency.
+
+    The JSON line on stdout is suitable for scripts. Both successful and failed
+    comparisons are appended to PostgreSQL, while a mismatch exits with status
+    one so CI or an operator runbook can stop before declaring the index healthy.
+    This command never repairs projection rows.
+    """
+
     configure_logging("claims-index-reconciler")
 
     deployment = load_claims_deployment(os.environ)

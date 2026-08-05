@@ -7,6 +7,15 @@ import secrets
 
 
 def main() -> None:
+    """Print one random raw operator key and its configuration-safe digest.
+
+    The 32-byte token is intended for one-time delivery to an operator password
+    manager. Only the SHA-256 digest should be placed in ``.env.local`` or a
+    production secret manager; rerunning this command creates a new unrelated
+    credential and does not rotate a running process until its environment is
+    updated and the process is restarted.
+    """
+
     # The raw key is intentionally printed once for delivery to the operator.
     # Only its one-way digest belongs in API configuration or a secret manager.
     api_key = secrets.token_urlsafe(32)

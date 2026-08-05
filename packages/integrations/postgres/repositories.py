@@ -33,6 +33,13 @@ class PostgresRepositories:
 
     @classmethod
     def from_database(cls, database: PostgresDatabase) -> PostgresRepositories:
+        """Construct every focused repository over identical connection settings.
+
+        Repositories still open independent transactions per operation; sharing the
+        small database adapter guarantees consistent URL, row factory, and failure
+        translation without creating a global live connection.
+        """
+
         return cls(
             claims=PostgresClaimIndexRepository(database),
             assessments=PostgresAssessmentRepository(database),
@@ -43,4 +50,6 @@ class PostgresRepositories:
 
     @classmethod
     def from_env(cls) -> PostgresRepositories:
+        """Build the repository bundle from the required ``DATABASE_URL``."""
+
         return cls.from_database(PostgresDatabase.from_env())

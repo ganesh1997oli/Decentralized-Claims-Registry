@@ -2,6 +2,8 @@ import type { ClaimStatus, ClaimSummary } from '../api.ts'
 import { ipfsUrl, shorten } from '../claim-display.ts'
 
 function statusClasses(status: ClaimStatus): string {
+  // Map domain state to presentation only; status meaning is established by the
+  // backend's Solidity-enum translation and is not recalculated in the browser.
   switch (status) {
     case 'Flagged':
       return 'border-coral/30 bg-coral-pale text-coral-dark'
@@ -17,6 +19,8 @@ function statusClasses(status: ClaimStatus): string {
 }
 
 function formatTimestamp(timestamp: number): string {
+  // Contract timestamps are Unix seconds. Convert to milliseconds exactly once
+  // before locale-aware display, leaving ordering to immutable claim IDs.
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short',
@@ -40,7 +44,13 @@ type ClaimsDashboardProps = {
   onPageSizeChange: (pageSize: number) => void
 }
 
-/** Render a read-only, paginated view of the current Sepolia claim state. */
+/**
+ * Render a read-only page of current state reconstructed from confirmed events.
+ *
+ * Pagination and request ownership remain in the workspace hook. This component
+ * only emits navigation intents and shows ``indexedThroughBlock`` so users do not
+ * confuse projection progress with an unqualified live-chain claim.
+ */
 export function ClaimsDashboard({
   claims,
   page,

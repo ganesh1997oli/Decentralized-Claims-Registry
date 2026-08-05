@@ -47,6 +47,9 @@ const EMPTY_EVENT_SEARCH_DRAFT: EventSearchDraft = {
 }
 
 function readSessionKey(): string {
+  // sessionStorage scopes the raw credential to this browser tab and clears it
+  // when the tab closes. A storage-policy exception fails as logged-out rather
+  // than preventing the dashboard from rendering.
   if (typeof window === 'undefined') return ''
   try {
     return window.sessionStorage?.getItem(OPERATIONS_KEY_SESSION_STORAGE) ?? ''
@@ -58,6 +61,8 @@ function readSessionKey(): string {
 }
 
 function storeSessionKey(apiKey: string): void {
+  // Persist only after FastAPI has authenticated the candidate. localStorage is
+  // deliberately avoided because it would retain the credential across sessions.
   if (typeof window === 'undefined') return
   try {
     window.sessionStorage?.setItem(OPERATIONS_KEY_SESSION_STORAGE, apiKey)
@@ -67,6 +72,8 @@ function storeSessionKey(apiKey: string): void {
 }
 
 function clearSessionKey(): void {
+  // Storage is best-effort; callers also clear React state and active requests,
+  // so an unavailable Web Storage API cannot block an in-memory lock operation.
   if (typeof window === 'undefined') return
   try {
     window.sessionStorage?.removeItem(OPERATIONS_KEY_SESSION_STORAGE)
@@ -76,10 +83,13 @@ function clearSessionKey(): void {
 }
 
 function formatBlock(block: number | null): string {
+  // Null is a meaningful degraded/uninitialized state, not block zero.
   return block === null ? 'Unavailable' : block.toLocaleString()
 }
 
 function formatDate(value: string | null): string {
+  // The API emits ISO timestamps in UTC; Intl presents them in the operator's
+  // locale without changing the underlying value used for health decisions.
   if (value === null) return 'Never'
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
@@ -88,6 +98,8 @@ function formatDate(value: string | null): string {
 }
 
 function formatAge(seconds: number | null): string {
+  // Age is supplied by the backend so every browser sees the same classification;
+  // this helper only chooses a compact display unit and never recomputes staleness.
   if (seconds === null) return 'Unavailable'
   if (seconds < 60) return `${seconds}s ago`
   if (seconds < 3_600) return `${Math.floor(seconds / 60)}m ago`
@@ -99,6 +111,8 @@ function statePresentation(state: IndexerState): {
   classes: string
   explanation: string
 } {
+  // Keep operational semantics from the backend intact while centralizing the
+  // label, color, and explanation shown in the summary header.
   switch (state) {
     case 'healthy':
       return {
@@ -142,6 +156,8 @@ function MetricCard({
   value: string
   detail: string
 }) {
+  // This component is intentionally presentation-only. Keeping data derivation in
+  // the backend prevents four cards from calculating incompatible health facts.
   return (
     <article className="rounded-2xl border border-ink/8 bg-white p-5 shadow-sm">
       <p className="text-xs font-bold tracking-[0.14em] text-slate uppercase">
@@ -156,6 +172,9 @@ function MetricCard({
 }
 
 function parseBlockFilter(value: string, label: string): number | null {
+  // Inputs remain strings while editing so an empty field is possible. Accept only
+  // unsigned decimal integers representable exactly by JavaScript; FastAPI repeats
+  // the non-negative constraint because client validation is never authoritative.
   const normalized = value.trim()
   if (!normalized) return null
   if (!/^\d+$/.test(normalized)) {
@@ -169,6 +188,9 @@ function parseBlockFilter(value: string, label: string): number | null {
 }
 
 function buildEventSearch(draft: EventSearchDraft): IndexerEventSearch {
+  // One identity field accepts either a claim ID or a complete transaction hash.
+  // Requiring the full hash preserves an indexed equality query and avoids an
+  // expensive/ambiguous substring scan over the immutable audit table.
   const identity = draft.identity.trim()
   let claimId: number | null = null
   let transactionHash: string | null = null
@@ -224,11 +246,16 @@ function EventAuditPanel({
   onOlder: () => void
   onNewer: () => void
 }) {
+  // Draft form state is separate from the applied search owned by the dashboard.
+  // Editing controls therefore cannot change a page until validation succeeds and
+  // Search is submitted; pagination always uses one stable applied filter set.
   const [draft, setDraft] = useState<EventSearchDraft>(EMPTY_EVENT_SEARCH_DRAFT)
   const [formError, setFormError] = useState<string | null>(null)
   const events = page?.items ?? []
 
   function submit(event: FormEvent<HTMLFormElement>) {
+    // Convert all draft strings as one operation. A validation failure leaves the
+    // current result page and cursor stack untouched for operator comparison.
     event.preventDefault()
     try {
       const filters = buildEventSearch(draft)
@@ -244,6 +271,8 @@ function EventAuditPanel({
   }
 
   function clear() {
+    // Clearing is an applied unfiltered search, not just a visual form reset, so
+    // the parent also returns pagination to the newest event page.
     setDraft(EMPTY_EVENT_SEARCH_DRAFT)
     setFormError(null)
     onSearch(DEFAULT_EVENT_SEARCH)
@@ -506,7 +535,13 @@ function EventAuditPanel({
   )
 }
 
-/** Pure snapshot presentation exported for server-rendered regression tests. */
+/**
+ * Render an already-authenticated telemetry snapshot and event page.
+ *
+ * The component performs no network or credential work. Keeping it pure makes
+ * server-rendered regression tests deterministic and prevents presentation code
+ * from creating a second interpretation of backend health state.
+ */
 export function IndexerOperationsView({
   snapshot,
   isRefreshing,
@@ -797,7 +832,13 @@ export function IndexerOperationsView({
   )
 }
 
-/** Credential gate and polling lifecycle for the operations snapshot. */
+/**
+ * Own the credential gate, refresh lifecycle, event search, and cursor history.
+ *
+ * Raw credentials stay in memory/sessionStorage and are passed only to the API
+ * client. Telemetry polling and event searches use independent abort controllers
+ * because a slow RPC sample must not block PostgreSQL-only audit exploration.
+ */
 export function IndexerOperationsDashboard() {
   const [draftKey, setDraftKey] = useState('')
   const [activeKey, setActiveKey] = useState(readSessionKey)
@@ -893,6 +934,9 @@ export function IndexerOperationsDashboard() {
   )
 
   useEffect(() => {
+    // Poll only while authenticated and visible. The currently rendered snapshot
+    // remains available if a later refresh fails, and cleanup aborts work when the
+    // credential changes or the component unmounts.
     if (!activeKey) return
     // A successful unlock already supplied the first snapshot. A restored
     // session key does not, so only that path needs an immediate request.
@@ -908,6 +952,8 @@ export function IndexerOperationsDashboard() {
   }, [activeKey, load, snapshot])
 
   useEffect(() => {
+    // A newly authenticated key begins one independent event-query lifecycle at
+    // the newest unfiltered page. Disconnect/unmount aborts any in-flight search.
     if (!activeKey) return
     setEventFilters(DEFAULT_EVENT_SEARCH)
     setEventCursors([null])
@@ -921,6 +967,8 @@ export function IndexerOperationsDashboard() {
   }, [activeKey, loadEvents])
 
   function connect(event: FormEvent<HTMLFormElement>) {
+    // Do not activate or persist a candidate until a real protected request has
+    // succeeded. This catches both an invalid key and a backend using an old digest.
     event.preventDefault()
     const candidate = draftKey.trim()
     if (!candidate) {
@@ -931,6 +979,8 @@ export function IndexerOperationsDashboard() {
   }
 
   function disconnect() {
+    // Abort both request classes before erasing all credential-derived state. This
+    // prevents a late response from repopulating the locked dashboard.
     request.current?.abort()
     request.current = null
     eventRequest.current?.abort()
@@ -949,6 +999,8 @@ export function IndexerOperationsDashboard() {
   }
 
   function searchEvents(filters: IndexerEventSearch) {
+    // Applying different filters invalidates every old cursor because cursors are
+    // positions within a particular ordered result set, not global page numbers.
     setEventFilters(filters)
     setEventCursors([null])
     setEventPageNumber(1)
@@ -957,6 +1009,8 @@ export function IndexerOperationsDashboard() {
   }
 
   function showOlderEvents() {
+    // The server-provided cursor names the first position strictly older than this
+    // page. Store it at the next page index before requesting that older slice.
     const cursor = eventPage?.next_cursor
     if (!cursor) return
     const nextPageNumber = eventPageNumber + 1
@@ -971,6 +1025,9 @@ export function IndexerOperationsDashboard() {
   }
 
   function showNewerEvents() {
+    // PostgreSQL exposes only forward (older) keyset traversal. Returning newer is
+    // deterministic because the browser retains the cursor that opened each page;
+    // page one uses null to mean the current newest matching row.
     if (eventPageNumber <= 1) return
     const previousPageNumber = eventPageNumber - 1
     const cursor = eventCursors[previousPageNumber - 1] ?? null
