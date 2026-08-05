@@ -2,6 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   getIndexerOperations,
+  searchIndexerEvents,
+  type ClaimIndexEvent,
+  type ClaimIndexEventPage,
+  type ClaimStatus,
+  type IndexerEventSearch,
   type IndexerOperations,
   type IndexerState,
 } from '../api.ts'
@@ -11,6 +16,35 @@ const OPERATIONS_KEY_SESSION_STORAGE =
   'claims-registry:indexer-operations-key:v1'
 const REFRESH_INTERVAL_MS = 15_000
 const ETHERSCAN_BASE_URL = 'https://sepolia.etherscan.io'
+const TRANSACTION_HASH = /^0x[0-9a-fA-F]{64}$/
+
+const DEFAULT_EVENT_SEARCH: IndexerEventSearch = {
+  claimId: null,
+  transactionHash: null,
+  eventType: null,
+  status: null,
+  fromBlock: null,
+  toBlock: null,
+  limit: 20,
+}
+
+type EventSearchDraft = {
+  identity: string
+  eventType: '' | ClaimIndexEvent['event_type']
+  status: '' | ClaimStatus
+  fromBlock: string
+  toBlock: string
+  limit: number
+}
+
+const EMPTY_EVENT_SEARCH_DRAFT: EventSearchDraft = {
+  identity: '',
+  eventType: '',
+  status: '',
+  fromBlock: '',
+  toBlock: '',
+  limit: 20,
+}
 
 function readSessionKey(): string {
   if (typeof window === 'undefined') return ''
@@ -121,19 +155,384 @@ function MetricCard({
   )
 }
 
+function parseBlockFilter(value: string, label: string): number | null {
+  const normalized = value.trim()
+  if (!normalized) return null
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error(`${label} must be a non-negative block number.`)
+  }
+  const block = Number(normalized)
+  if (!Number.isSafeInteger(block)) {
+    throw new Error(`${label} is outside the supported integer range.`)
+  }
+  return block
+}
+
+function buildEventSearch(draft: EventSearchDraft): IndexerEventSearch {
+  const identity = draft.identity.trim()
+  let claimId: number | null = null
+  let transactionHash: string | null = null
+  if (identity) {
+    const possibleClaimId = identity.startsWith('#')
+      ? identity.slice(1)
+      : identity
+    if (/^\d+$/.test(possibleClaimId)) {
+      claimId = Number(possibleClaimId)
+      if (!Number.isSafeInteger(claimId)) {
+        throw new Error('Claim ID is outside the supported integer range.')
+      }
+    } else if (TRANSACTION_HASH.test(identity)) {
+      transactionHash = identity.toLowerCase()
+    } else {
+      throw new Error(
+        'Enter a numeric claim ID or a complete 66-character transaction hash.',
+      )
+    }
+  }
+
+  const fromBlock = parseBlockFilter(draft.fromBlock, 'From block')
+  const toBlock = parseBlockFilter(draft.toBlock, 'To block')
+  if (fromBlock !== null && toBlock !== null && fromBlock > toBlock) {
+    throw new Error('From block cannot be greater than to block.')
+  }
+
+  return {
+    claimId,
+    transactionHash,
+    eventType: draft.eventType || null,
+    status: draft.status || null,
+    fromBlock,
+    toBlock,
+    limit: draft.limit,
+  }
+}
+
+function EventAuditPanel({
+  page,
+  pageNumber,
+  isLoading,
+  error,
+  onSearch,
+  onOlder,
+  onNewer,
+}: {
+  page: ClaimIndexEventPage | null
+  pageNumber: number
+  isLoading: boolean
+  error: string | null
+  onSearch: (filters: IndexerEventSearch) => void
+  onOlder: () => void
+  onNewer: () => void
+}) {
+  const [draft, setDraft] = useState<EventSearchDraft>(EMPTY_EVENT_SEARCH_DRAFT)
+  const [formError, setFormError] = useState<string | null>(null)
+  const events = page?.items ?? []
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      const filters = buildEventSearch(draft)
+      setFormError(null)
+      onSearch(filters)
+    } catch (validationError) {
+      setFormError(
+        validationError instanceof Error
+          ? validationError.message
+          : 'The event filters are invalid.',
+      )
+    }
+  }
+
+  function clear() {
+    setDraft(EMPTY_EVENT_SEARCH_DRAFT)
+    setFormError(null)
+    onSearch(DEFAULT_EVENT_SEARCH)
+  }
+
+  return (
+    <section className="overflow-hidden rounded-3xl border border-ink/8 bg-white">
+      <div className="border-b border-ink/8 px-6 py-5 sm:px-8">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-xs font-bold tracking-[0.16em] text-teal uppercase">
+              Audit stream
+            </p>
+            <h2 className="mt-1 text-2xl font-bold text-ink">Event explorer</h2>
+            <p className="mt-1 text-sm text-slate">
+              Search confirmed immutable events without rescanning Sepolia.
+            </p>
+          </div>
+          <span className="w-fit rounded-full bg-mint px-3 py-1.5 text-xs font-bold text-teal">
+            Page {pageNumber} · {events.length} shown
+          </span>
+        </div>
+      </div>
+
+      <form onSubmit={submit} className="border-b border-ink/8 bg-sand/55 px-6 py-5 sm:px-8">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+          <label className="field-group md:col-span-2 xl:col-span-2">
+            <span className="field-label">Claim or transaction</span>
+            <input
+              type="search"
+              value={draft.identity}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  identity: event.target.value,
+                }))
+              }
+              className="field-control font-mono"
+              placeholder="#6 or full 0x transaction hash"
+              disabled={isLoading}
+            />
+          </label>
+          <label className="field-group">
+            <span className="field-label">Event</span>
+            <select
+              value={draft.eventType}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  eventType: event.target.value as EventSearchDraft['eventType'],
+                }))
+              }
+              className="field-control"
+              disabled={isLoading}
+            >
+              <option value="">All events</option>
+              <option value="ClaimSubmitted">Submitted</option>
+              <option value="ClaimAssessed">Assessed</option>
+            </select>
+          </label>
+          <label className="field-group">
+            <span className="field-label">State</span>
+            <select
+              value={draft.status}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  status: event.target.value as EventSearchDraft['status'],
+                }))
+              }
+              className="field-control"
+              disabled={isLoading}
+            >
+              <option value="">All states</option>
+              <option value="Submitted">Submitted</option>
+              <option value="UnderReview">Under review</option>
+              <option value="Approved">Approved</option>
+              <option value="Rejected">Rejected</option>
+              <option value="Flagged">Flagged</option>
+            </select>
+          </label>
+          <label className="field-group">
+            <span className="field-label">From block</span>
+            <input
+              inputMode="numeric"
+              value={draft.fromBlock}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  fromBlock: event.target.value,
+                }))
+              }
+              className="field-control font-mono"
+              placeholder="Oldest"
+              disabled={isLoading}
+            />
+          </label>
+          <label className="field-group">
+            <span className="field-label">To block</span>
+            <input
+              inputMode="numeric"
+              value={draft.toBlock}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  toBlock: event.target.value,
+                }))
+              }
+              className="field-control font-mono"
+              placeholder="Newest"
+              disabled={isLoading}
+            />
+          </label>
+        </div>
+
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-xs font-bold text-slate">
+              Results
+              <select
+                aria-label="Events per page"
+                value={draft.limit}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    limit: Number(event.target.value),
+                  }))
+                }
+                className="rounded-full border border-ink/10 bg-white px-3 py-2 text-ink"
+                disabled={isLoading}
+              >
+                {[10, 20, 50].map((size) => (
+                  <option key={size} value={size}>
+                    {size}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="text-xs leading-5 text-slate">
+              New events do not shift an open result page.
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={clear}
+              disabled={isLoading}
+              className="rounded-full border border-ink/10 bg-white px-4 py-2 text-xs font-bold text-ink transition hover:border-coral hover:text-coral-dark disabled:opacity-50"
+            >
+              Clear
+            </button>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="rounded-full bg-ink px-5 py-2 text-xs font-bold text-white transition hover:bg-teal disabled:cursor-wait disabled:opacity-50"
+            >
+              {isLoading ? 'Searching…' : 'Search events'}
+            </button>
+          </div>
+        </div>
+        {(formError || error) && (
+          <p role="alert" className="mt-4 text-sm font-medium text-red-700">
+            {formError ?? error}
+          </p>
+        )}
+      </form>
+
+      {isLoading && page === null ? (
+        <p className="px-6 py-10 text-sm text-slate sm:px-8">
+          Searching indexed events…
+        </p>
+      ) : events.length === 0 ? (
+        <div className="px-6 py-10 sm:px-8">
+          <p className="font-bold text-ink">No matching events</p>
+          <p className="mt-1 text-sm text-slate">
+            Clear one or more filters, or verify the claim and block values.
+          </p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-3xl border-collapse text-left">
+            <thead className="bg-sand/70 text-xs tracking-[0.12em] text-slate uppercase">
+              <tr>
+                <th className="px-6 py-3 font-bold sm:px-8">Event</th>
+                <th className="px-4 py-3 font-bold">Claim</th>
+                <th className="px-4 py-3 font-bold">Block</th>
+                <th className="px-4 py-3 font-bold">State</th>
+                <th className="px-6 py-3 font-bold sm:px-8">Indexed</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-ink/8">
+              {events.map((event) => (
+                <tr key={event.event_id} className="hover:bg-sand/35">
+                  <td className="px-6 py-4 sm:px-8">
+                    <span className="block text-sm font-bold text-ink">
+                      {event.event_type === 'ClaimSubmitted'
+                        ? 'Claim submitted'
+                        : 'Claim assessed'}
+                    </span>
+                    <a
+                      href={`${ETHERSCAN_BASE_URL}/tx/${event.transaction_hash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={event.transaction_hash}
+                      className="mt-1 block font-mono text-xs text-teal underline decoration-teal/25 underline-offset-4"
+                    >
+                      {shorten(event.transaction_hash, 8)} ↗
+                    </a>
+                  </td>
+                  <td className="px-4 py-4 font-mono text-sm font-bold text-ink">
+                    #{event.claim_id}
+                  </td>
+                  <td className="px-4 py-4 font-mono text-xs text-slate">
+                    {event.block_number.toLocaleString()}:{event.log_index}
+                  </td>
+                  <td className="px-4 py-4 text-sm">
+                    <span className="block font-bold text-ink">
+                      {event.status === 'UnderReview'
+                        ? 'Under review'
+                        : event.status}
+                    </span>
+                    <span className="mt-1 block text-xs text-slate">
+                      {(event.fraud_score / 100).toFixed(2)}% score
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-xs text-slate sm:px-8">
+                    {formatDate(event.indexed_at)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-3 border-t border-ink/8 bg-sand/35 px-6 py-4 sm:px-8">
+        <p className="text-xs text-slate">
+          Keyset page {pageNumber}; newest matching events appear first.
+        </p>
+        <nav aria-label="Event search pagination" className="flex gap-2">
+          <button
+            type="button"
+            onClick={onNewer}
+            disabled={isLoading || pageNumber <= 1}
+            className="rounded-full border border-ink/10 bg-white px-4 py-2 text-xs font-bold text-ink transition hover:border-teal hover:text-teal disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            ← Newer
+          </button>
+          <button
+            type="button"
+            onClick={onOlder}
+            disabled={isLoading || page?.next_cursor === null || page === null}
+            className="rounded-full border border-ink/10 bg-white px-4 py-2 text-xs font-bold text-ink transition hover:border-teal hover:text-teal disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Older →
+          </button>
+        </nav>
+      </div>
+    </section>
+  )
+}
+
 /** Pure snapshot presentation exported for server-rendered regression tests. */
 export function IndexerOperationsView({
   snapshot,
   isRefreshing,
   error,
+  eventPage,
+  eventPageNumber,
+  isSearchingEvents,
+  eventError,
   onRefresh,
   onDisconnect,
+  onEventSearch,
+  onOlderEvents,
+  onNewerEvents,
 }: {
   snapshot: IndexerOperations
   isRefreshing: boolean
   error: string | null
+  eventPage: ClaimIndexEventPage | null
+  eventPageNumber: number
+  isSearchingEvents: boolean
+  eventError: string | null
   onRefresh: () => void
   onDisconnect: () => void
+  onEventSearch: (filters: IndexerEventSearch) => void
+  onOlderEvents: () => void
+  onNewerEvents: () => void
 }) {
   const state = statePresentation(snapshot.state)
   const statusRows = [
@@ -385,76 +784,15 @@ export function IndexerOperationsView({
         </div>
       </section>
 
-      <section className="overflow-hidden rounded-3xl border border-ink/8 bg-white">
-        <div className="border-b border-ink/8 px-6 py-5 sm:px-8">
-          <p className="text-xs font-bold tracking-[0.16em] text-teal uppercase">
-            Audit stream
-          </p>
-          <h2 className="mt-1 text-2xl font-bold text-ink">Recent events</h2>
-          <p className="mt-1 text-sm text-slate">
-            Newest confirmed immutable events indexed for this deployment.
-          </p>
-        </div>
-        {snapshot.recent_events.length === 0 ? (
-          <p className="px-6 py-10 text-sm text-slate sm:px-8">
-            No events have been indexed yet.
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-3xl border-collapse text-left">
-              <thead className="bg-sand/70 text-xs tracking-[0.12em] text-slate uppercase">
-                <tr>
-                  <th className="px-6 py-3 font-bold sm:px-8">Event</th>
-                  <th className="px-4 py-3 font-bold">Claim</th>
-                  <th className="px-4 py-3 font-bold">Block</th>
-                  <th className="px-4 py-3 font-bold">State</th>
-                  <th className="px-6 py-3 font-bold sm:px-8">Indexed</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink/8">
-                {snapshot.recent_events.map((event) => (
-                  <tr key={event.event_id} className="hover:bg-sand/35">
-                    <td className="px-6 py-4 sm:px-8">
-                      <span className="block text-sm font-bold text-ink">
-                        {event.event_type === 'ClaimSubmitted'
-                          ? 'Claim submitted'
-                          : 'Claim assessed'}
-                      </span>
-                      <a
-                        href={`${ETHERSCAN_BASE_URL}/tx/${event.transaction_hash}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-1 block font-mono text-xs text-teal underline decoration-teal/25 underline-offset-4"
-                      >
-                        {shorten(event.transaction_hash, 8)} ↗
-                      </a>
-                    </td>
-                    <td className="px-4 py-4 font-mono text-sm font-bold text-ink">
-                      #{event.claim_id}
-                    </td>
-                    <td className="px-4 py-4 font-mono text-xs text-slate">
-                      {event.block_number.toLocaleString()}:{event.log_index}
-                    </td>
-                    <td className="px-4 py-4 text-sm">
-                      <span className="block font-bold text-ink">
-                        {event.status === 'UnderReview'
-                          ? 'Under review'
-                          : event.status}
-                      </span>
-                      <span className="mt-1 block text-xs text-slate">
-                        {(event.fraud_score / 100).toFixed(2)}% score
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-xs text-slate sm:px-8">
-                      {formatDate(event.indexed_at)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      <EventAuditPanel
+        page={eventPage}
+        pageNumber={eventPageNumber}
+        isLoading={isSearchingEvents}
+        error={eventError}
+        onSearch={onEventSearch}
+        onOlder={onOlderEvents}
+        onNewer={onNewerEvents}
+      />
     </div>
   )
 }
@@ -466,7 +804,15 @@ export function IndexerOperationsDashboard() {
   const [snapshot, setSnapshot] = useState<IndexerOperations | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [eventPage, setEventPage] = useState<ClaimIndexEventPage | null>(null)
+  const [eventFilters, setEventFilters] =
+    useState<IndexerEventSearch>(DEFAULT_EVENT_SEARCH)
+  const [eventCursors, setEventCursors] = useState<(string | null)[]>([null])
+  const [eventPageNumber, setEventPageNumber] = useState(1)
+  const [eventError, setEventError] = useState<string | null>(null)
+  const [isSearchingEvents, setIsSearchingEvents] = useState(false)
   const request = useRef<AbortController | null>(null)
+  const eventRequest = useRef<AbortController | null>(null)
 
   const load = useCallback(async (apiKey: string, persistOnSuccess = false) => {
     // A slow RPC sample must not create overlapping browser requests every time
@@ -504,6 +850,48 @@ export function IndexerOperationsDashboard() {
     }
   }, [])
 
+  const loadEvents = useCallback(
+    async (
+      apiKey: string,
+      filters: IndexerEventSearch,
+      cursor: string | null,
+    ) => {
+      // Search interactions replace the prior event request. Unlike telemetry
+      // polling, the latest filter selection is the only result worth keeping.
+      eventRequest.current?.abort()
+      const controller = new AbortController()
+      eventRequest.current = controller
+      setIsSearchingEvents(true)
+      setEventError(null)
+      try {
+        const result = await searchIndexerEvents(
+          apiKey,
+          filters,
+          cursor,
+          controller.signal,
+        )
+        if (!controller.signal.aborted) setEventPage(result)
+      } catch (loadingError) {
+        if (controller.signal.aborted) return
+        const message =
+          loadingError instanceof Error
+            ? loadingError.message
+            : 'Indexer events could not be searched.'
+        setEventError(message)
+        if (message.toLowerCase().includes('operations api key')) {
+          clearSessionKey()
+          setActiveKey('')
+          setSnapshot(null)
+          setEventPage(null)
+        }
+      } finally {
+        if (eventRequest.current === controller) eventRequest.current = null
+        if (!controller.signal.aborted) setIsSearchingEvents(false)
+      }
+    },
+    [],
+  )
+
   useEffect(() => {
     if (!activeKey) return
     // A successful unlock already supplied the first snapshot. A restored
@@ -519,6 +907,19 @@ export function IndexerOperationsDashboard() {
     }
   }, [activeKey, load, snapshot])
 
+  useEffect(() => {
+    if (!activeKey) return
+    setEventFilters(DEFAULT_EVENT_SEARCH)
+    setEventCursors([null])
+    setEventPageNumber(1)
+    setEventPage(null)
+    void loadEvents(activeKey, DEFAULT_EVENT_SEARCH, null)
+    return () => {
+      eventRequest.current?.abort()
+      eventRequest.current = null
+    }
+  }, [activeKey, loadEvents])
+
   function connect(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const candidate = draftKey.trim()
@@ -532,11 +933,49 @@ export function IndexerOperationsDashboard() {
   function disconnect() {
     request.current?.abort()
     request.current = null
+    eventRequest.current?.abort()
+    eventRequest.current = null
     clearSessionKey()
     setActiveKey('')
     setSnapshot(null)
     setError(null)
     setIsRefreshing(false)
+    setEventPage(null)
+    setEventFilters(DEFAULT_EVENT_SEARCH)
+    setEventCursors([null])
+    setEventPageNumber(1)
+    setEventError(null)
+    setIsSearchingEvents(false)
+  }
+
+  function searchEvents(filters: IndexerEventSearch) {
+    setEventFilters(filters)
+    setEventCursors([null])
+    setEventPageNumber(1)
+    setEventPage(null)
+    void loadEvents(activeKey, filters, null)
+  }
+
+  function showOlderEvents() {
+    const cursor = eventPage?.next_cursor
+    if (!cursor) return
+    const nextPageNumber = eventPageNumber + 1
+    // Retain the cursor that opened each page. This provides a deterministic
+    // client-side "Newer" action without asking PostgreSQL for reverse pages.
+    setEventCursors((current) => [
+      ...current.slice(0, eventPageNumber),
+      cursor,
+    ])
+    setEventPageNumber(nextPageNumber)
+    void loadEvents(activeKey, eventFilters, cursor)
+  }
+
+  function showNewerEvents() {
+    if (eventPageNumber <= 1) return
+    const previousPageNumber = eventPageNumber - 1
+    const cursor = eventCursors[previousPageNumber - 1] ?? null
+    setEventPageNumber(previousPageNumber)
+    void loadEvents(activeKey, eventFilters, cursor)
   }
 
   if (!activeKey && !snapshot) {
@@ -602,8 +1041,15 @@ export function IndexerOperationsDashboard() {
       snapshot={snapshot}
       isRefreshing={isRefreshing}
       error={error}
+      eventPage={eventPage}
+      eventPageNumber={eventPageNumber}
+      isSearchingEvents={isSearchingEvents}
+      eventError={eventError}
       onRefresh={() => void load(activeKey)}
       onDisconnect={disconnect}
+      onEventSearch={searchEvents}
+      onOlderEvents={showOlderEvents}
+      onNewerEvents={showNewerEvents}
     />
   )
 }

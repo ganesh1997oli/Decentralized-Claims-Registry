@@ -48,7 +48,8 @@ HTTP 401 and return to the unlock screen.
 ## Deployment order
 
 1. Back up PostgreSQL according to the environment's normal policy.
-2. Apply migration `003_claim_index_operations.sql`.
+2. Apply all current migrations, including `003_claim_index_operations.sql` and
+   `004_claim_index_event_search.sql`.
 3. Confirm `python -m packages.integrations.postgres.migrations check` succeeds.
 4. Configure the operations digest, stale threshold, and the same
    `CONFIRMATION_BLOCKS` value used by the listener.
@@ -83,6 +84,13 @@ than ordinary Sepolia block and listener polling intervals.
 - Alert when `claims_listener_block_lag` stays above zero beyond the stale
   threshold, or when `claims_listener_poll_errors_total` increases.
 - Review recent events for continued block and log-index progression.
+- Use the event explorer to isolate one claim, a full transaction hash, event
+  type, state, or inclusive block range. Identity search accepts a numeric claim
+  ID (with an optional `#`) or a complete 66-character transaction hash.
+- Event pages do not auto-refresh. Health telemetry continues refreshing above
+  them, while Newer/Older keyset navigation preserves a stable investigation as
+  newly confirmed events arrive. Clear or submit the filters again to start from
+  the current newest matching event.
 - Run reconciliation after deployments, backfills, RPC-provider changes, or an
   indexing incident. A daily scheduled reconciliation is reasonable for this
   small registry; large registries should choose a lower-frequency window

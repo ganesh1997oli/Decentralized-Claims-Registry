@@ -15,6 +15,7 @@ from packages.integrations.postgres.database import (
     PostgresStorageError,
 )
 from packages.integrations.postgres.records import (
+    ClaimIndexEventPage,
     ClaimIndexEventRecord,
     ClaimIndexOperationsSnapshot,
     ClaimIndexReconciliationRecord,
@@ -85,12 +86,8 @@ def _reconciliation_from_row(row) -> ClaimIndexReconciliationRecord:
         chain_claims=int(row["reconciliation_chain_claims"]),
         indexed_claims=int(row["reconciliation_indexed_claims"]),
         missing_claim_ids=tuple(int(item) for item in row["missing_claim_ids"]),
-        unexpected_claim_ids=tuple(
-            int(item) for item in row["unexpected_claim_ids"]
-        ),
-        mismatched_claim_ids=tuple(
-            int(item) for item in row["mismatched_claim_ids"]
-        ),
+        unexpected_claim_ids=tuple(int(item) for item in row["unexpected_claim_ids"]),
+        mismatched_claim_ids=tuple(int(item) for item in row["mismatched_claim_ids"]),
         consistent=bool(row["reconciliation_consistent"]),
         duration_ms=int(row["reconciliation_duration_ms"]),
         checked_at=checked_at,
@@ -429,9 +426,7 @@ class PostgresClaimIndexRepository:
             rows = cursor.fetchall()
             total_items = int(rows[0]["total_items"]) if rows else 0
             claims = [
-                _claim_from_row(row)
-                for row in rows
-                if row["claim_id"] is not None
+                _claim_from_row(row) for row in rows if row["claim_id"] is not None
             ]
             return claims, total_items
 
@@ -594,9 +589,7 @@ class PostgresClaimIndexRepository:
                 """,
                 (chain_id, normalized_contract, recent_event_limit),
             )
-            recent_events = tuple(
-                _event_from_row(row) for row in cursor.fetchall()
-            )
+            recent_events = tuple(_event_from_row(row) for row in cursor.fetchall())
 
         checkpoint = None
         if summary["last_processed_block"] is not None:
@@ -631,6 +624,98 @@ class PostgresClaimIndexRepository:
             ),
             recent_events=recent_events,
             last_reconciliation=reconciliation,
+        )
+
+    def search_events(
+        self,
+        *,
+        chain_id: int,
+        contract_address: str,
+        claim_id: int | None = None,
+        transaction_hash: str | None = None,
+        event_type: str | None = None,
+        status: int | None = None,
+        from_block: int | None = None,
+        to_block: int | None = None,
+        before: tuple[int, int, str] | None = None,
+        limit: int = 20,
+    ) -> ClaimIndexEventPage:
+        """Search one deployment's immutable events using a stable cursor.
+
+        ``before`` is the final ``(block_number, log_index, event_id)`` from the
+        previous page. Keyset pagination avoids the duplicates and omissions
+        that OFFSET pagination can produce when the listener inserts a newly
+        confirmed event while an operator is moving through older history.
+        """
+
+        if claim_id is not None and claim_id < 0:
+            raise ValueError("claim_id cannot be negative")
+        if event_type not in (None, "ClaimSubmitted", "ClaimAssessed"):
+            raise ValueError("event_type is not supported")
+        if status is not None and status not in range(5):
+            raise ValueError("status must be between 0 and 4")
+        if from_block is not None and from_block < 0:
+            raise ValueError("from_block cannot be negative")
+        if to_block is not None and to_block < 0:
+            raise ValueError("to_block cannot be negative")
+        if from_block is not None and to_block is not None and from_block > to_block:
+            raise ValueError("from_block cannot be greater than to_block")
+        if not 1 <= limit <= 50:
+            raise ValueError("limit must be between 1 and 50")
+
+        clauses = ["chain_id = %s", "contract_address = %s"]
+        parameters: list[object] = [chain_id, contract_address.lower()]
+
+        # Every SQL fragment is a fixed string selected by application code;
+        # all operator input remains a bound parameter. This preserves the
+        # flexibility of optional filters without opening a SQL-injection seam.
+        if claim_id is not None:
+            clauses.append("claim_id = %s")
+            parameters.append(claim_id)
+        if transaction_hash is not None:
+            clauses.append("transaction_hash = %s")
+            parameters.append(transaction_hash.lower())
+        if event_type is not None:
+            clauses.append("event_type = %s")
+            parameters.append(event_type)
+        if status is not None:
+            clauses.append("status = %s")
+            parameters.append(status)
+        if from_block is not None:
+            clauses.append("block_number >= %s")
+            parameters.append(from_block)
+        if to_block is not None:
+            clauses.append("block_number <= %s")
+            parameters.append(to_block)
+        if before is not None:
+            before_block, before_log_index, before_event_id = before
+            if before_block < 0 or before_log_index < 0 or not before_event_id:
+                raise ValueError("event cursor position is invalid")
+            clauses.append("(block_number, log_index, event_id) < (%s, %s, %s)")
+            parameters.extend((before_block, before_log_index, before_event_id))
+
+        # Fetch one extra row to determine whether an older page exists without
+        # issuing an expensive COUNT over a potentially large audit history.
+        parameters.append(limit + 1)
+        with self.database.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    event_id, claim_id, event_type, block_number,
+                    transaction_hash, log_index, event_timestamp,
+                    status, fraud_score, indexed_at
+                FROM claim_index_events
+                WHERE {" AND ".join(clauses)}
+                ORDER BY block_number DESC, log_index DESC, event_id DESC
+                LIMIT %s
+                """,
+                tuple(parameters),
+            )
+            events = tuple(_event_from_row(row) for row in cursor.fetchall())
+
+        return ClaimIndexEventPage(
+            events=events[:limit],
+            has_more=len(events) > limit,
         )
 
     def record_reconciliation(

@@ -206,6 +206,14 @@ class ClaimIndexEventResponse(BaseModel):
     indexed_at: datetime
 
 
+class ClaimIndexEventPageResponse(BaseModel):
+    """One keyset-paginated slice of the authenticated event audit stream."""
+
+    items: list[ClaimIndexEventResponse]
+    page_size: int = Field(ge=1, le=50)
+    next_cursor: str | None = None
+
+
 class ClaimIndexReconciliationResponse(BaseModel):
     """Most recent persisted proof that index and contract agreed."""
 
@@ -223,9 +231,7 @@ class ClaimIndexReconciliationResponse(BaseModel):
 class IndexerOperationsResponse(BaseModel):
     """Authenticated, bounded telemetry for one indexer deployment."""
 
-    state: Literal[
-        "healthy", "catching_up", "stalled", "uninitialized", "degraded"
-    ]
+    state: Literal["healthy", "catching_up", "stalled", "uninitialized", "degraded"]
     rpc_status: Literal["available", "unavailable"]
     deployment_id: str
     chain_id: int = Field(gt=0)

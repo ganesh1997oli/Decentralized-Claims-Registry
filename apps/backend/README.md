@@ -80,6 +80,7 @@ Useful URLs:
 - Readiness: <http://127.0.0.1:8000/health/ready>
 - OpenAPI UI: <http://127.0.0.1:8000/docs>
 - Indexer operations API: <http://127.0.0.1:8000/operations/indexer>
+- Indexer event search: <http://127.0.0.1:8000/operations/indexer/events>
 
 ## Configuration boundaries
 
@@ -104,9 +105,11 @@ do not belong in the API container. Never put any secret in a `VITE_` variable.
 
 ### Indexer operations authentication
 
-The dedicated `/operations/indexer` endpoint requires
-`X-Operations-API-Key`. It returns bounded, deployment-scoped telemetry and has
-no repair, reset, replay, or mutation action. Generate a hosted credential with:
+The dedicated `/operations/indexer` and `/operations/indexer/events` endpoints
+require `X-Operations-API-Key`. The first returns bounded deployment telemetry;
+the second provides filtered keyset pagination over immutable events without an
+RPC request. Neither exposes a repair, reset, replay, or mutation action.
+Generate a hosted credential with:
 
 ```bash
 python apps/backend/scripts/generate_operations_credential.py

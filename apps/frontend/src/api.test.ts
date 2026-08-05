@@ -3,6 +3,7 @@ import {
   getClaimAssessment,
   getIndexerOperations,
   listClaims,
+  searchIndexerEvents,
   submitClaim,
   type ClaimPayload,
   type ClaimPage,
@@ -323,5 +324,73 @@ describe('getIndexerOperations', () => {
     await expect(getIndexerOperations('operator-secret')).rejects.toThrow(
       'unexpected operations response',
     )
+  })
+})
+
+describe('searchIndexerEvents', () => {
+  it('sends filters and an opaque cursor without putting the key in the URL', async () => {
+    const eventPage = {
+      items: operations.recent_events,
+      page_size: 10,
+      next_cursor: 'next-page',
+    }
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(eventPage), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      searchIndexerEvents(
+        'operator-secret',
+        {
+          claimId: 6,
+          transactionHash: null,
+          eventType: 'ClaimAssessed',
+          status: 'Flagged',
+          fromBlock: 11_400_000,
+          toBlock: 11_500_000,
+          limit: 10,
+        },
+        'current-page',
+      ),
+    ).resolves.toEqual(eventPage)
+
+    const [url, request] = fetchMock.mock.calls[0]
+    expect(url).toContain('/operations/indexer/events?')
+    expect(url).toContain('claim_id=6')
+    expect(url).toContain('event_type=ClaimAssessed')
+    expect(url).toContain('status=Flagged')
+    expect(url).toContain('cursor=current-page')
+    expect(url).not.toContain('operator-secret')
+    expect(request).toMatchObject({
+      headers: { 'X-Operations-API-Key': 'operator-secret' },
+    })
+  })
+
+  it('rejects an incomplete event-search response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ items: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+
+    await expect(
+      searchIndexerEvents('operator-secret', {
+        claimId: null,
+        transactionHash: null,
+        eventType: null,
+        status: null,
+        fromBlock: null,
+        toBlock: null,
+        limit: 20,
+      }),
+    ).rejects.toThrow('unexpected event-search response')
   })
 })

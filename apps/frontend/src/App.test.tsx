@@ -217,8 +217,19 @@ describe('Indexer operations dashboard', () => {
         snapshot={operationsSnapshot}
         isRefreshing={false}
         error={null}
+        eventPage={{
+          items: operationsSnapshot.recent_events,
+          page_size: 20,
+          next_cursor: null,
+        }}
+        eventPageNumber={1}
+        isSearchingEvents={false}
+        eventError={null}
         onRefresh={() => undefined}
         onDisconnect={() => undefined}
+        onEventSearch={() => undefined}
+        onOlderEvents={() => undefined}
+        onNewerEvents={() => undefined}
       />,
     )
 
@@ -226,6 +237,9 @@ describe('Indexer operations dashboard', () => {
     expect(page).toContain('Healthy')
     expect(page).toContain('Block lag')
     expect(page).toContain('Consistent')
+    expect(page).toContain('Event explorer')
+    expect(page).toContain('Claim or transaction')
+    expect(page).toContain('Search events')
     expect(page).toContain('Claim assessed')
     expect(page).toContain('11,424,283')
   })

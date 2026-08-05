@@ -9,7 +9,10 @@ still useful during an incident.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -20,6 +23,7 @@ from typing import Protocol
 from web3 import Web3
 
 from apps.backend.app.models import (
+    ClaimIndexEventPageResponse,
     ClaimIndexEventResponse,
     ClaimIndexReconciliationResponse,
     ClaimStatusCountsResponse,
@@ -31,6 +35,8 @@ from packages.integrations.ethereum import (
     load_claims_deployment,
 )
 from packages.integrations.postgres import (
+    ClaimIndexEventPage,
+    ClaimIndexEventRecord,
     ClaimIndexOperationsSnapshot,
     PostgresConfigurationError,
     PostgresRepositories,
@@ -41,6 +47,8 @@ from packages.observability import get_event_logger
 logger = get_event_logger(__name__)
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
 STATUS_NAMES = ("Submitted", "UnderReview", "Approved", "Rejected", "Flagged")
+STATUS_VALUES = {name: index for index, name in enumerate(STATUS_NAMES)}
+_EVENT_CURSOR_VERSION = 1
 
 
 class IndexerOperationsConfigurationError(ValueError):
@@ -53,6 +61,10 @@ class IndexerOperationsAuthenticationError(ValueError):
 
 class IndexerOperationsServiceError(RuntimeError):
     """Raised when an operations snapshot cannot be assembled."""
+
+
+class IndexerOperationsQueryError(ValueError):
+    """Raised when an event-search filter or cursor is invalid."""
 
 
 class IndexerOperationsBoundary:
@@ -85,14 +97,10 @@ class IndexerOperationsBoundary:
 
     def authenticate(self, api_key: str | None) -> None:
         if not api_key:
-            raise IndexerOperationsAuthenticationError(
-                "Operations API key is required"
-            )
+            raise IndexerOperationsAuthenticationError("Operations API key is required")
         candidate = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
         if not secrets.compare_digest(candidate, self._api_key_sha256):
-            raise IndexerOperationsAuthenticationError(
-                "Operations API key is invalid"
-            )
+            raise IndexerOperationsAuthenticationError("Operations API key is invalid")
 
 
 class ChainHeadReader(Protocol):
@@ -107,6 +115,21 @@ class OperationsIndexReader(Protocol):
         contract_address: str,
         recent_event_limit: int = 20,
     ) -> ClaimIndexOperationsSnapshot: ...
+
+    def search_events(
+        self,
+        *,
+        chain_id: int,
+        contract_address: str,
+        claim_id: int | None = None,
+        transaction_hash: str | None = None,
+        event_type: str | None = None,
+        status: int | None = None,
+        from_block: int | None = None,
+        to_block: int | None = None,
+        before: tuple[int, int, str] | None = None,
+        limit: int = 20,
+    ) -> ClaimIndexEventPage: ...
 
 
 class Web3ChainHeadReader:
@@ -129,9 +152,7 @@ class Web3ChainHeadReader:
         return int(self._web3.eth.block_number)
 
 
-def _non_negative_setting(
-    settings: Mapping[str, str], name: str, default: int
-) -> int:
+def _non_negative_setting(settings: Mapping[str, str], name: str, default: int) -> int:
     raw_value = settings.get(name, str(default)).strip()
     try:
         value = int(raw_value)
@@ -144,6 +165,82 @@ def _non_negative_setting(
             f"{name} must be a non-negative integer"
         )
     return value
+
+
+def _event_response(event: ClaimIndexEventRecord) -> ClaimIndexEventResponse:
+    """Translate the persistence record without exposing internal fields."""
+
+    return ClaimIndexEventResponse(
+        event_id=event.event_id,
+        claim_id=event.claim_id,
+        event_type=event.event_type,
+        block_number=event.block_number,
+        transaction_hash=event.transaction_hash,
+        log_index=event.log_index,
+        event_timestamp=event.event_timestamp,
+        status=(
+            STATUS_NAMES[event.status]
+            if 0 <= event.status < len(STATUS_NAMES)
+            else f"Unknown({event.status})"
+        ),
+        fraud_score=event.fraud_score,
+        indexed_at=event.indexed_at,
+    )
+
+
+def _encode_event_cursor(event: ClaimIndexEventRecord) -> str:
+    """Encode a public chain position as an opaque URL-safe cursor."""
+
+    payload = json.dumps(
+        [
+            _EVENT_CURSOR_VERSION,
+            event.block_number,
+            event.log_index,
+            event.event_id,
+        ],
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_event_cursor(cursor: str | None) -> tuple[int, int, str] | None:
+    """Decode and strictly validate an untrusted browser cursor."""
+
+    if cursor is None:
+        return None
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        payload = json.loads(
+            base64.b64decode(
+                cursor + padding,
+                altchars=b"-_",
+                validate=True,
+            ).decode("utf-8")
+        )
+        if (
+            not isinstance(payload, list)
+            or len(payload) != 4
+            or payload[0] != _EVENT_CURSOR_VERSION
+            or not isinstance(payload[1], int)
+            or isinstance(payload[1], bool)
+            or payload[1] < 0
+            or not isinstance(payload[2], int)
+            or isinstance(payload[2], bool)
+            or payload[2] < 0
+            or not isinstance(payload[3], str)
+            or not payload[3]
+        ):
+            raise ValueError("unexpected cursor payload")
+        return payload[1], payload[2], payload[3]
+    except (
+        binascii.Error,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as exc:
+        raise IndexerOperationsQueryError(
+            "The event cursor is invalid or has expired"
+        ) from exc
 
 
 class IndexerOperationsService:
@@ -178,9 +275,7 @@ class IndexerOperationsService:
             deployment = load_claims_deployment(os.environ)
             repositories = PostgresRepositories.from_env()
             rpc_url = (
-                os.environ.get("SEPOLIA_RPC_URL")
-                or os.environ.get("RPC_URL")
-                or ""
+                os.environ.get("SEPOLIA_RPC_URL") or os.environ.get("RPC_URL") or ""
             )
             return cls(
                 deployment=deployment,
@@ -288,37 +383,15 @@ class IndexerOperationsService:
                 rejected=status_counts[3],
                 flagged=status_counts[4],
             ),
-            recent_events=[
-                ClaimIndexEventResponse(
-                    event_id=event.event_id,
-                    claim_id=event.claim_id,
-                    event_type=event.event_type,
-                    block_number=event.block_number,
-                    transaction_hash=event.transaction_hash,
-                    log_index=event.log_index,
-                    event_timestamp=event.event_timestamp,
-                    status=(
-                        STATUS_NAMES[event.status]
-                        if 0 <= event.status < len(STATUS_NAMES)
-                        else f"Unknown({event.status})"
-                    ),
-                    fraud_score=event.fraud_score,
-                    indexed_at=event.indexed_at,
-                )
-                for event in database.recent_events
-            ],
+            recent_events=[_event_response(event) for event in database.recent_events],
             last_reconciliation=(
                 ClaimIndexReconciliationResponse(
                     indexed_through_block=reconciliation.indexed_through_block,
                     chain_claims=reconciliation.chain_claims,
                     indexed_claims=reconciliation.indexed_claims,
                     missing_claim_ids=list(reconciliation.missing_claim_ids),
-                    unexpected_claim_ids=list(
-                        reconciliation.unexpected_claim_ids
-                    ),
-                    mismatched_claim_ids=list(
-                        reconciliation.mismatched_claim_ids
-                    ),
+                    unexpected_claim_ids=list(reconciliation.unexpected_claim_ids),
+                    mismatched_claim_ids=list(reconciliation.mismatched_claim_ids),
                     consistent=reconciliation.consistent,
                     duration_ms=reconciliation.duration_ms,
                     checked_at=reconciliation.checked_at,
@@ -327,4 +400,60 @@ class IndexerOperationsService:
                 else None
             ),
             observed_at=observed_at,
+        )
+
+    def search_events(
+        self,
+        *,
+        claim_id: int | None = None,
+        transaction_hash: str | None = None,
+        event_type: str | None = None,
+        status: str | None = None,
+        from_block: int | None = None,
+        to_block: int | None = None,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> ClaimIndexEventPageResponse:
+        """Search immutable events without sampling RPC or changing telemetry."""
+
+        if from_block is not None and to_block is not None and from_block > to_block:
+            raise IndexerOperationsQueryError(
+                "from_block cannot be greater than to_block"
+            )
+        status_value = None
+        if status is not None:
+            try:
+                status_value = STATUS_VALUES[status]
+            except KeyError as exc:
+                raise IndexerOperationsQueryError(
+                    "The requested claim status is not supported"
+                ) from exc
+
+        before = _decode_event_cursor(cursor)
+        try:
+            page = self.index.search_events(
+                chain_id=self.deployment.chain_id,
+                contract_address=self.deployment.address,
+                claim_id=claim_id,
+                transaction_hash=transaction_hash,
+                event_type=event_type,
+                status=status_value,
+                from_block=from_block,
+                to_block=to_block,
+                before=before,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise IndexerOperationsQueryError(str(exc)) from exc
+        except PostgresStorageError as exc:
+            raise IndexerOperationsServiceError(str(exc)) from exc
+
+        return ClaimIndexEventPageResponse(
+            items=[_event_response(event) for event in page.events],
+            page_size=limit,
+            next_cursor=(
+                _encode_event_cursor(page.events[-1])
+                if page.has_more and page.events
+                else None
+            ),
         )

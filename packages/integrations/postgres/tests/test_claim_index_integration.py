@@ -103,6 +103,41 @@ def test_replay_safe_projection_preserves_latest_state(postgres_repositories):
     assert operations.last_reconciliation is not None
     assert operations.last_reconciliation.consistent is True
 
+    first_event_page = repository.search_events(
+        chain_id=first["chain_id"],
+        contract_address=first["contract_address"],
+        claim_id=7,
+        limit=1,
+    )
+    assert [event.event_type for event in first_event_page.events] == ["ClaimAssessed"]
+    assert first_event_page.has_more is True
+
+    first_event = first_event_page.events[0]
+    older_event_page = repository.search_events(
+        chain_id=first["chain_id"],
+        contract_address=first["contract_address"],
+        claim_id=7,
+        before=(
+            first_event.block_number,
+            first_event.log_index,
+            first_event.event_id,
+        ),
+        limit=1,
+    )
+    assert [event.event_type for event in older_event_page.events] == ["ClaimSubmitted"]
+    assert older_event_page.has_more is False
+
+    flagged_events = repository.search_events(
+        chain_id=first["chain_id"],
+        contract_address=first["contract_address"],
+        event_type="ClaimAssessed",
+        status=4,
+        from_block=102,
+        to_block=102,
+        limit=10,
+    )
+    assert [event.claim_id for event in flagged_events.events] == [7]
+
     with postgres_repositories.database.cursor() as cursor:
         cursor.execute("SELECT COUNT(*) AS count FROM claim_index_events")
         assert cursor.fetchone()["count"] == 3

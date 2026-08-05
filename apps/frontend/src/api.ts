@@ -106,6 +106,22 @@ export type ClaimIndexEvent = {
   indexed_at: string
 }
 
+export type IndexerEventSearch = {
+  claimId: number | null
+  transactionHash: string | null
+  eventType: ClaimIndexEvent['event_type'] | null
+  status: ClaimStatus | null
+  fromBlock: number | null
+  toBlock: number | null
+  limit: number
+}
+
+export type ClaimIndexEventPage = {
+  items: ClaimIndexEvent[]
+  page_size: number
+  next_cursor: string | null
+}
+
 export type ClaimIndexReconciliation = {
   indexed_through_block: number
   chain_claims: number
@@ -296,6 +312,16 @@ function isClaimIndexEvent(value: unknown): value is ClaimIndexEvent {
     typeof value.status === 'string' &&
     typeof value.fraud_score === 'number' &&
     typeof value.indexed_at === 'string'
+  )
+}
+
+function isClaimIndexEventPage(value: unknown): value is ClaimIndexEventPage {
+  if (!isRecord(value)) return false
+  return (
+    Array.isArray(value.items) &&
+    value.items.every(isClaimIndexEvent) &&
+    typeof value.page_size === 'number' &&
+    (value.next_cursor === null || typeof value.next_cursor === 'string')
   )
 }
 
@@ -496,6 +522,60 @@ export async function getIndexerOperations(
   if (!response.ok) throw new Error(errorMessage(body, response.status))
   if (!isIndexerOperations(body)) {
     throw new Error('The claims API returned an unexpected operations response')
+  }
+  return body
+}
+
+export async function searchIndexerEvents(
+  operationsApiKey: string,
+  filters: IndexerEventSearch,
+  cursor: string | null = null,
+  signal?: AbortSignal,
+): Promise<ClaimIndexEventPage> {
+  const parameters = new URLSearchParams({ limit: String(filters.limit) })
+  if (filters.claimId !== null) {
+    parameters.set('claim_id', String(filters.claimId))
+  }
+  if (filters.transactionHash !== null) {
+    parameters.set('transaction_hash', filters.transactionHash)
+  }
+  if (filters.eventType !== null) {
+    parameters.set('event_type', filters.eventType)
+  }
+  if (filters.status !== null) parameters.set('status', filters.status)
+  if (filters.fromBlock !== null) {
+    parameters.set('from_block', String(filters.fromBlock))
+  }
+  if (filters.toBlock !== null) {
+    parameters.set('to_block', String(filters.toBlock))
+  }
+  if (cursor !== null) parameters.set('cursor', cursor)
+
+  let response: Response
+  try {
+    response = await fetch(
+      `${API_BASE_URL}/operations/indexer/events?${parameters}`,
+      {
+        headers: { 'X-Operations-API-Key': operationsApiKey },
+        signal,
+      },
+    )
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error(
+      'Could not search indexer events. Confirm that FastAPI is running.',
+    )
+  }
+
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    throw new Error(`The claims API returned HTTP ${response.status} without JSON`)
+  }
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isClaimIndexEventPage(body)) {
+    throw new Error('The claims API returned an unexpected event-search response')
   }
   return body
 }

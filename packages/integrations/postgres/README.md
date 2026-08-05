@@ -88,6 +88,13 @@ the checkpoint unchanged; retrying is safe because event IDs and claim keys are
 unique. API pagination uses the deployment-scoped, newest-first database index
 and includes `indexed_through_block` in its response.
 
+Authenticated event search reads the immutable `claim_index_events` audit table
+with optional claim, transaction, event type, state, and block-range filters.
+It uses a `(block_number, log_index, event_id)` keyset cursor rather than OFFSET,
+so concurrent listener inserts cannot duplicate or skip rows between pages.
+Migration `004_claim_index_event_search.sql` adds the focused type, state, and
+transaction indexes used by those operator queries.
+
 This projection stores only public contract-event values. It does not download
 claim bodies into PostgreSQL. Use `python -m apps.listener.reconcile_claim_index`
 while the caught-up listener is stopped to compare it with contract state. The

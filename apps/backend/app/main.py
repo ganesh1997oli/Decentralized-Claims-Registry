@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import (
     Depends,
@@ -26,12 +26,14 @@ from apps.backend.app.indexer_operations import (
     IndexerOperationsAuthenticationError,
     IndexerOperationsBoundary,
     IndexerOperationsConfigurationError,
+    IndexerOperationsQueryError,
     IndexerOperationsService,
     IndexerOperationsServiceError,
 )
 from apps.backend.app.models import (
     AssessmentReasonResponse,
     ClaimAssessmentResponse,
+    ClaimIndexEventPageResponse,
     ClaimPageResponse,
     ClaimSubmission,
     ClaimSubmissionResponse,
@@ -419,6 +421,62 @@ def get_indexer_operations(
 
     try:
         return service.snapshot()
+    except IndexerOperationsServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+
+@app.get(
+    "/operations/indexer/events",
+    response_model=ClaimIndexEventPageResponse,
+    tags=["operations"],
+    responses={
+        400: {"description": "Invalid event-search filter or cursor"},
+        401: {"description": "Missing or invalid operations API key"},
+        503: {"description": "Operations dependencies are unavailable"},
+    },
+)
+def search_indexer_events(
+    _access: IndexerOperationsAccessDependency,
+    service: IndexerOperationsServiceDependency,
+    claim_id: Annotated[int | None, Query(ge=0)] = None,
+    transaction_hash: Annotated[
+        str | None,
+        Query(pattern=r"^0x[0-9a-fA-F]{64}$"),
+    ] = None,
+    event_type: Annotated[
+        Literal["ClaimSubmitted", "ClaimAssessed"] | None,
+        Query(),
+    ] = None,
+    claim_status: Annotated[
+        Literal["Submitted", "UnderReview", "Approved", "Rejected", "Flagged"] | None,
+        Query(alias="status"),
+    ] = None,
+    from_block: Annotated[int | None, Query(ge=0)] = None,
+    to_block: Annotated[int | None, Query(ge=0)] = None,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=512)] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> ClaimIndexEventPageResponse:
+    """Search confirmed immutable events using an opaque keyset cursor."""
+
+    try:
+        return service.search_events(
+            claim_id=claim_id,
+            transaction_hash=transaction_hash,
+            event_type=event_type,
+            status=claim_status,
+            from_block=from_block,
+            to_block=to_block,
+            cursor=cursor,
+            limit=limit,
+        )
+    except IndexerOperationsQueryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     except IndexerOperationsServiceError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

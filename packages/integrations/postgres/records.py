@@ -56,6 +56,14 @@ class ClaimIndexEventRecord:
 
 
 @dataclass(frozen=True)
+class ClaimIndexEventPage:
+    """One stable newest-first slice of the immutable event audit stream."""
+
+    events: tuple[ClaimIndexEventRecord, ...]
+    has_more: bool
+
+
+@dataclass(frozen=True)
 class ClaimIndexReconciliationRecord:
     """Durable result of comparing one checkpoint with authoritative state."""
 

@@ -93,6 +93,9 @@ secret.
   the component unmounts.
 - The operations view refreshes every 15 seconds while visible and preserves the
   last good snapshot through a temporary RPC or API failure.
+- The operations event explorer filters by claim ID or full transaction hash,
+  event type, state, and block range. Search pages are independent of telemetry
+  polling and use stable Newer/Older keyset navigation.
 - The operations key is never compiled into the Vite bundle and closing the tab
   clears its session storage.
 

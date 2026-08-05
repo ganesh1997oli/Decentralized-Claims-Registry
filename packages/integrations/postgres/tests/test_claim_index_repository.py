@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from packages.integrations.postgres import (
+    ClaimIndexEventPage,
     ClaimIndexEventRecord,
     ClaimIndexOperationsSnapshot,
     ClaimIndexReconciliationRecord,
@@ -35,9 +36,7 @@ class FakeCursor:
     def execute(self, statement, parameters=None):
         self.executions.append((str(statement), parameters))
         self.rowcount = (
-            self.update_rowcount
-            if "UPDATE indexed_claims" in str(statement)
-            else 1
+            self.update_rowcount if "UPDATE indexed_claims" in str(statement) else 1
         )
 
     def fetchone(self):
@@ -86,11 +85,14 @@ def submission_values() -> dict:
 
 
 def test_event_identity_is_stable_and_chain_scoped():
-    assert claim_index_event_id(
-        chain_id=11_155_111,
-        transaction_hash="0xABCDEF",
-        log_index=4,
-    ) == "11155111:0xabcdef:4"
+    assert (
+        claim_index_event_id(
+            chain_id=11_155_111,
+            transaction_hash="0xABCDEF",
+            log_index=4,
+        )
+        == "11155111:0xabcdef:4"
+    )
 
 
 def test_submission_is_audit_logged_and_upserted_without_regressing_newer_state():
@@ -379,6 +381,97 @@ def test_operations_snapshot_is_bounded_and_deployment_scoped():
     assert len(cursor.executions) == 2
     assert "LIMIT %s" in cursor.executions[1][0]
     assert cursor.executions[1][1] == (11_155_111, "0xabcdef", 10)
+
+
+def test_event_search_binds_filters_and_uses_a_stable_keyset_cursor():
+    indexed_at = datetime(2026, 8, 5, 12, 4, tzinfo=UTC)
+
+    def event_row(event_id: str, block_number: int, log_index: int) -> dict:
+        return {
+            "event_id": event_id,
+            "claim_id": 6,
+            "event_type": "ClaimAssessed",
+            "block_number": block_number,
+            "transaction_hash": "0xabcdef",
+            "log_index": log_index,
+            "event_timestamp": 1_754_395_200,
+            "status": 4,
+            "fraud_score": 8_500,
+            "indexed_at": indexed_at,
+        }
+
+    cursor = FakeCursor(
+        rows=(
+            event_row("event-3", 200, 3),
+            event_row("event-2", 199, 2),
+            event_row("event-1", 198, 1),
+        )
+    )
+    page = repository_for(cursor).search_events(
+        chain_id=11_155_111,
+        contract_address="0xABCDEF",
+        claim_id=6,
+        transaction_hash="0xABCDEF",
+        event_type="ClaimAssessed",
+        status=4,
+        from_block=100,
+        to_block=200,
+        before=(201, 4, "event-4"),
+        limit=2,
+    )
+
+    assert page == ClaimIndexEventPage(
+        events=(
+            ClaimIndexEventRecord(
+                event_id="event-3",
+                claim_id=6,
+                event_type="ClaimAssessed",
+                block_number=200,
+                transaction_hash="0xabcdef",
+                log_index=3,
+                event_timestamp=1_754_395_200,
+                status=4,
+                fraud_score=8_500,
+                indexed_at=indexed_at,
+            ),
+            ClaimIndexEventRecord(
+                event_id="event-2",
+                claim_id=6,
+                event_type="ClaimAssessed",
+                block_number=199,
+                transaction_hash="0xabcdef",
+                log_index=2,
+                event_timestamp=1_754_395_200,
+                status=4,
+                fraud_score=8_500,
+                indexed_at=indexed_at,
+            ),
+        ),
+        has_more=True,
+    )
+    statement, parameters = cursor.executions[0]
+    assert "claim_id = %s" in statement
+    assert "transaction_hash = %s" in statement
+    assert "event_type = %s" in statement
+    assert "status = %s" in statement
+    assert "block_number >= %s" in statement
+    assert "block_number <= %s" in statement
+    assert "(block_number, log_index, event_id) < (%s, %s, %s)" in statement
+    assert "ORDER BY block_number DESC, log_index DESC, event_id DESC" in statement
+    assert parameters == (
+        11_155_111,
+        "0xabcdef",
+        6,
+        "0xabcdef",
+        "ClaimAssessed",
+        4,
+        100,
+        200,
+        201,
+        4,
+        "event-4",
+        3,
+    )
 
 
 def test_reconciliation_audit_append_does_not_update_projection():

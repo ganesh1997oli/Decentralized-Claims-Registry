@@ -29,6 +29,7 @@ from .feature_repository import PostgresFeatureRepository
 from .migrations import MigrationStatus, PostgresMigrator
 from .records import (
     AssessmentRecord,
+    ClaimIndexEventPage,
     ClaimIndexEventRecord,
     ClaimIndexOperationsSnapshot,
     ClaimIndexReconciliationRecord,
@@ -46,6 +47,7 @@ __all__ = [
     "ClaimFeatureProcessingError",
     "ClaimFeatureProcessor",
     "ClaimFeatureSnapshot",
+    "ClaimIndexEventPage",
     "ClaimIndexEventRecord",
     "ClaimIndexOperationsSnapshot",
     "ClaimIndexReconciliationRecord",

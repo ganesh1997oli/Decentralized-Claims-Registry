@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from apps.backend.app.indexer_operations import (
     IndexerOperationsAuthenticationError,
     IndexerOperationsBoundary,
+    IndexerOperationsQueryError,
     IndexerOperationsService,
 )
 from apps.backend.app.main import (
@@ -21,6 +22,7 @@ from apps.backend.app.main import (
 from apps.backend.app.models import IndexerOperationsResponse
 from packages.integrations.ethereum import ClaimsDeployment
 from packages.integrations.postgres import (
+    ClaimIndexEventPage,
     ClaimIndexEventRecord,
     ClaimIndexOperationsSnapshot,
     ClaimIndexReconciliationRecord,
@@ -96,6 +98,11 @@ class FakeIndex:
                 checked_at=now,
             ),
         )
+        self.searches = []
+        self.search_page = ClaimIndexEventPage(
+            events=self.snapshot.recent_events,
+            has_more=False,
+        )
 
     def get_operations_snapshot(
         self, *, chain_id, contract_address, recent_event_limit=20
@@ -104,6 +111,10 @@ class FakeIndex:
         assert contract_address == "0xContract"
         assert recent_event_limit == 20
         return self.snapshot
+
+    def search_events(self, **filters):
+        self.searches.append(filters)
+        return self.search_page
 
 
 def service(*, index=None, chain=None) -> IndexerOperationsService:
@@ -156,9 +167,47 @@ def test_operations_snapshot_distinguishes_stall_from_rpc_degradation():
     assert degraded.total_events == 12
 
 
+def test_event_search_uses_an_opaque_stable_cursor_and_maps_status():
+    index = FakeIndex()
+    index.search_page = ClaimIndexEventPage(
+        events=index.snapshot.recent_events,
+        has_more=True,
+    )
+    operations = service(index=index)
+
+    first = operations.search_events(
+        claim_id=6,
+        event_type="ClaimAssessed",
+        status="Flagged",
+        from_block=900,
+        to_block=1_000,
+        limit=10,
+    )
+    assert first.items[0].claim_id == 6
+    assert first.next_cursor is not None
+    assert index.searches[0]["status"] == 4
+    assert index.searches[0]["before"] is None
+
+    index.search_page = ClaimIndexEventPage(events=(), has_more=False)
+    operations.search_events(cursor=first.next_cursor, limit=10)
+    assert index.searches[1]["before"] == (999, 0, "11155111:0xtx:0")
+
+
+def test_event_search_rejects_invalid_ranges_and_cursors():
+    operations = service()
+
+    with pytest.raises(IndexerOperationsQueryError, match="greater"):
+        operations.search_events(from_block=10, to_block=9)
+    with pytest.raises(IndexerOperationsQueryError, match="cursor"):
+        operations.search_events(cursor="not-a-valid-cursor")
+
+
 class FakeOperationsService:
     def snapshot(self) -> IndexerOperationsResponse:
         return service().snapshot()
+
+    def search_events(self, **filters):
+        return service().search_events(**filters)
 
 
 def test_operations_route_requires_key_and_returns_authenticated_snapshot():
@@ -185,3 +234,36 @@ def test_operations_route_requires_key_and_returns_authenticated_snapshot():
     assert valid.status_code == 200
     assert valid.json()["state"] == "healthy"
     assert valid.json()["last_reconciliation"]["consistent"] is True
+
+
+def test_event_search_route_is_authenticated_filtered_and_validated():
+    app.dependency_overrides[get_indexer_operations_boundary] = lambda: (
+        IndexerOperationsBoundary(OPERATIONS_DIGEST)
+    )
+    app.dependency_overrides[get_indexer_operations_service] = FakeOperationsService
+    client = TestClient(app)
+    try:
+        missing = client.get("/operations/indexer/events")
+        valid = client.get(
+            "/operations/indexer/events",
+            params={
+                "claim_id": 6,
+                "event_type": "ClaimAssessed",
+                "status": "Flagged",
+                "limit": 10,
+            },
+            headers={"X-Operations-API-Key": OPERATIONS_KEY},
+        )
+        invalid_range = client.get(
+            "/operations/indexer/events",
+            params={"from_block": 10, "to_block": 9},
+            headers={"X-Operations-API-Key": OPERATIONS_KEY},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert missing.status_code == 401
+    assert valid.status_code == 200
+    assert valid.json()["items"][0]["claim_id"] == 6
+    assert valid.json()["page_size"] == 10
+    assert invalid_range.status_code == 400
