@@ -79,6 +79,7 @@ Useful URLs:
 - Liveness: <http://127.0.0.1:8000/health/live>
 - Readiness: <http://127.0.0.1:8000/health/ready>
 - OpenAPI UI: <http://127.0.0.1:8000/docs>
+- Indexer operations API: <http://127.0.0.1:8000/operations/indexer>
 
 ## Configuration boundaries
 
@@ -94,9 +95,28 @@ Useful URLs:
 | `INSURER_RATE_LIMIT_PER_MINUTE` | API | Per-insurer submission limit; default 5 |
 | `IP_RATE_LIMIT_PER_MINUTE` | API | Per-IP authentication-attempt limit; default 20 |
 | `ALLOW_RATE_LIMIT_BYPASS` | API | Master switch for explicitly exempt performance-test credentials; default `false` |
+| `INDEXER_OPERATIONS_API_KEY_SHA256` | API | SHA-256 digest of the separate read-only operations credential |
+| `INDEXER_STALE_AFTER_SECONDS` | API | Marks a lagging checkpoint stalled after this age; default 120 seconds |
+| `CONFIRMATION_BLOCKS` | API + listener | Keeps the displayed safe head consistent with listener confirmation depth |
 
 The deployer key, assessor key, duplicate-fingerprint key, and raw insurer keys
 do not belong in the API container. Never put any secret in a `VITE_` variable.
+
+### Indexer operations authentication
+
+The dedicated `/operations/indexer` endpoint requires
+`X-Operations-API-Key`. It returns bounded, deployment-scoped telemetry and has
+no repair, reset, replay, or mutation action. Generate a hosted credential with:
+
+```bash
+python apps/backend/scripts/generate_operations_credential.py
+```
+
+Give the raw value to trusted operators and store only the printed
+`INDEXER_OPERATIONS_API_KEY_SHA256` value in API configuration. The browser keeps
+the raw key in `sessionStorage`, which clears when that browser tab is closed;
+it is never bundled into frontend JavaScript or sent in a URL. Put the route
+behind an enterprise identity-aware proxy when one is available.
 
 ### Local insurer credentials
 

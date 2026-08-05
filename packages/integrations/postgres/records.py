@@ -40,6 +40,51 @@ class ClaimIndexStatus:
 
 
 @dataclass(frozen=True)
+class ClaimIndexEventRecord:
+    """One immutable public contract event shown to index operators."""
+
+    event_id: str
+    claim_id: int
+    event_type: str
+    block_number: int
+    transaction_hash: str
+    log_index: int
+    event_timestamp: int
+    status: int
+    fraud_score: int
+    indexed_at: datetime
+
+
+@dataclass(frozen=True)
+class ClaimIndexReconciliationRecord:
+    """Durable result of comparing one checkpoint with authoritative state."""
+
+    indexed_through_block: int
+    chain_claims: int
+    indexed_claims: int
+    missing_claim_ids: tuple[int, ...]
+    unexpected_claim_ids: tuple[int, ...]
+    mismatched_claim_ids: tuple[int, ...]
+    consistent: bool
+    duration_ms: int
+    checked_at: datetime
+
+
+@dataclass(frozen=True)
+class ClaimIndexOperationsSnapshot:
+    """One bounded database snapshot for the authenticated operations UI."""
+
+    checkpoint: ClaimIndexStatus | None
+    total_claims: int
+    total_events: int
+    submitted_events: int
+    assessed_events: int
+    claim_status_counts: tuple[int, int, int, int, int]
+    recent_events: tuple[ClaimIndexEventRecord, ...]
+    last_reconciliation: ClaimIndexReconciliationRecord | None
+
+
+@dataclass(frozen=True)
 class AssessmentRecord:
     """One model decision and its progress toward Sepolia write-back."""
 

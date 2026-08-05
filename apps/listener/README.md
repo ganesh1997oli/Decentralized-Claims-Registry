@@ -39,7 +39,7 @@ regressing a newer assessment.
 | File | Responsibility |
 | --- | --- |
 | `claims_listener.py` | Confirmed polling, PostgreSQL indexing, verification and Kafka bridge |
-| `reconcile_claim_index.py` | Read-only comparison of indexed and authoritative contract state |
+| `reconcile_claim_index.py` | Non-repairing comparison plus compact operations audit result |
 | `block_cursor.py` | Legacy local checkpoint retained for focused compatibility tests |
 | `submit_and_assess_demo.py` | Trusted terminal-only submission and assessment demo |
 | `.state/` | Ignored dead-letter files; normal checkpoints live in PostgreSQL |
@@ -132,7 +132,9 @@ python -m apps.listener.reconcile_claim_index
 
 The command prints JSON and exits non-zero for missing, unexpected, or stale
 claims. It deliberately does not repair rows from a point-in-time read; replaying
-events preserves the complete audit history.
+events preserves the complete audit history. It appends only the compact result
+and duration to `claim_index_reconciliations`, allowing the authenticated
+`/operations` dashboard to show the most recent proof of consistency.
 
 Do not discard the dead-letter file without reviewing why its immutable events
 were rejected.

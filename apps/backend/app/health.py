@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from apps.backend.app.blockchain import SepoliaClaimsRegistry
+from apps.backend.app.indexer_operations import IndexerOperationsBoundary
 from apps.backend.app.submission_auth import (
     ClaimAuthorizationSigner,
     SubmissionBoundary,
@@ -84,6 +85,9 @@ def build_readiness_probe() -> ReadinessProbe:
     def check_insurer_authentication() -> None:
         SubmissionBoundary.from_env()
 
+    def check_operations_authentication() -> None:
+        IndexerOperationsBoundary.from_env()
+
     def check_postgres() -> None:
         repositories = PostgresRepositories.from_env()
         repositories.database.ping()
@@ -106,6 +110,11 @@ def build_readiness_probe() -> ReadinessProbe:
                 "insurer_authentication",
                 check_insurer_authentication,
                 "insurer authentication configuration is unavailable",
+            ),
+            ReadinessCheck(
+                "indexer_operations_authentication",
+                check_operations_authentication,
+                "indexer operations authentication configuration is unavailable",
             ),
             ReadinessCheck(
                 "postgres",

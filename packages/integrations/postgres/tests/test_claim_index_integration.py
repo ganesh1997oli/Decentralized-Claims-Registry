@@ -70,6 +70,39 @@ def test_replay_safe_projection_preserves_latest_state(postgres_repositories):
     assert claims[1].fraud_score == 8_500
     assert claims[1].updated_at == 1_750_000_100
 
+    repository.save_checkpoint(
+        chain_id=first["chain_id"],
+        contract_address=first["contract_address"],
+        block_number=102,
+    )
+    repository.record_reconciliation(
+        chain_id=first["chain_id"],
+        contract_address=first["contract_address"],
+        indexed_through_block=102,
+        chain_claims=2,
+        indexed_claims=2,
+        missing_claim_ids=(),
+        unexpected_claim_ids=(),
+        mismatched_claim_ids=(),
+        consistent=True,
+        duration_ms=12,
+    )
+    operations = repository.get_operations_snapshot(
+        chain_id=first["chain_id"],
+        contract_address=first["contract_address"],
+        recent_event_limit=10,
+    )
+    assert operations.total_claims == 2
+    assert operations.total_events == 3
+    assert operations.submitted_events == 2
+    assert operations.assessed_events == 1
+    assert operations.claim_status_counts == (1, 0, 0, 0, 1)
+    assert operations.checkpoint is not None
+    assert operations.checkpoint.last_processed_block == 102
+    assert len(operations.recent_events) == 3
+    assert operations.last_reconciliation is not None
+    assert operations.last_reconciliation.consistent is True
+
     with postgres_repositories.database.cursor() as cursor:
         cursor.execute("SELECT COUNT(*) AS count FROM claim_index_events")
         assert cursor.fetchone()["count"] == 3

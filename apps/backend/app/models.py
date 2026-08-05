@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -179,3 +179,70 @@ class ReadinessResponse(BaseModel):
 
     status: Literal["ready", "not_ready"]
     checks: dict[str, str]
+
+
+class ClaimStatusCountsResponse(BaseModel):
+    """Current projection totals for each Solidity claim status."""
+
+    submitted: int = Field(ge=0)
+    under_review: int = Field(ge=0)
+    approved: int = Field(ge=0)
+    rejected: int = Field(ge=0)
+    flagged: int = Field(ge=0)
+
+
+class ClaimIndexEventResponse(BaseModel):
+    """One recent immutable event with only publicly anchored fields."""
+
+    event_id: str
+    claim_id: int = Field(ge=0)
+    event_type: Literal["ClaimSubmitted", "ClaimAssessed"]
+    block_number: int = Field(ge=0)
+    transaction_hash: str
+    log_index: int = Field(ge=0)
+    event_timestamp: int = Field(gt=0)
+    status: str
+    fraud_score: int = Field(ge=0, le=10_000)
+    indexed_at: datetime
+
+
+class ClaimIndexReconciliationResponse(BaseModel):
+    """Most recent persisted proof that index and contract agreed."""
+
+    indexed_through_block: int = Field(ge=0)
+    chain_claims: int = Field(ge=0)
+    indexed_claims: int = Field(ge=0)
+    missing_claim_ids: list[int]
+    unexpected_claim_ids: list[int]
+    mismatched_claim_ids: list[int]
+    consistent: bool
+    duration_ms: int = Field(ge=0)
+    checked_at: datetime
+
+
+class IndexerOperationsResponse(BaseModel):
+    """Authenticated, bounded telemetry for one indexer deployment."""
+
+    state: Literal[
+        "healthy", "catching_up", "stalled", "uninitialized", "degraded"
+    ]
+    rpc_status: Literal["available", "unavailable"]
+    deployment_id: str
+    chain_id: int = Field(gt=0)
+    contract_address: str
+    confirmation_blocks: int = Field(ge=0)
+    stale_after_seconds: int = Field(ge=1)
+    latest_block: int | None = Field(default=None, ge=0)
+    safe_block: int | None = Field(default=None, ge=0)
+    indexed_through_block: int | None = Field(default=None, ge=0)
+    block_lag: int | None = Field(default=None, ge=0)
+    checkpoint_updated_at: datetime | None = None
+    checkpoint_age_seconds: int | None = Field(default=None, ge=0)
+    total_claims: int = Field(ge=0)
+    total_events: int = Field(ge=0)
+    submitted_events: int = Field(ge=0)
+    assessed_events: int = Field(ge=0)
+    claim_status_counts: ClaimStatusCountsResponse
+    recent_events: list[ClaimIndexEventResponse]
+    last_reconciliation: ClaimIndexReconciliationResponse | None = None
+    observed_at: datetime

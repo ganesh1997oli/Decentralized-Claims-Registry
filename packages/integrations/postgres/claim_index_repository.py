@@ -14,7 +14,13 @@ from packages.integrations.postgres.database import (
     PostgresDatabase,
     PostgresStorageError,
 )
-from packages.integrations.postgres.records import ClaimIndexStatus, IndexedClaim
+from packages.integrations.postgres.records import (
+    ClaimIndexEventRecord,
+    ClaimIndexOperationsSnapshot,
+    ClaimIndexReconciliationRecord,
+    ClaimIndexStatus,
+    IndexedClaim,
+)
 
 CLAIM_SELECT_COLUMNS = """
 claim_id, claimant, claim_hash, data_pointer, status, fraud_score,
@@ -45,6 +51,49 @@ def _claim_from_row(row) -> IndexedClaim:
         fraud_score=int(row["fraud_score"]),
         submitted_at=int(row["submitted_at"]),
         updated_at=int(row["updated_at"]),
+    )
+
+
+def _event_from_row(row) -> ClaimIndexEventRecord:
+    indexed_at = row["indexed_at"]
+    if not isinstance(indexed_at, datetime):
+        raise PostgresStorageError(
+            "PostgreSQL returned an invalid claim index event timestamp"
+        )
+    return ClaimIndexEventRecord(
+        event_id=str(row["event_id"]),
+        claim_id=int(row["claim_id"]),
+        event_type=str(row["event_type"]),
+        block_number=int(row["block_number"]),
+        transaction_hash=str(row["transaction_hash"]),
+        log_index=int(row["log_index"]),
+        event_timestamp=int(row["event_timestamp"]),
+        status=int(row["status"]),
+        fraud_score=int(row["fraud_score"]),
+        indexed_at=indexed_at,
+    )
+
+
+def _reconciliation_from_row(row) -> ClaimIndexReconciliationRecord:
+    checked_at = row["reconciliation_checked_at"]
+    if not isinstance(checked_at, datetime):
+        raise PostgresStorageError(
+            "PostgreSQL returned an invalid reconciliation timestamp"
+        )
+    return ClaimIndexReconciliationRecord(
+        indexed_through_block=int(row["reconciliation_indexed_through_block"]),
+        chain_claims=int(row["reconciliation_chain_claims"]),
+        indexed_claims=int(row["reconciliation_indexed_claims"]),
+        missing_claim_ids=tuple(int(item) for item in row["missing_claim_ids"]),
+        unexpected_claim_ids=tuple(
+            int(item) for item in row["unexpected_claim_ids"]
+        ),
+        mismatched_claim_ids=tuple(
+            int(item) for item in row["mismatched_claim_ids"]
+        ),
+        consistent=bool(row["reconciliation_consistent"]),
+        duration_ms=int(row["reconciliation_duration_ms"]),
+        checked_at=checked_at,
     )
 
 
@@ -430,6 +479,199 @@ class PostgresClaimIndexRepository:
                 contract_address=str(row["contract_address"]),
                 last_processed_block=int(row["last_processed_block"]),
                 updated_at=updated_at,
+            )
+
+    def get_operations_snapshot(
+        self,
+        *,
+        chain_id: int,
+        contract_address: str,
+        recent_event_limit: int = 20,
+    ) -> ClaimIndexOperationsSnapshot:
+        """Return bounded operational telemetry for one deployment.
+
+        Totals, checkpoint and last reconciliation come from one SQL statement,
+        so the headline cards cannot disagree with each other while the listener
+        commits another block. Recent events are deliberately bounded and read
+        in the same transaction; the dashboard is an observability surface, not
+        an unbounded event export API.
+        """
+
+        if not 1 <= recent_event_limit <= 100:
+            raise ValueError("recent_event_limit must be between 1 and 100")
+        normalized_contract = contract_address.lower()
+        with self.database.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH claim_counts AS (
+                    SELECT
+                        COUNT(*) AS total_claims,
+                        COUNT(*) FILTER (WHERE status = 0) AS submitted_claims,
+                        COUNT(*) FILTER (WHERE status = 1) AS under_review_claims,
+                        COUNT(*) FILTER (WHERE status = 2) AS approved_claims,
+                        COUNT(*) FILTER (WHERE status = 3) AS rejected_claims,
+                        COUNT(*) FILTER (WHERE status = 4) AS flagged_claims
+                    FROM indexed_claims
+                    WHERE chain_id = %s AND contract_address = %s
+                ),
+                event_counts AS (
+                    SELECT
+                        COUNT(*) AS total_events,
+                        COUNT(*) FILTER (
+                            WHERE event_type = 'ClaimSubmitted'
+                        ) AS submitted_events,
+                        COUNT(*) FILTER (
+                            WHERE event_type = 'ClaimAssessed'
+                        ) AS assessed_events
+                    FROM claim_index_events
+                    WHERE chain_id = %s AND contract_address = %s
+                ),
+                checkpoint AS (
+                    SELECT chain_id, contract_address, last_processed_block,
+                           updated_at
+                    FROM claim_index_checkpoints
+                    WHERE chain_id = %s AND contract_address = %s
+                ),
+                reconciliation AS (
+                    SELECT
+                        indexed_through_block, chain_claims, indexed_claims,
+                        missing_claim_ids, unexpected_claim_ids,
+                        mismatched_claim_ids, consistent, duration_ms, checked_at
+                    FROM claim_index_reconciliations
+                    WHERE chain_id = %s AND contract_address = %s
+                    ORDER BY checked_at DESC, reconciliation_id DESC
+                    LIMIT 1
+                )
+                SELECT
+                    claim_counts.*,
+                    event_counts.*,
+                    checkpoint.chain_id AS checkpoint_chain_id,
+                    checkpoint.contract_address AS checkpoint_contract_address,
+                    checkpoint.last_processed_block,
+                    checkpoint.updated_at AS checkpoint_updated_at,
+                    reconciliation.indexed_through_block
+                        AS reconciliation_indexed_through_block,
+                    reconciliation.chain_claims AS reconciliation_chain_claims,
+                    reconciliation.indexed_claims AS reconciliation_indexed_claims,
+                    reconciliation.missing_claim_ids,
+                    reconciliation.unexpected_claim_ids,
+                    reconciliation.mismatched_claim_ids,
+                    reconciliation.consistent AS reconciliation_consistent,
+                    reconciliation.duration_ms AS reconciliation_duration_ms,
+                    reconciliation.checked_at AS reconciliation_checked_at
+                FROM claim_counts
+                CROSS JOIN event_counts
+                LEFT JOIN checkpoint ON TRUE
+                LEFT JOIN reconciliation ON TRUE
+                """,
+                (
+                    chain_id,
+                    normalized_contract,
+                    chain_id,
+                    normalized_contract,
+                    chain_id,
+                    normalized_contract,
+                    chain_id,
+                    normalized_contract,
+                ),
+            )
+            summary = cursor.fetchone()
+            if summary is None:
+                raise PostgresStorageError(
+                    "PostgreSQL returned no claim index operations snapshot"
+                )
+
+            cursor.execute(
+                """
+                SELECT
+                    event_id, claim_id, event_type, block_number,
+                    transaction_hash, log_index, event_timestamp,
+                    status, fraud_score, indexed_at
+                FROM claim_index_events
+                WHERE chain_id = %s AND contract_address = %s
+                ORDER BY block_number DESC, log_index DESC
+                LIMIT %s
+                """,
+                (chain_id, normalized_contract, recent_event_limit),
+            )
+            recent_events = tuple(
+                _event_from_row(row) for row in cursor.fetchall()
+            )
+
+        checkpoint = None
+        if summary["last_processed_block"] is not None:
+            checkpoint_updated_at = summary["checkpoint_updated_at"]
+            if not isinstance(checkpoint_updated_at, datetime):
+                raise PostgresStorageError(
+                    "PostgreSQL returned an invalid claim index checkpoint"
+                )
+            checkpoint = ClaimIndexStatus(
+                chain_id=int(summary["checkpoint_chain_id"]),
+                contract_address=str(summary["checkpoint_contract_address"]),
+                last_processed_block=int(summary["last_processed_block"]),
+                updated_at=checkpoint_updated_at,
+            )
+
+        reconciliation = None
+        if summary["reconciliation_checked_at"] is not None:
+            reconciliation = _reconciliation_from_row(summary)
+
+        return ClaimIndexOperationsSnapshot(
+            checkpoint=checkpoint,
+            total_claims=int(summary["total_claims"]),
+            total_events=int(summary["total_events"]),
+            submitted_events=int(summary["submitted_events"]),
+            assessed_events=int(summary["assessed_events"]),
+            claim_status_counts=(
+                int(summary["submitted_claims"]),
+                int(summary["under_review_claims"]),
+                int(summary["approved_claims"]),
+                int(summary["rejected_claims"]),
+                int(summary["flagged_claims"]),
+            ),
+            recent_events=recent_events,
+            last_reconciliation=reconciliation,
+        )
+
+    def record_reconciliation(
+        self,
+        *,
+        chain_id: int,
+        contract_address: str,
+        indexed_through_block: int,
+        chain_claims: int,
+        indexed_claims: int,
+        missing_claim_ids: tuple[int, ...],
+        unexpected_claim_ids: tuple[int, ...],
+        mismatched_claim_ids: tuple[int, ...],
+        consistent: bool,
+        duration_ms: int,
+    ) -> None:
+        """Append one reconciliation audit result without changing projection."""
+
+        with self.database.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO claim_index_reconciliations (
+                    chain_id, contract_address, indexed_through_block,
+                    chain_claims, indexed_claims, missing_claim_ids,
+                    unexpected_claim_ids, mismatched_claim_ids, consistent,
+                    duration_ms
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    chain_id,
+                    contract_address.lower(),
+                    indexed_through_block,
+                    chain_claims,
+                    indexed_claims,
+                    list(missing_claim_ids),
+                    list(unexpected_claim_ids),
+                    list(mismatched_claim_ids),
+                    consistent,
+                    duration_ms,
+                ),
             )
 
     def load_checkpoint(

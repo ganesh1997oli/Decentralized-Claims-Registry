@@ -80,13 +80,14 @@ def migration() -> Migration:
 def test_checked_in_migrations_own_processing_and_index_tables():
     migrations = load_migrations()
 
-    assert [item.version for item in migrations] == ["001", "002"]
+    assert [item.version for item in migrations] == ["001", "002", "003"]
     assert "CREATE TABLE IF NOT EXISTS claim_assessments" in migrations[0].sql
     assert "CREATE TABLE IF NOT EXISTS claim_incident_fingerprints" in migrations[0].sql
     assert "CREATE TABLE IF NOT EXISTS claim_feature_snapshots" in migrations[0].sql
     assert "CREATE TABLE claim_index_events" in migrations[1].sql
     assert "CREATE TABLE indexed_claims" in migrations[1].sql
     assert "CREATE TABLE claim_index_checkpoints" in migrations[1].sql
+    assert "CREATE TABLE claim_index_reconciliations" in migrations[2].sql
 
 
 def test_upgrade_locks_applies_and_records_each_pending_migration():

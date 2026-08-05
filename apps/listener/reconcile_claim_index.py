@@ -1,10 +1,12 @@
 """Compare the PostgreSQL claims projection with current contract state.
 
-This command is intentionally read-only. A mismatch should be repaired by
-stopping the listener, clearing only the affected deployment projection, and
-replaying confirmed events from ``LISTENER_START_BLOCK``. Mutating rows from a
-point-in-time contract read would discard event history and hide the underlying
-indexing failure.
+This command never repairs or mutates the indexed event projection. It appends
+only the compact comparison result to the operations audit table so the
+authenticated dashboard can report when the index was last verified. A mismatch
+should be repaired by stopping the listener, clearing only the affected
+deployment projection, and replaying confirmed events from
+``LISTENER_START_BLOCK``. Mutating claim rows from a point-in-time contract read
+would discard event history and hide the underlying indexing failure.
 
 Run reconciliation while the listener is caught up and temporarily stopped so
 an assessment cannot legitimately change halfway through the comparison.
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import asdict, dataclass
 from typing import Protocol
 
@@ -171,12 +174,33 @@ def main() -> None:
     deployment = load_claims_deployment(os.environ)
     repositories = PostgresRepositories.from_env()
     registry = SepoliaClaimsRegistry.from_env(require_private_key=False)
+    started_at = time.monotonic()
     result = ClaimIndexReconciler(
         deployment=deployment,
         contract=registry,
         index=repositories.claims,
     ).reconcile()
-    output = {**asdict(result), "consistent": result.consistent}
+    duration_ms = max(0, round((time.monotonic() - started_at) * 1_000))
+    # This audit append is intentionally distinct from projection repair. Both
+    # success and mismatch results are valuable operational facts and neither
+    # changes the event history or the current indexed claim state.
+    repositories.claims.record_reconciliation(
+        chain_id=deployment.chain_id,
+        contract_address=deployment.address,
+        indexed_through_block=result.indexed_through_block,
+        chain_claims=result.chain_claims,
+        indexed_claims=result.indexed_claims,
+        missing_claim_ids=result.missing_claim_ids,
+        unexpected_claim_ids=result.unexpected_claim_ids,
+        mismatched_claim_ids=result.mismatched_claim_ids,
+        consistent=result.consistent,
+        duration_ms=duration_ms,
+    )
+    output = {
+        **asdict(result),
+        "consistent": result.consistent,
+        "duration_ms": duration_ms,
+    }
     print(json.dumps(output, sort_keys=True))
     if not result.consistent:
         logger.error("claim_index.reconciliation_failed", **asdict(result))

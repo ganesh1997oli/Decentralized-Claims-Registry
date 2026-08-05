@@ -1,7 +1,15 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import App, { ClaimsDashboard, ReceiptCard } from './App.tsx'
-import type { ClaimReceipt, ClaimSummary } from './api.ts'
+import App, {
+  ClaimsDashboard,
+  IndexerOperationsView,
+  ReceiptCard,
+} from './App.tsx'
+import type {
+  ClaimReceipt,
+  ClaimSummary,
+  IndexerOperations,
+} from './api.ts'
 import { receiptFromCurrentClaim } from './display-receipt.ts'
 
 const LAST_RECEIPT_STORAGE_KEY = 'claims-registry:last-receipt:v1'
@@ -146,5 +154,79 @@ describe('Historical claim details', () => {
     expect(page).toContain('On-chain screening recorded')
     expect(page).toContain('3,909')
     expect(page).toContain('SHAP indicators are')
+  })
+})
+
+const operationsSnapshot: IndexerOperations = {
+  state: 'healthy',
+  rpc_status: 'available',
+  deployment_id: 'sepolia-security-audit-v1',
+  chain_id: 11155111,
+  contract_address: '0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB',
+  confirmation_blocks: 12,
+  stale_after_seconds: 120,
+  latest_block: 11424295,
+  safe_block: 11424283,
+  indexed_through_block: 11424283,
+  block_lag: 0,
+  checkpoint_updated_at: '2026-08-05T12:24:25Z',
+  checkpoint_age_seconds: 8,
+  total_claims: 7,
+  total_events: 12,
+  submitted_events: 7,
+  assessed_events: 5,
+  claim_status_counts: {
+    submitted: 2,
+    under_review: 1,
+    approved: 1,
+    rejected: 1,
+    flagged: 2,
+  },
+  recent_events: [
+    {
+      event_id: '11155111:0xtx:1',
+      claim_id: 6,
+      event_type: 'ClaimAssessed',
+      block_number: 11424280,
+      transaction_hash: '0xtx',
+      log_index: 1,
+      event_timestamp: 1754395200,
+      status: 'Flagged',
+      fraud_score: 8500,
+      indexed_at: '2026-08-05T12:24:20Z',
+    },
+  ],
+  last_reconciliation: {
+    indexed_through_block: 11424283,
+    chain_claims: 7,
+    indexed_claims: 7,
+    missing_claim_ids: [],
+    unexpected_claim_ids: [],
+    mismatched_claim_ids: [],
+    consistent: true,
+    duration_ms: 132,
+    checked_at: '2026-08-05T12:24:25Z',
+  },
+  observed_at: '2026-08-05T12:24:33Z',
+}
+
+describe('Indexer operations dashboard', () => {
+  it('renders health, lag, reconciliation and recent event evidence', () => {
+    const page = renderToStaticMarkup(
+      <IndexerOperationsView
+        snapshot={operationsSnapshot}
+        isRefreshing={false}
+        error={null}
+        onRefresh={() => undefined}
+        onDisconnect={() => undefined}
+      />,
+    )
+
+    expect(page).toContain('Blockchain indexer operations')
+    expect(page).toContain('Healthy')
+    expect(page).toContain('Block lag')
+    expect(page).toContain('Consistent')
+    expect(page).toContain('Claim assessed')
+    expect(page).toContain('11,424,283')
   })
 })

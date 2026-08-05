@@ -5,6 +5,9 @@ from datetime import UTC, datetime
 import pytest
 
 from packages.integrations.postgres import (
+    ClaimIndexEventRecord,
+    ClaimIndexOperationsSnapshot,
+    ClaimIndexReconciliationRecord,
     ClaimIndexStatus,
     IndexedClaim,
     PostgresClaimIndexCheckpoint,
@@ -280,3 +283,132 @@ def test_status_record_shape_is_explicit():
     )
 
     assert status.last_processed_block == 120
+
+
+def test_operations_snapshot_is_bounded_and_deployment_scoped():
+    checkpoint_at = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
+    reconciled_at = datetime(2026, 8, 5, 12, 5, tzinfo=UTC)
+    event_indexed_at = datetime(2026, 8, 5, 12, 4, tzinfo=UTC)
+    cursor = FakeCursor(
+        one=(
+            {
+                "total_claims": 7,
+                "submitted_claims": 2,
+                "under_review_claims": 1,
+                "approved_claims": 1,
+                "rejected_claims": 1,
+                "flagged_claims": 2,
+                "total_events": 12,
+                "submitted_events": 7,
+                "assessed_events": 5,
+                "checkpoint_chain_id": 11_155_111,
+                "checkpoint_contract_address": "0xabcdef",
+                "last_processed_block": 11_424_283,
+                "checkpoint_updated_at": checkpoint_at,
+                "reconciliation_indexed_through_block": 11_424_283,
+                "reconciliation_chain_claims": 7,
+                "reconciliation_indexed_claims": 7,
+                "missing_claim_ids": [],
+                "unexpected_claim_ids": [],
+                "mismatched_claim_ids": [],
+                "reconciliation_consistent": True,
+                "reconciliation_duration_ms": 132,
+                "reconciliation_checked_at": reconciled_at,
+            },
+        ),
+        rows=(
+            {
+                "event_id": "11155111:0xtx:1",
+                "claim_id": 6,
+                "event_type": "ClaimAssessed",
+                "block_number": 11_424_280,
+                "transaction_hash": "0xtx",
+                "log_index": 1,
+                "event_timestamp": 1_754_395_200,
+                "status": 4,
+                "fraud_score": 8_500,
+                "indexed_at": event_indexed_at,
+            },
+        ),
+    )
+
+    snapshot = repository_for(cursor).get_operations_snapshot(
+        chain_id=11_155_111,
+        contract_address="0xABCDEF",
+        recent_event_limit=10,
+    )
+
+    assert snapshot == ClaimIndexOperationsSnapshot(
+        checkpoint=ClaimIndexStatus(
+            chain_id=11_155_111,
+            contract_address="0xabcdef",
+            last_processed_block=11_424_283,
+            updated_at=checkpoint_at,
+        ),
+        total_claims=7,
+        total_events=12,
+        submitted_events=7,
+        assessed_events=5,
+        claim_status_counts=(2, 1, 1, 1, 2),
+        recent_events=(
+            ClaimIndexEventRecord(
+                event_id="11155111:0xtx:1",
+                claim_id=6,
+                event_type="ClaimAssessed",
+                block_number=11_424_280,
+                transaction_hash="0xtx",
+                log_index=1,
+                event_timestamp=1_754_395_200,
+                status=4,
+                fraud_score=8_500,
+                indexed_at=event_indexed_at,
+            ),
+        ),
+        last_reconciliation=ClaimIndexReconciliationRecord(
+            indexed_through_block=11_424_283,
+            chain_claims=7,
+            indexed_claims=7,
+            missing_claim_ids=(),
+            unexpected_claim_ids=(),
+            mismatched_claim_ids=(),
+            consistent=True,
+            duration_ms=132,
+            checked_at=reconciled_at,
+        ),
+    )
+    assert len(cursor.executions) == 2
+    assert "LIMIT %s" in cursor.executions[1][0]
+    assert cursor.executions[1][1] == (11_155_111, "0xabcdef", 10)
+
+
+def test_reconciliation_audit_append_does_not_update_projection():
+    cursor = FakeCursor()
+
+    repository_for(cursor).record_reconciliation(
+        chain_id=11_155_111,
+        contract_address="0xABCDEF",
+        indexed_through_block=120,
+        chain_claims=7,
+        indexed_claims=6,
+        missing_claim_ids=(4,),
+        unexpected_claim_ids=(),
+        mismatched_claim_ids=(5,),
+        consistent=False,
+        duration_ms=25,
+    )
+
+    statement, parameters = cursor.executions[0]
+    assert "INSERT INTO claim_index_reconciliations" in statement
+    assert "UPDATE indexed_claims" not in statement
+    assert parameters == (
+        11_155_111,
+        "0xabcdef",
+        120,
+        7,
+        6,
+        [4],
+        [],
+        [5],
+        False,
+        25,
+    )

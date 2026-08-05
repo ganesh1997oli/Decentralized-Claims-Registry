@@ -78,6 +78,70 @@ export type ClaimPage = {
   indexed_through_block: number | null
 }
 
+export type IndexerState =
+  | 'healthy'
+  | 'catching_up'
+  | 'stalled'
+  | 'uninitialized'
+  | 'degraded'
+
+export type ClaimStatusCounts = {
+  submitted: number
+  under_review: number
+  approved: number
+  rejected: number
+  flagged: number
+}
+
+export type ClaimIndexEvent = {
+  event_id: string
+  claim_id: number
+  event_type: 'ClaimSubmitted' | 'ClaimAssessed'
+  block_number: number
+  transaction_hash: string
+  log_index: number
+  event_timestamp: number
+  status: string
+  fraud_score: number
+  indexed_at: string
+}
+
+export type ClaimIndexReconciliation = {
+  indexed_through_block: number
+  chain_claims: number
+  indexed_claims: number
+  missing_claim_ids: number[]
+  unexpected_claim_ids: number[]
+  mismatched_claim_ids: number[]
+  consistent: boolean
+  duration_ms: number
+  checked_at: string
+}
+
+export type IndexerOperations = {
+  state: IndexerState
+  rpc_status: 'available' | 'unavailable'
+  deployment_id: string
+  chain_id: number
+  contract_address: string
+  confirmation_blocks: number
+  stale_after_seconds: number
+  latest_block: number | null
+  safe_block: number | null
+  indexed_through_block: number | null
+  block_lag: number | null
+  checkpoint_updated_at: string | null
+  checkpoint_age_seconds: number | null
+  total_claims: number
+  total_events: number
+  submitted_events: number
+  assessed_events: number
+  claim_status_counts: ClaimStatusCounts
+  recent_events: ClaimIndexEvent[]
+  last_reconciliation: ClaimIndexReconciliation | null
+  observed_at: string
+}
+
 export type ClaimReceipt = {
   claim_id: number
   transaction_hash: string
@@ -195,6 +259,100 @@ function isClaimPage(value: unknown): value is ClaimPage {
   )
 }
 
+function isNullableNumber(value: unknown): value is number | null {
+  return typeof value === 'number' || value === null
+}
+
+function isNullableTimestamp(value: unknown): value is string | null {
+  return typeof value === 'string' || value === null
+}
+
+function isNumberArray(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'number')
+}
+
+function isClaimStatusCounts(value: unknown): value is ClaimStatusCounts {
+  if (!isRecord(value)) return false
+  return [
+    value.submitted,
+    value.under_review,
+    value.approved,
+    value.rejected,
+    value.flagged,
+  ].every((count) => typeof count === 'number')
+}
+
+function isClaimIndexEvent(value: unknown): value is ClaimIndexEvent {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.event_id === 'string' &&
+    typeof value.claim_id === 'number' &&
+    (value.event_type === 'ClaimSubmitted' ||
+      value.event_type === 'ClaimAssessed') &&
+    typeof value.block_number === 'number' &&
+    typeof value.transaction_hash === 'string' &&
+    typeof value.log_index === 'number' &&
+    typeof value.event_timestamp === 'number' &&
+    typeof value.status === 'string' &&
+    typeof value.fraud_score === 'number' &&
+    typeof value.indexed_at === 'string'
+  )
+}
+
+function isClaimIndexReconciliation(
+  value: unknown,
+): value is ClaimIndexReconciliation {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.indexed_through_block === 'number' &&
+    typeof value.chain_claims === 'number' &&
+    typeof value.indexed_claims === 'number' &&
+    isNumberArray(value.missing_claim_ids) &&
+    isNumberArray(value.unexpected_claim_ids) &&
+    isNumberArray(value.mismatched_claim_ids) &&
+    typeof value.consistent === 'boolean' &&
+    typeof value.duration_ms === 'number' &&
+    typeof value.checked_at === 'string'
+  )
+}
+
+function isIndexerOperations(value: unknown): value is IndexerOperations {
+  if (!isRecord(value)) return false
+  const states: IndexerState[] = [
+    'healthy',
+    'catching_up',
+    'stalled',
+    'uninitialized',
+    'degraded',
+  ]
+  return (
+    typeof value.state === 'string' &&
+    states.includes(value.state as IndexerState) &&
+    (value.rpc_status === 'available' || value.rpc_status === 'unavailable') &&
+    typeof value.deployment_id === 'string' &&
+    typeof value.chain_id === 'number' &&
+    typeof value.contract_address === 'string' &&
+    typeof value.confirmation_blocks === 'number' &&
+    typeof value.stale_after_seconds === 'number' &&
+    isNullableNumber(value.latest_block) &&
+    isNullableNumber(value.safe_block) &&
+    isNullableNumber(value.indexed_through_block) &&
+    isNullableNumber(value.block_lag) &&
+    isNullableTimestamp(value.checkpoint_updated_at) &&
+    isNullableNumber(value.checkpoint_age_seconds) &&
+    typeof value.total_claims === 'number' &&
+    typeof value.total_events === 'number' &&
+    typeof value.submitted_events === 'number' &&
+    typeof value.assessed_events === 'number' &&
+    isClaimStatusCounts(value.claim_status_counts) &&
+    Array.isArray(value.recent_events) &&
+    value.recent_events.every(isClaimIndexEvent) &&
+    (value.last_reconciliation === null ||
+      isClaimIndexReconciliation(value.last_reconciliation)) &&
+    typeof value.observed_at === 'string'
+  )
+}
+
 function errorMessage(body: unknown, status: number): string {
   if (isRecord(body) && typeof body.detail === 'string') {
     return body.detail
@@ -309,5 +467,35 @@ export async function listClaims(
     throw new Error('The claims API returned an unexpected claims-list shape')
   }
 
+  return body
+}
+
+export async function getIndexerOperations(
+  operationsApiKey: string,
+  signal?: AbortSignal,
+): Promise<IndexerOperations> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/operations/indexer`, {
+      headers: { 'X-Operations-API-Key': operationsApiKey },
+      signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error(
+      'Could not reach indexer operations. Confirm that FastAPI is running.',
+    )
+  }
+
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    throw new Error(`The claims API returned HTTP ${response.status} without JSON`)
+  }
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isIndexerOperations(body)) {
+    throw new Error('The claims API returned an unexpected operations response')
+  }
   return body
 }

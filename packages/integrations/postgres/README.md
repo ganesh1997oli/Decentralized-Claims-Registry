@@ -90,7 +90,9 @@ and includes `indexed_through_block` in its response.
 
 This projection stores only public contract-event values. It does not download
 claim bodies into PostgreSQL. Use `python -m apps.listener.reconcile_claim_index`
-while the caught-up listener is stopped to compare it with contract state.
+while the caught-up listener is stopped to compare it with contract state. The
+command never mutates indexed claim rows; it appends its compact result to
+`claim_index_reconciliations` for the authenticated operations dashboard.
 
 ## Feature snapshot
 

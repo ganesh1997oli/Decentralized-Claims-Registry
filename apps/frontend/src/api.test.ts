@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   getClaimAssessment,
+  getIndexerOperations,
   listClaims,
   submitClaim,
   type ClaimPayload,
   type ClaimPage,
   type ClaimReceipt,
+  type IndexerOperations,
 } from './api.ts'
 
 const payload: ClaimPayload = {
@@ -81,6 +83,59 @@ const claimPage: ClaimPage = {
   total_items: 6,
   total_pages: 2,
   indexed_through_block: 11_400_000,
+}
+
+const operations: IndexerOperations = {
+  state: 'healthy',
+  rpc_status: 'available',
+  deployment_id: 'sepolia-security-audit-v1',
+  chain_id: 11155111,
+  contract_address: '0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB',
+  confirmation_blocks: 12,
+  stale_after_seconds: 120,
+  latest_block: 11424295,
+  safe_block: 11424283,
+  indexed_through_block: 11424283,
+  block_lag: 0,
+  checkpoint_updated_at: '2026-08-05T12:24:25Z',
+  checkpoint_age_seconds: 8,
+  total_claims: 7,
+  total_events: 12,
+  submitted_events: 7,
+  assessed_events: 5,
+  claim_status_counts: {
+    submitted: 2,
+    under_review: 1,
+    approved: 1,
+    rejected: 1,
+    flagged: 2,
+  },
+  recent_events: [
+    {
+      event_id: '11155111:0xtx:1',
+      claim_id: 6,
+      event_type: 'ClaimAssessed',
+      block_number: 11424280,
+      transaction_hash: '0xtx',
+      log_index: 1,
+      event_timestamp: 1754395200,
+      status: 'Flagged',
+      fraud_score: 8500,
+      indexed_at: '2026-08-05T12:24:20Z',
+    },
+  ],
+  last_reconciliation: {
+    indexed_through_block: 11424283,
+    chain_claims: 7,
+    indexed_claims: 7,
+    missing_claim_ids: [],
+    unexpected_claim_ids: [],
+    mismatched_claim_ids: [],
+    consistent: true,
+    duration_ms: 132,
+    checked_at: '2026-08-05T12:24:25Z',
+  },
+  observed_at: '2026-08-05T12:24:33Z',
 }
 
 afterEach(() => {
@@ -229,5 +284,44 @@ describe('listClaims', () => {
     )
 
     await expect(listClaims()).rejects.toThrow('unexpected claims-list shape')
+  })
+})
+
+describe('getIndexerOperations', () => {
+  it('sends the operator key only in a header and validates telemetry', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(operations), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getIndexerOperations('operator-secret')).resolves.toEqual(
+      operations,
+    )
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/operations/indexer',
+      {
+        headers: { 'X-Operations-API-Key': 'operator-secret' },
+        signal: undefined,
+      },
+    )
+  })
+
+  it('rejects incomplete operations telemetry', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ state: 'healthy' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+
+    await expect(getIndexerOperations('operator-secret')).rejects.toThrow(
+      'unexpected operations response',
+    )
   })
 })

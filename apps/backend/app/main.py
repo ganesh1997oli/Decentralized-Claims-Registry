@@ -22,6 +22,13 @@ from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
 from apps.backend.app.health import ReadinessProbe, build_readiness_probe
+from apps.backend.app.indexer_operations import (
+    IndexerOperationsAuthenticationError,
+    IndexerOperationsBoundary,
+    IndexerOperationsConfigurationError,
+    IndexerOperationsService,
+    IndexerOperationsServiceError,
+)
 from apps.backend.app.models import (
     AssessmentReasonResponse,
     ClaimAssessmentResponse,
@@ -31,6 +38,7 @@ from apps.backend.app.models import (
     DuplicateDetectionResponse,
     DuplicateMatchResponse,
     HealthResponse,
+    IndexerOperationsResponse,
     ReadinessResponse,
 )
 from apps.backend.app.service import (
@@ -63,6 +71,10 @@ from packages.observability import configure_logging, get_event_logger
 logger = get_event_logger(__name__)
 insurer_api_key_header = APIKeyHeader(
     name="X-Insurer-API-Key",
+    auto_error=False,
+)
+indexer_operations_api_key_header = APIKeyHeader(
+    name="X-Operations-API-Key",
     auto_error=False,
 )
 
@@ -216,7 +228,11 @@ app.add_middleware(
     allow_origins=frontend_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "X-Insurer-API-Key"],
+    allow_headers=[
+        "Content-Type",
+        "X-Insurer-API-Key",
+        "X-Operations-API-Key",
+    ],
 )
 
 
@@ -280,6 +296,71 @@ ActiveDeploymentDependency = Annotated[
 
 
 @lru_cache
+def load_indexer_operations_boundary() -> IndexerOperationsBoundary:
+    """Load the digest-only operator credential once per API process."""
+
+    return IndexerOperationsBoundary.from_env()
+
+
+def get_indexer_operations_boundary() -> IndexerOperationsBoundary:
+    try:
+        return load_indexer_operations_boundary()
+    except IndexerOperationsConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Indexer operations authentication is unavailable: {exc}",
+        ) from exc
+
+
+IndexerOperationsBoundaryDependency = Annotated[
+    IndexerOperationsBoundary,
+    Depends(get_indexer_operations_boundary),
+]
+
+
+def require_indexer_operations_access(
+    boundary: IndexerOperationsBoundaryDependency,
+    api_key: Annotated[
+        str | None,
+        Security(indexer_operations_api_key_header),
+    ],
+) -> None:
+    """Reject unauthenticated telemetry reads before constructing adapters."""
+
+    try:
+        boundary.authenticate(api_key)
+    except IndexerOperationsAuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "ApiKey"},
+        ) from exc
+
+
+IndexerOperationsAccessDependency = Annotated[
+    None,
+    Depends(require_indexer_operations_access),
+]
+
+
+@lru_cache
+def get_indexer_operations_service() -> IndexerOperationsService:
+    try:
+        return IndexerOperationsService.from_env()
+    except IndexerOperationsServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Indexer operations are unavailable: {exc}",
+        ) from exc
+
+
+IndexerOperationsServiceDependency = Annotated[
+    IndexerOperationsService,
+    Depends(get_indexer_operations_service),
+]
+
+
+@lru_cache
 def get_readiness_probe() -> ReadinessProbe:
     """Construct check definitions once; each evaluation uses fresh adapters."""
 
@@ -319,6 +400,30 @@ def health_ready(
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=body.model_dump()
     )
+
+
+@app.get(
+    "/operations/indexer",
+    response_model=IndexerOperationsResponse,
+    tags=["operations"],
+    responses={
+        401: {"description": "Missing or invalid operations API key"},
+        503: {"description": "Operations dependencies are unavailable"},
+    },
+)
+def get_indexer_operations(
+    _access: IndexerOperationsAccessDependency,
+    service: IndexerOperationsServiceDependency,
+) -> IndexerOperationsResponse:
+    """Return a bounded read-only indexer snapshot for trusted operators."""
+
+    try:
+        return service.snapshot()
+    except IndexerOperationsServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
 
 @app.get("/claims", response_model=ClaimPageResponse, tags=["claims"])

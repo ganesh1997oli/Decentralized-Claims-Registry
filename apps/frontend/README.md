@@ -28,6 +28,7 @@ both mean a person would need to review the claim.
 | `src/hooks/useClaimsWorkspace.ts` | Pagination, cancellation, detail loading, polling and receipt persistence |
 | `src/components/ReceiptCard.tsx` | Anchor, duplicate, score and SHAP presentation |
 | `src/components/ClaimsDashboard.tsx` | Newest-first indexed list, checkpoint and selection |
+| `src/components/IndexerOperationsDashboard.tsx` | Authenticated lag, counts, reconciliation and recent-event telemetry |
 | `src/api.ts` | Fetch calls plus runtime response-shape validation |
 | `src/display-receipt.ts` | Safe merge of a browser receipt and current chain state |
 | `src/receipt-storage.ts` | Latest public submission receipt only |
@@ -63,6 +64,12 @@ npm --prefix apps/frontend run dev -- --host 127.0.0.1
 
 Start FastAPI first, then open <http://127.0.0.1:5173>.
 
+The dedicated indexer dashboard is at <http://127.0.0.1:5173/operations>. For
+the checked-in local configuration, use
+`local-indexer-operations-key-change-before-hosting`. The raw key is submitted
+only as `X-Operations-API-Key` and retained in session storage for the current
+tab. Generate a different high-entropy key before hosting.
+
 | Setting | Default | Browser-visible purpose |
 | --- | --- | --- |
 | `VITE_API_BASE_URL` | `http://127.0.0.1:8000` | FastAPI base URL |
@@ -84,6 +91,10 @@ secret.
   history; the UI says that the detail is unavailable instead of inventing it.
 - In-flight list and detail requests are cancelled when dependencies change or
   the component unmounts.
+- The operations view refreshes every 15 seconds while visible and preserves the
+  last good snapshot through a temporary RPC or API failure.
+- The operations key is never compiled into the Vite bundle and closing the tab
+  clears its session storage.
 
 ## Verify
 

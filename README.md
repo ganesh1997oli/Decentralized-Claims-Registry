@@ -198,6 +198,13 @@ Open <http://127.0.0.1:5173>. Health and API documentation are available at:
 - <http://127.0.0.1:8000/health/live>
 - <http://127.0.0.1:8000/health/ready>
 - <http://127.0.0.1:8000/docs>
+- <http://127.0.0.1:5173/operations> (authenticated indexer operations)
+
+The local operations key documented in `.env.example` is
+`local-indexer-operations-key-change-before-hosting`. Generate a different
+high-entropy key for any hosted environment. See the
+[indexer operations runbook](docs/indexer-operations-runbook.md) for deployment,
+monitoring, reconciliation and incident-response procedures.
 
 ### 6. Follow a claim
 
