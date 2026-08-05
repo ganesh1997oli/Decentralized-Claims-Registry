@@ -36,6 +36,8 @@ class BlockchainSubmissionError(RuntimeError):
 
 @dataclass(frozen=True)
 class ChainSubmission:
+    """Confirmed submission identity decoded from ``ClaimSubmitted``."""
+
     claim_id: int
     transaction_hash: str
     block_number: int
@@ -43,6 +45,8 @@ class ChainSubmission:
 
 @dataclass(frozen=True)
 class ChainAssessment:
+    """Confirmed assessment values decoded from ``ClaimAssessed``."""
+
     transaction_hash: str
     block_number: int
     status: int
@@ -51,6 +55,8 @@ class ChainAssessment:
 
 @dataclass(frozen=True)
 class ChainClaim:
+    """Authoritative public Solidity claim state used by reconciliation."""
+
     claim_id: int
     claimant: str
     claim_hash: str
@@ -62,6 +68,8 @@ class ChainClaim:
 
 
 def _hex(value: object) -> str:
+    """Normalize Web3/HexBytes output to one ``0x``-prefixed representation."""
+
     encoded = value.hex()  # type: ignore[union-attr]
     return encoded if encoded.startswith("0x") else f"0x{encoded}"
 
@@ -79,6 +87,14 @@ class SepoliaClaimsRegistry:
         receipt_timeout: int = 180,
         private_key_env: str = "SEPOLIA_SUBMITTER_PRIVATE_KEY",
     ) -> None:
+        """Connect to one verified deployment and configure optional signing.
+
+        ``access`` is an explicit capability: read clients reject private keys,
+        while submitter/assessor clients verify the wallet's contract role before
+        doing work. One process-local nonce lock serializes writes made through
+        this adapter; mined receipts and decoded events remain the final proof.
+        """
+
         self.w3 = Web3(Web3.HTTPProvider(rpc_url))
         self.deployment = deployment
         try:
@@ -115,7 +131,12 @@ class SepoliaClaimsRegistry:
     def _verify_signer_access(
         self, access: Literal["read", "submitter", "assessor"]
     ) -> None:
-        """Fail before work starts when the signer lacks its contract role."""
+        """Fail before work starts when the client violates its requested role.
+
+        Read access enforces absence of a private key. Write access checks the
+        hardened contract's role mappings through RPC, including the assessor's
+        active insurer scope, rather than trusting environment variable naming.
+        """
 
         if access == "read":
             if self.account is not None:
@@ -140,15 +161,11 @@ class SepoliaClaimsRegistry:
                     )
                 return
 
-            authorized = self.contract.functions.isAssessor(
-                self.account.address
-            ).call()
+            authorized = self.contract.functions.isAssessor(self.account.address).call()
             insurer = self.contract.functions.assessorInsurer(
                 self.account.address
             ).call()
-            insurer_is_submitter = self.contract.functions.isSubmitter(
-                insurer
-            ).call()
+            insurer_is_submitter = self.contract.functions.isSubmitter(insurer).call()
             if not authorized or not insurer_is_submitter:
                 raise BlockchainSubmissionError(
                     f"{self.account.address} is not an authorized assessor with "
@@ -177,9 +194,7 @@ class SepoliaClaimsRegistry:
         """
 
         rpc_url = os.environ.get("SEPOLIA_RPC_URL") or os.environ.get("RPC_URL")
-        private_key = (
-            os.environ.get(private_key_env) if require_private_key else None
-        )
+        private_key = os.environ.get(private_key_env) if require_private_key else None
         missing = [
             name
             for name, value in (
@@ -223,7 +238,11 @@ class SepoliaClaimsRegistry:
         )
 
     def _signing_account(self):
-        """Return the configured signer or fail before constructing a write."""
+        """Return the configured signer or fail before constructing a write.
+
+        This guard keeps internal write methods safe even if a read-only adapter is
+        passed through an incorrectly wired dependency.
+        """
 
         if self.account is None:
             raise BlockchainSubmissionError(
@@ -232,7 +251,13 @@ class SepoliaClaimsRegistry:
         return self.account
 
     def submit_claim(self, claim_hash: bytes, data_pointer: str) -> ChainSubmission:
-        """Submit a claim and read its new ID from the contract event."""
+        """Submit a claim and derive its ID from the mined contract event.
+
+        Nonces are allocated under a lock and one explicit higher-nonce response
+        may repair a stale public-RPC view. Receipt status proves execution; exactly
+        one decoded ``ClaimSubmitted`` event proves which ID the contract assigned.
+        Any uncertain failure clears the cached nonce before the next attempt.
+        """
 
         try:
             account = self._signing_account()
@@ -306,7 +331,12 @@ class SepoliaClaimsRegistry:
     def assess_claim(
         self, claim_id: int, status: int, fraud_score: int
     ) -> ChainAssessment:
-        """Write the model result and confirm the contract recorded it."""
+        """Write a bounded model result and verify the emitted assessment values.
+
+        Status and basis-point score are checked before transaction construction.
+        After mining, the decoded event must match claim ID, status, and score; a
+        successful transaction with unexpected event data is still rejected.
+        """
 
         if status not in range(5):
             raise BlockchainSubmissionError(f"Invalid claim status: {status}")
@@ -393,10 +423,14 @@ class SepoliaClaimsRegistry:
                 f"Sepolia assessment failed: {exc}"
             ) from exc
 
-    def list_claims(
-        self, *, page: int, page_size: int
-    ) -> tuple[list[ChainClaim], int]:
-        """Read one small page directly from the contract, newest claim first."""
+    def list_claims(self, *, page: int, page_size: int) -> tuple[list[ChainClaim], int]:
+        """Read one bounded page directly from the contract for diagnostic use.
+
+        Claim IDs are contiguous and increasing, so walking backward returns the
+        newest claims without fetching the full registry. The public FastAPI list
+        uses PostgreSQL instead; this RPC method remains useful in focused tooling
+        and tests where authoritative direct reads are specifically required.
+        """
 
         try:
             claim_count = self.contract.functions.claimCount().call()
@@ -429,11 +463,43 @@ class SepoliaClaimsRegistry:
                 f"Could not read claims from Sepolia: {exc}"
             ) from exc
 
-    def get_claim(self, claim_id: int) -> ChainClaim:
-        """Read one claim so an at-least-once worker can avoid a second write."""
+    def claim_count(self, *, block_identifier: int | None = None) -> int:
+        """Read the authoritative registry size at an optional snapshot block.
+
+        Pinning the call is essential during reconciliation: otherwise new claims
+        mined after the database checkpoint could create false missing-row reports.
+        """
 
         try:
-            claim = self.contract.functions.getClaim(claim_id).call()
+            call = self.contract.functions.claimCount()
+            value = (
+                call.call()
+                if block_identifier is None
+                else call.call(block_identifier=block_identifier)
+            )
+            return int(value)
+        except Exception as exc:
+            raise BlockchainSubmissionError(
+                "Could not read the Sepolia claim count"
+            ) from exc
+
+    def get_claim(
+        self, claim_id: int, *, block_identifier: int | None = None
+    ) -> ChainClaim:
+        """Read one authoritative claim at an optional snapshot block.
+
+        Reconciliation passes the durable checkpoint so all calls describe the
+        same historical state. Workers may omit it when checking current contract
+        state before retrying an at-least-once write.
+        """
+
+        try:
+            call = self.contract.functions.getClaim(claim_id)
+            claim = (
+                call.call()
+                if block_identifier is None
+                else call.call(block_identifier=block_identifier)
+            )
             return ChainClaim(
                 claim_id=claim_id,
                 claimant=Web3.to_checksum_address(claim[0]),

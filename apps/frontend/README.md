@@ -12,7 +12,7 @@ flowchart LR
     API --> Receipt["Anchor receipt"]
     Receipt --> Pending["Assessment pending"]
     Pending -->|"poll every 2 seconds"| Result["Duplicate check + score + SHAP"]
-    Result --> Dashboard["Refresh Sepolia claims"]
+    Result --> Dashboard["Refresh confirmed claim index"]
     Dashboard --> Details["Open any claim"]
 ```
 
@@ -27,7 +27,8 @@ both mean a person would need to review the claim.
 | `src/components/ClaimForm.tsx` | Form state, temporary credential, validation and submission |
 | `src/hooks/useClaimsWorkspace.ts` | Pagination, cancellation, detail loading, polling and receipt persistence |
 | `src/components/ReceiptCard.tsx` | Anchor, duplicate, score and SHAP presentation |
-| `src/components/ClaimsDashboard.tsx` | Newest-first contract list and claim selection |
+| `src/components/ClaimsDashboard.tsx` | Newest-first indexed list, checkpoint and selection |
+| `src/components/IndexerOperationsDashboard.tsx` | Authenticated lag, counts, reconciliation and recent-event telemetry |
 | `src/api.ts` | Fetch calls plus runtime response-shape validation |
 | `src/display-receipt.ts` | Safe merge of a browser receipt and current chain state |
 | `src/receipt-storage.ts` | Latest public submission receipt only |
@@ -63,6 +64,12 @@ npm --prefix apps/frontend run dev -- --host 127.0.0.1
 
 Start FastAPI first, then open <http://127.0.0.1:5173>.
 
+The dedicated indexer dashboard is at <http://127.0.0.1:5173/operations>. For
+the checked-in local configuration, use
+`local-indexer-operations-key-change-before-hosting`. The raw key is submitted
+only as `X-Operations-API-Key` and retained in session storage for the current
+tab. Generate a different high-entropy key before hosting.
+
 | Setting | Default | Browser-visible purpose |
 | --- | --- | --- |
 | `VITE_API_BASE_URL` | `http://127.0.0.1:8000` | FastAPI base URL |
@@ -77,13 +84,20 @@ secret.
   immediately.
 - The workspace polls for up to one minute while the Kafka worker finishes.
 - The newest successful public receipt survives a refresh.
-- If storage is empty, the newest contract claim becomes the details view.
+- If storage is empty, the newest indexed claim becomes the details view.
 - Selecting an older claim shows its chain state immediately, then adds the
   PostgreSQL assessment if one exists.
 - Older claims may have an on-chain score without current SHAP or duplicate
   history; the UI says that the detail is unavailable instead of inventing it.
 - In-flight list and detail requests are cancelled when dependencies change or
   the component unmounts.
+- The operations view refreshes every 15 seconds while visible and preserves the
+  last good snapshot through a temporary RPC or API failure.
+- The operations event explorer filters by claim ID or full transaction hash,
+  event type, state, and block range. Search pages are independent of telemetry
+  polling and use stable Newer/Older keyset navigation.
+- The operations key is never compiled into the Vite bundle and closing the tab
+  clears its session storage.
 
 ## Verify
 
@@ -102,7 +116,8 @@ review-only duplicate experience without contacting Sepolia.
 ## Safety limits
 
 - Evidence upload is intentionally absent while IPFS is public and unencrypted.
-- The dashboard is a small direct-contract view, not a production search tool.
+- The dashboard uses a confirmed-event PostgreSQL projection. It reports the
+  indexed-through block and can temporarily lag the chain.
 - A duplicate match and XGBoost score are review signals only.
 - Use only fictional policy, claimant, and incident information.
 

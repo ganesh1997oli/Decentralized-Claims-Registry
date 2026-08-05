@@ -28,6 +28,12 @@ MIGRATION_LOCK = "decentralized-claims-registry:schema-migrations"
 
 @dataclass(frozen=True)
 class Migration:
+    """One ordered SQL file with the checksum persisted after application.
+
+    ``version`` controls ordering and identity, while ``checksum`` detects edits
+    to a migration that may already have run in another environment.
+    """
+
     version: str
     name: str
     checksum: str
@@ -36,6 +42,8 @@ class Migration:
 
 @dataclass(frozen=True)
 class MigrationStatus:
+    """Read-only comparison between code migrations and database metadata."""
+
     current: bool
     applied: tuple[str, ...]
     pending: tuple[str, ...]
@@ -77,11 +85,20 @@ class PostgresMigrator:
         *,
         migrations: tuple[Migration, ...] | None = None,
     ) -> None:
+        """Bind a database to an immutable ordered migration set.
+
+        Tests may inject a small migration tuple. Production loads checked-in SQL
+        files once at construction so one command cannot observe the directory in
+        two different states while deciding what to apply.
+        """
+
         self.database = database
         self.migrations = migrations or load_migrations()
 
     @staticmethod
     def _ensure_version_table(cursor) -> None:
+        """Create the migration ledger inside the caller's locked transaction."""
+
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS claims_schema_migrations (
@@ -193,6 +210,13 @@ class PostgresMigrator:
 
 
 def main() -> None:
+    """Run the deploy-time ``upgrade`` or readiness-safe ``check`` command.
+
+    ``upgrade`` applies missing versions under the advisory transaction lock;
+    ``check`` performs no schema mutation and exits nonzero through the raised
+    storage error when the database is behind or inconsistent with source files.
+    """
+
     configure_logging("claims-database-migrator")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

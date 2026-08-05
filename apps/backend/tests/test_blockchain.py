@@ -49,15 +49,19 @@ class FakeAssessmentContract:
 
 
 class FakeReadCall:
-    def __init__(self, value):
+    def __init__(self, value, block_identifiers=None):
         self.value = value
+        self.block_identifiers = block_identifiers
 
-    def call(self):
+    def call(self, *, block_identifier=None):
+        if self.block_identifiers is not None:
+            self.block_identifiers.append(block_identifier)
         return self.value
 
 
 class FakeReadContract:
     def __init__(self):
+        self.block_identifiers = []
         claims = {
             0: (
                 "0x0000000000000000000000000000000000000001",
@@ -79,8 +83,10 @@ class FakeReadContract:
             ),
         }
         self.functions = SimpleNamespace(
-            claimCount=lambda: FakeReadCall(2),
-            getClaim=lambda claim_id: FakeReadCall(claims[claim_id]),
+            claimCount=lambda: FakeReadCall(2, self.block_identifiers),
+            getClaim=lambda claim_id: FakeReadCall(
+                claims[claim_id], self.block_identifiers
+            ),
         )
 
 
@@ -258,3 +264,14 @@ def test_registry_reads_one_claim_for_idempotency_checks():
     assert claim.claim_id == 1
     assert claim.status == 4
     assert claim.fraud_score == 8500
+
+
+def test_reconciliation_reads_are_pinned_to_one_block():
+    registry = SepoliaClaimsRegistry.__new__(SepoliaClaimsRegistry)
+    registry.contract = FakeReadContract()
+
+    assert registry.claim_count(block_identifier=120) == 2
+    claim = registry.get_claim(1, block_identifier=120)
+
+    assert claim.claim_id == 1
+    assert registry.contract.block_identifiers == [120, 120]

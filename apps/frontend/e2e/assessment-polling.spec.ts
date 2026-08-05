@@ -126,6 +126,7 @@ test('shows a delayed assessment without reloading the browser', async ({
           page_size: 10,
           total_items: submitted ? 1 : 0,
           total_pages: 1,
+          indexed_through_block: 11_400_000,
         }),
       })
       return

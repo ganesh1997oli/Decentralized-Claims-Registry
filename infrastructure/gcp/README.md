@@ -165,6 +165,17 @@ python apps/backend/scripts/generate_insurer_credential.py \
 Give the raw key only to that fictional insurer operator and place only the
 digest record in `INSURER_CREDENTIALS_JSON`.
 
+Create a separate operations credential:
+
+```bash
+python apps/backend/scripts/generate_operations_credential.py
+```
+
+Give its raw key only to trusted operators and place the printed digest in
+`INDEXER_OPERATIONS_API_KEY_SHA256`. The browser operations page is `/operations`;
+for an internet-accessible deployment, protect it with HTTPS and preferably an
+identity-aware proxy in addition to the application key.
+
 ### Secret ownership
 
 ```mermaid
@@ -289,7 +300,8 @@ Confirm in the console that the VM and boot disk are gone.
 | Symptom | First check |
 | --- | --- |
 | Worker restarts | Model files/checksum, database URL, assessor role, RPC availability |
-| Listener misses history | Checkpoint path and intentional `LISTENER_START_BLOCK` |
+| Listener misses history | PostgreSQL checkpoint and deployment `LISTENER_START_BLOCK` |
+| Operations page rejects access | `INDEXER_OPERATIONS_API_KEY_SHA256` and the raw operator key |
 | Metrics stay local | Ports `9101`, `9102`, `9308`, then Ops Agent status/logs |
 | Browser unavailable | Frontend health, port 80 firewall, current external IP |
 | API alive but not ready | `/health/ready` and `database-migrate` result |

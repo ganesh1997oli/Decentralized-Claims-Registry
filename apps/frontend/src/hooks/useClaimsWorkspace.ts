@@ -19,6 +19,8 @@ const RAPID_ASSESSMENT_POLL_WINDOW_MS = 60_000
 const PATIENT_ASSESSMENT_POLL_INTERVAL_MS = 10_000
 
 function isAbortError(error: unknown): boolean {
+  // Cancellation is expected during navigation and request replacement; keeping
+  // this check centralized prevents aborted work from surfacing as user errors.
   return error instanceof DOMException && error.name === 'AbortError'
 }
 
@@ -37,6 +39,9 @@ export function useClaimsWorkspace() {
   const [pageSize, setPageSize] = useState(10)
   const [totalItems, setTotalItems] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
+  const [indexedThroughBlock, setIndexedThroughBlock] = useState<number | null>(
+    null,
+  )
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedClaimId, setSelectedClaimId] = useState<number | null>(null)
@@ -73,6 +78,9 @@ export function useClaimsWorkspace() {
 
   const loadPage = useCallback(
     async (requestedPage: number, requestedSize: number, signal?: AbortSignal) => {
+      // Replace all page metadata from one validated API response. Callers supply
+      // cancellation ownership so page changes and component cleanup cannot apply
+      // a stale result after a newer navigation.
       setIsLoading(true)
       setError(null)
       try {
@@ -81,6 +89,7 @@ export function useClaimsWorkspace() {
         setPage(result.page)
         setTotalItems(result.total_items)
         setTotalPages(result.total_pages)
+        setIndexedThroughBlock(result.indexed_through_block)
       } catch (loadingError) {
         if (isAbortError(loadingError)) return
         setError(
@@ -102,8 +111,9 @@ export function useClaimsWorkspace() {
   }, [loadPage, page, pageSize])
 
   useEffect(() => {
-    // On a fresh page, the contract list is the source of truth. Restore the
-    // newest claim unless the user deliberately selected an older row.
+    // On a fresh page, restore the newest confirmed indexed claim unless the
+    // user deliberately selected an older row. PostgreSQL is only a projection;
+    // its values originate from confirmed contract events.
     if (
       selectedClaimId !== null ||
       page !== 1 ||
@@ -118,6 +128,8 @@ export function useClaimsWorkspace() {
 
     const controller = new AbortController()
     async function restoreLatestClaim() {
+      // Assessment enrichment is optional here: the confirmed index row is enough
+      // to restore details, while a transient assessment read must not erase it.
       let assessment = null
       try {
         assessment = await getClaimAssessment(
@@ -156,12 +168,15 @@ export function useClaimsWorkspace() {
     const rapidPollingStartedAt = Date.now()
 
     function clearScheduledPoll() {
+      // Maintain at most one scheduled timer for this claim-specific polling effect.
       if (timer === undefined) return
       window.clearTimeout(timer)
       timer = undefined
     }
 
     function scheduleNextPoll() {
+      // Poll rapidly during normal processing latency, then back off indefinitely.
+      // Hidden tabs pause instead of relying on browser-throttled timers.
       if (
         controller.signal.aborted ||
         document.visibilityState === 'hidden'
@@ -183,6 +198,8 @@ export function useClaimsWorkspace() {
     }
 
     function requestImmediatePoll() {
+      // Focus events and the manual button may request an early check. Coalesce an
+      // in-flight request into one queued follow-up rather than issuing duplicates.
       if (
         controller.signal.aborted ||
         document.visibilityState === 'hidden'
@@ -201,6 +218,8 @@ export function useClaimsWorkspace() {
     }
 
     async function pollAssessment() {
+      // Merge results only into the receipt for this effect's claim. A terminal
+      // on-chain result refreshes page one so the projection can show its new state.
       if (
         controller.signal.aborted ||
         requestInFlight ||
@@ -247,6 +266,8 @@ export function useClaimsWorkspace() {
     }
 
     function handleVisibilityChange() {
+      // Stop timers while hidden and check immediately on return, minimizing both
+      // background traffic and perceived staleness after tab restoration.
       if (document.visibilityState === 'hidden') {
         // Background tabs can be heavily throttled. Pause scheduled requests
         // and issue a fresh check as soon as the user returns instead.
@@ -272,11 +293,15 @@ export function useClaimsWorkspace() {
   }, [loadPage, pageSize, pendingAssessmentClaimId])
 
   const checkPendingAssessment = useCallback(() => {
+    // Expose a stable UI action without giving components ownership of timers or
+    // the claim-specific AbortController maintained by the polling effect.
     setAssessmentPollingError(null)
     assessmentCheckNow.current?.()
   }, [])
 
   const showClaimDetails = useCallback(async (claim: ClaimSummary) => {
+    // Latest selection wins: abort the previous enrichment request, render public
+    // chain state immediately, then merge assessment details only if still selected.
     detailsRequest.current?.abort()
     const controller = new AbortController()
     detailsRequest.current = controller
@@ -318,6 +343,8 @@ export function useClaimsWorkspace() {
 
   const acceptSubmittedReceipt = useCallback(
     (submittedReceipt: ClaimReceipt) => {
+      // A mined submission becomes the active detail immediately. Return the list
+      // to page one so the listener-projected row appears as soon as it is confirmed.
       detailsRequest.current?.abort()
       setSelectedClaimId(null)
       setDetailsError(null)
@@ -330,6 +357,8 @@ export function useClaimsWorkspace() {
   )
 
   const changePageSize = useCallback((nextPageSize: number) => {
+    // Page numbers are relative to page size, so changing size always restarts at
+    // the newest claims rather than trying to preserve an ambiguous old page.
     setPage(1)
     setPageSize(nextPageSize)
   }, [])
@@ -341,6 +370,7 @@ export function useClaimsWorkspace() {
     pageSize,
     totalItems,
     totalPages,
+    indexedThroughBlock,
     isLoading,
     error,
     openingClaimId,

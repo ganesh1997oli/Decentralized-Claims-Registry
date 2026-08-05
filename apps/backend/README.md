@@ -36,12 +36,12 @@ write-back. The browser polls the assessment endpoint for that later result.
 | `app/main.py` | Routes, dependencies, CORS, liveness and error translation |
 | `app/models.py` | Strict request, IPFS document and response shapes |
 | `app/submission_auth.py` | Digest-based credentials, quotas, request size and HMAC attestation |
-| `app/service.py` | IPFS round trip followed by Sepolia anchoring |
-| `app/blockchain.py` | Role checks, nonce allocation, receipts and public reads |
+| `app/service.py` | Indexed claim queries plus IPFS-to-Sepolia submission |
+| `app/blockchain.py` | Role checks, nonce allocation, receipts and reconciliation reads |
 | `app/health.py` | Dependency-safe readiness reporting |
 
-The query service is deliberately read-only: loading the dashboard does not
-construct a wallet or Pinata upload client.
+The query service reads the deployment-scoped PostgreSQL projection. Loading the
+dashboard does not construct a Web3 client, wallet, or Pinata upload client.
 
 ## Endpoints
 
@@ -50,7 +50,7 @@ construct a wallet or Pinata upload client.
 | `GET` | `/health` | Compatibility alias for liveness |
 | `GET` | `/health/live` | Confirms that the process can answer HTTP |
 | `GET` | `/health/ready` | Checks auth config, migrations, IPFS signing config and Sepolia access |
-| `GET` | `/claims?page=1&page_size=10` | Current contract state, newest first; maximum page size 50 |
+| `GET` | `/claims?page=1&page_size=10` | Confirmed indexed state, newest first; maximum page size 50 |
 | `GET` | `/claims/{claim_id}/assessment` | Stored model and duplicate result, or `404` while pending |
 | `POST` | `/claims` | Authenticate, validate, upload, verify and anchor a claim |
 
@@ -79,6 +79,8 @@ Useful URLs:
 - Liveness: <http://127.0.0.1:8000/health/live>
 - Readiness: <http://127.0.0.1:8000/health/ready>
 - OpenAPI UI: <http://127.0.0.1:8000/docs>
+- Indexer operations API: <http://127.0.0.1:8000/operations/indexer>
+- Indexer event search: <http://127.0.0.1:8000/operations/indexer/events>
 
 ## Configuration boundaries
 
@@ -88,15 +90,36 @@ Useful URLs:
 | `CLAIM_AUTHORIZATION_KEY` | API + worker | Signs the canonical claim so the worker can trust its insurer identity |
 | `SEPOLIA_SUBMITTER_PRIVATE_KEY` | API | Sepolia-only wallet with `SUBMITTER_ROLE` |
 | `PINATA_JWT` | API | Server-side public upload credential |
-| `DATABASE_URL` | API reads | Assessment and duplicate result shown to the browser |
+| `DATABASE_URL` | API reads | Confirmed claim index, assessments, and duplicate results |
 | `FRONTEND_ORIGINS` | API | Allowed browser origins |
 | `MAX_CLAIM_BODY_BYTES` | API | Request limit; default 16 KiB |
 | `INSURER_RATE_LIMIT_PER_MINUTE` | API | Per-insurer submission limit; default 5 |
 | `IP_RATE_LIMIT_PER_MINUTE` | API | Per-IP authentication-attempt limit; default 20 |
 | `ALLOW_RATE_LIMIT_BYPASS` | API | Master switch for explicitly exempt performance-test credentials; default `false` |
+| `INDEXER_OPERATIONS_API_KEY_SHA256` | API | SHA-256 digest of the separate read-only operations credential |
+| `INDEXER_STALE_AFTER_SECONDS` | API | Marks a lagging checkpoint stalled after this age; default 120 seconds |
+| `CONFIRMATION_BLOCKS` | API + listener | Keeps the displayed safe head consistent with listener confirmation depth |
 
 The deployer key, assessor key, duplicate-fingerprint key, and raw insurer keys
 do not belong in the API container. Never put any secret in a `VITE_` variable.
+
+### Indexer operations authentication
+
+The dedicated `/operations/indexer` and `/operations/indexer/events` endpoints
+require `X-Operations-API-Key`. The first returns bounded deployment telemetry;
+the second provides filtered keyset pagination over immutable events without an
+RPC request. Neither exposes a repair, reset, replay, or mutation action.
+Generate a hosted credential with:
+
+```bash
+python apps/backend/scripts/generate_operations_credential.py
+```
+
+Give the raw value to trusted operators and store only the printed
+`INDEXER_OPERATIONS_API_KEY_SHA256` value in API configuration. The browser keeps
+the raw key in `sessionStorage`, which clears when that browser tab is closed;
+it is never bundled into frontend JavaScript or sent in a URL. Put the route
+behind an enterprise identity-aware proxy when one is available.
 
 ### Local insurer credentials
 

@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from apps.backend.app.blockchain import SepoliaClaimsRegistry
+from apps.backend.app.indexer_operations import IndexerOperationsBoundary
 from apps.backend.app.submission_auth import (
     ClaimAuthorizationSigner,
     SubmissionBoundary,
@@ -44,6 +45,13 @@ class ReadinessProbe:
     """Evaluate required dependencies without exposing their implementations."""
 
     def __init__(self, checks: Iterable[ReadinessCheck]) -> None:
+        """Freeze a non-empty set of uniquely named checks for stable output.
+
+        Materializing the iterable once prevents a generator from disappearing
+        after the first request. Unique names guarantee that the result dictionary
+        cannot silently overwrite one dependency with another.
+        """
+
         configured = tuple(checks)
         if not configured:
             raise ValueError("At least one readiness check is required")
@@ -53,6 +61,14 @@ class ReadinessProbe:
         self._checks = configured
 
     def evaluate(self) -> ReadinessResult:
+        """Execute every check and return a complete, sanitized status map.
+
+        One failure does not short-circuit later checks, which gives an operator a
+        useful incident snapshot. Adapter exception text is intentionally omitted
+        from both logs and responses because it may contain credential-bearing
+        URLs; the exception type remains available for correlation.
+        """
+
         results: dict[str, str] = {}
         ready = True
         for check in self._checks:
@@ -82,19 +98,32 @@ def build_readiness_probe() -> ReadinessProbe:
     """
 
     def check_insurer_authentication() -> None:
+        """Validate insurer API-key configuration without authenticating a request."""
+
         SubmissionBoundary.from_env()
 
+    def check_operations_authentication() -> None:
+        """Validate that the digest-only operations boundary can be constructed."""
+
+        IndexerOperationsBoundary.from_env()
+
     def check_postgres() -> None:
+        """Require a reachable database whose schema matches checked-in migrations."""
+
         repositories = PostgresRepositories.from_env()
         repositories.database.ping()
         PostgresMigrator(repositories.database).require_current()
 
     def check_sepolia_contract() -> None:
+        """Verify RPC network, deployed bytecode, interface, and submitter role."""
+
         # The write-capable adapter verifies chain ID, bytecode, hardened
         # interface and SUBMITTER_ROLE without submitting a transaction.
         SepoliaClaimsRegistry.from_env()
 
     def check_submission_dependencies() -> None:
+        """Validate upload and signing configuration without performing a write."""
+
         # Construction validates the Pinata upload configuration and claim
         # authorization key. Sepolia itself has a dedicated result above.
         IPFSClient.from_env(require_upload=True)
@@ -106,6 +135,11 @@ def build_readiness_probe() -> ReadinessProbe:
                 "insurer_authentication",
                 check_insurer_authentication,
                 "insurer authentication configuration is unavailable",
+            ),
+            ReadinessCheck(
+                "indexer_operations_authentication",
+                check_operations_authentication,
+                "indexer operations authentication configuration is unavailable",
             ),
             ReadinessCheck(
                 "postgres",

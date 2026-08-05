@@ -24,6 +24,7 @@ const claimPage = {
   page_size: 10,
   total_items: 1,
   total_pages: 1,
+  indexed_through_block: 11_400_000,
 }
 
 const completedAssessment = {

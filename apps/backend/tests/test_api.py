@@ -96,12 +96,18 @@ class SuccessfulService:
             page_size=5,
             total_items=7,
             total_pages=2,
+            indexed_through_block=11_400_000,
         )
 
 
 class FailingService:
     def submit(self, claim, principal):
         raise ClaimSubmissionServiceError("upstream unavailable")
+
+
+class FailingQueryService:
+    def list_claims(self, *, page, page_size):
+        raise ClaimQueryServiceError("PostgreSQL claim storage is unavailable")
 
 
 class PendingService:
@@ -389,6 +395,7 @@ def test_list_claims_returns_current_on_chain_state():
         "page_size": 5,
         "total_items": 7,
         "total_pages": 2,
+        "indexed_through_block": 11_400_000,
     }
 
 
@@ -462,6 +469,19 @@ def test_list_claims_validates_pagination_parameters():
     assert response.status_code == 422
 
 
+def test_list_claims_reports_a_transient_index_failure_as_unavailable():
+    app.dependency_overrides[get_claim_query_service] = FailingQueryService
+    try:
+        response = TestClient(app).get("/claims")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "PostgreSQL claim storage is unavailable"
+    }
+
+
 def test_submit_claim_rejects_invalid_amount_before_external_calls():
     invalid_claim = {**VALID_CLAIM, "claimAmountUsd": -1}
 
@@ -501,10 +521,10 @@ def test_submit_claim_reports_upstream_failure():
 
 
 def test_list_claims_reports_missing_read_configuration_as_json_503(monkeypatch):
-    """A missing public RPC should be understandable to the browser and user."""
+    """A missing index database should be understandable to the browser."""
 
     def unavailable(_service_class):
-        raise ClaimQueryServiceError("SEPOLIA_RPC_URL is not configured")
+        raise ClaimQueryServiceError("DATABASE_URL is not configured")
 
     # This test exercises the real FastAPI dependency instead of replacing it.
     # Clearing the small process cache ensures the patched factory is called.
@@ -521,7 +541,7 @@ def test_list_claims_reports_missing_read_configuration_as_json_503(monkeypatch)
 
     assert response.status_code == 503
     assert response.json() == {
-        "detail": ("Claims registry is unavailable: SEPOLIA_RPC_URL is not configured")
+        "detail": ("Claims registry is unavailable: DATABASE_URL is not configured")
     }
 
 

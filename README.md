@@ -16,13 +16,14 @@ flowchart LR
     API -->|"signed canonical JSON"| IPFS[("Public IPFS")]
     API -->|"Keccak hash + CID"| Chain[("Sepolia registry")]
     Chain -->|"confirmed ClaimSubmitted"| Listener["Listener"]
+    Listener -->|"idempotent claim projection"| Postgres[("PostgreSQL")]
     Listener -->|"verified reference event"| Kafka[("Kafka")]
     Kafka --> Worker["Scoring worker"]
     IPFS -->|"same bytes"| Worker
-    Worker -->|"features, duplicate check, score, SHAP"| Postgres[("PostgreSQL")]
+    Worker -->|"features, duplicate check, score, SHAP"| Postgres
     Worker -->|"status + score"| Chain
     Postgres -->|"assessment details"| API
-    Chain -->|"current claim state"| API
+    Postgres -->|"confirmed indexed claims"| API
     API --> Browser
 ```
 
@@ -38,7 +39,7 @@ work without holding the browser request open.
 | IPFS | Signed schema-v4 synthetic claim JSON | Encryption or access control |
 | Sepolia | Claim ID, submitter, hash, CID, status, score, timestamps | Full claim, SHAP reasons, private fingerprints |
 | Kafka | Versioned blockchain and IPFS references | Full claim payload |
-| PostgreSQL | Versioned features, keyed fingerprints, score, SHAP reasons, write receipt | HMAC keys, raw policy reference, description, evidence |
+| PostgreSQL | Confirmed public claim index and event history; versioned features, keyed fingerprints, score, SHAP reasons, write receipt | HMAC keys, raw policy reference, description, evidence |
 
 ## Trust and replay boundaries
 
@@ -56,6 +57,7 @@ sequenceDiagram
     A->>I: Download and compare bytes
     A->>E: Submit hash and CID
     E-->>L: Confirmed ClaimSubmitted log
+    L->>P: Append event and update claim projection
     L->>I: Download and verify on-chain hash
     L->>K: Publish deterministic event ID
     W->>I: Reverify hash and gateway authorization
@@ -65,8 +67,8 @@ sequenceDiagram
     W->>K: Commit offset
 ```
 
-- The listener advances its block checkpoint only after the whole range has
-  been handled and Kafka has acknowledged publication.
+- The listener advances its PostgreSQL block checkpoint only after the whole
+  range has been indexed and Kafka has acknowledged publication.
 - The worker commits a Kafka offset only after persistence and chain write-back
   succeed.
 - The blockchain log creates a deterministic `event_id`, so a restart can
@@ -81,7 +83,7 @@ apps/
 ├── backend/       FastAPI, authentication, IPFS and Sepolia submission
 ├── contracts/     Solidity registry, tests and Ignition deployments
 ├── frontend/      React intake, receipt and claims dashboard
-└── listener/      Confirmed-log polling, IPFS verification and checkpoints
+└── listener/      Confirmed-log indexing, IPFS verification and reconciliation
 
 packages/
 ├── duplicates/    Cross-insurer HMAC incident matching
@@ -196,6 +198,17 @@ Open <http://127.0.0.1:5173>. Health and API documentation are available at:
 - <http://127.0.0.1:8000/health/live>
 - <http://127.0.0.1:8000/health/ready>
 - <http://127.0.0.1:8000/docs>
+- <http://127.0.0.1:5173/operations> (authenticated indexer operations)
+
+The operations event explorer searches by claim ID or full transaction hash,
+event type, claim state, and block range. Its Newer/Older controls use stable
+keyset cursors, so newly indexed events do not shift an open historical page.
+
+The local operations key documented in `.env.example` is
+`local-indexer-operations-key-change-before-hosting`. Generate a different
+high-entropy key for any hosted environment. See the
+[indexer operations runbook](docs/indexer-operations-runbook.md) for deployment,
+monitoring, reconciliation and incident-response procedures.
 
 ### 6. Follow a claim
 
@@ -275,16 +288,17 @@ TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
 
 - IPFS content is public and unencrypted.
 - Insurer rate limits are process-local and reset on API restart.
-- The dashboard reads current contract state directly; it is not an event index.
+- The dashboard reads a confirmed-event PostgreSQL index and may lag the chain
+  by the configured confirmation depth.
 - Exact incident fingerprints produce review candidates, not proof of fraud.
 - The synthetic model is an integration artifact, not a validated decision model.
 - Wallets are process-level testnet signers, not managed signing infrastructure.
 - Local and GCP Compose files use one Kafka broker and one PostgreSQL instance.
 
-Before real claim data, the design would need encryption before IPFS, managed
-keys and signing, enterprise identity, malware and evidence controls, an indexed
-read model, managed replicated infrastructure, retention rules, and a validated
-and monitored model.
+Before real claim data, the design would still need encryption before IPFS,
+managed keys and signing, enterprise identity, malware and evidence controls,
+managed replicated infrastructure, explicit deep-reorganization recovery,
+retention rules, and a validated and monitored model.
 
 ## Focused guides
 

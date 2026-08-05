@@ -8,13 +8,13 @@ worker own the later model assessment.
 
 from __future__ import annotations
 
+import os
 from typing import Protocol
 
 from web3 import Web3
 
 from apps.backend.app.blockchain import (
     BlockchainSubmissionError,
-    ChainClaim,
     ChainSubmission,
     SepoliaClaimsRegistry,
 )
@@ -29,7 +29,18 @@ from apps.backend.app.submission_auth import (
     InsurerPrincipal,
     SubmissionAuthConfigurationError,
 )
+from packages.integrations.ethereum import (
+    DeploymentConfigurationError,
+    load_claims_deployment,
+)
 from packages.integrations.ipfs import IPFSClient, IPFSError
+from packages.integrations.postgres import (
+    ClaimIndexStatus,
+    IndexedClaim,
+    PostgresConfigurationError,
+    PostgresRepositories,
+    PostgresStorageError,
+)
 
 
 class ClaimSubmissionServiceError(RuntimeError):
@@ -41,21 +52,49 @@ class ClaimQueryServiceError(RuntimeError):
 
 
 class IPFSStore(Protocol):
-    def upload_bytes(
-        self, payload: bytes, *, filename: str, content_type: str
-    ) -> str: ...
+    """Narrow content-addressed storage interface used during submission."""
 
-    def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes: ...
+    def upload_bytes(self, payload: bytes, *, filename: str, content_type: str) -> str:
+        """Upload exact bytes and return their content identifier."""
+
+        ...
+
+    def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes:
+        """Resolve an IPFS pointer to exact bytes with bounded retries."""
+
+        ...
 
 
 class ClaimsRegistryWriter(Protocol):
-    def submit_claim(self, claim_hash: bytes, data_pointer: str) -> ChainSubmission: ...
+    """Minimal on-chain write capability required by claim submission."""
+
+    def submit_claim(self, claim_hash: bytes, data_pointer: str) -> ChainSubmission:
+        """Anchor a hash/pointer pair and return the confirmed contract receipt."""
+
+        ...
 
 
-class ClaimsRegistryReader(Protocol):
+class ClaimsIndexReader(Protocol):
+    """Read current claims and progress from the rebuildable event projection."""
+
     def list_claims(
-        self, *, page: int, page_size: int
-    ) -> tuple[list[ChainClaim], int]: ...
+        self,
+        *,
+        chain_id: int,
+        contract_address: str,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[IndexedClaim], int]:
+        """Return one bounded newest-first page and its total row count."""
+
+        ...
+
+    def get_status(
+        self, *, chain_id: int, contract_address: str
+    ) -> ClaimIndexStatus | None:
+        """Return the projection checkpoint or ``None`` before first progress."""
+
+        ...
 
 
 def canonical_claim_bytes(
@@ -63,35 +102,74 @@ def canonical_claim_bytes(
     principal: InsurerPrincipal,
     authorization: ClaimAuthorizationSigner,
 ) -> bytes:
-    """Create stable, gateway-authorized bytes for IPFS and Sepolia."""
+    """Create the one authorized byte representation used by IPFS and Sepolia.
+
+    Canonicalization, insurer binding, and the authorization signature happen
+    before either external write. The returned bytes must be uploaded and hashed
+    unchanged or the listener's later Keccak verification will reject the event.
+    """
 
     return authorization.authorized_claim_bytes(claim, principal)
 
 
 class ClaimQueryService:
-    """Read public claim history without receiving upload or wallet credentials.
+    """Read the confirmed-event projection without wallet or upload credentials.
 
-    A blockchain registry is public by design. Keeping this small read service
-    separate from submission means opening the dashboard cannot accidentally
-    gain access to the Pinata token or transaction-signing account.
+    PostgreSQL is a rebuildable query layer, not a competing source of truth.
+    Keeping it separate from submission means dashboard reads remain fast and
+    cannot accidentally gain access to Pinata or a transaction-signing account.
     """
 
-    def __init__(self, *, registry: ClaimsRegistryReader) -> None:
-        self.registry = registry
+    def __init__(
+        self,
+        *,
+        index: ClaimsIndexReader,
+        chain_id: int,
+        contract_address: str,
+    ) -> None:
+        """Bind the query service permanently to one chain/contract projection.
+
+        The injected interface excludes upload and signing operations. Deployment
+        scope is stored once so no request can choose another contract through
+        user-controlled query parameters.
+        """
+
+        self.index = index
+        self.chain_id = chain_id
+        self.contract_address = contract_address
 
     @classmethod
     def from_env(cls) -> ClaimQueryService:
-        """Build the read-only Sepolia client from public configuration."""
+        """Build the deployment-scoped PostgreSQL read path.
+
+        Adapter-specific configuration/storage failures are normalized to the
+        service exception translated by FastAPI into a 503 response.
+        """
 
         try:
+            deployment = load_claims_deployment(os.environ)
+            repositories = PostgresRepositories.from_env()
             return cls(
-                registry=SepoliaClaimsRegistry.from_env(require_private_key=False)
+                index=repositories.claims,
+                chain_id=deployment.chain_id,
+                contract_address=deployment.address,
             )
-        except (BlockchainSubmissionError, ValueError) as exc:
+        except (
+            DeploymentConfigurationError,
+            PostgresConfigurationError,
+            PostgresStorageError,
+            ValueError,
+        ) as exc:
             raise ClaimQueryServiceError(str(exc)) from exc
 
     def list_claims(self, *, page: int, page_size: int) -> ClaimPageResponse:
-        """Build one browser page from the current public contract state."""
+        """Build one browser page from the confirmed blockchain index.
+
+        The projection supplies current claim rows, count, and durable progress
+        without an RPC scan. Numeric Solidity statuses are translated here so
+        persistence remains contract-shaped while the API stays domain-readable.
+        Unknown future enum values remain visible rather than failing the page.
+        """
 
         # Solidity stores statuses as compact enum numbers. Translate them at
         # this boundary so the browser works with understandable domain words.
@@ -103,10 +181,17 @@ class ClaimQueryService:
             "Flagged",
         ]
         try:
-            claims, total_items = self.registry.list_claims(
-                page=page, page_size=page_size
+            claims, total_items = self.index.list_claims(
+                chain_id=self.chain_id,
+                contract_address=self.contract_address,
+                page=page,
+                page_size=page_size,
             )
-        except BlockchainSubmissionError as exc:
+            index_status = self.index.get_status(
+                chain_id=self.chain_id,
+                contract_address=self.contract_address,
+            )
+        except PostgresStorageError as exc:
             raise ClaimQueryServiceError(str(exc)) from exc
 
         items = [
@@ -135,6 +220,9 @@ class ClaimQueryService:
             page_size=page_size,
             total_items=total_items,
             total_pages=total_pages,
+            indexed_through_block=(
+                index_status.last_processed_block if index_status is not None else None
+            ),
         )
 
 
@@ -148,12 +236,24 @@ class ClaimSubmissionService:
         registry: ClaimsRegistryWriter,
         authorization: ClaimAuthorizationSigner,
     ) -> None:
+        """Bind upload, contract-write, and authorization adapters.
+
+        Keeping these write-capable dependencies separate from ``ClaimQueryService``
+        prevents ordinary dashboard reads from acquiring Pinata or wallet authority.
+        """
+
         self.ipfs = ipfs
         self.registry = registry
         self.authorization = authorization
 
     @classmethod
     def from_env(cls) -> ClaimSubmissionService:
+        """Build the production write workflow and normalize unsafe configuration.
+
+        Construction validates upload credentials, the hardened deployment,
+        submitter role, and claim-authorization signer before accepting a request.
+        """
+
         try:
             return cls(
                 ipfs=IPFSClient.from_env(require_upload=True),
@@ -175,6 +275,14 @@ class ClaimSubmissionService:
         claim: ClaimSubmission,
         principal: InsurerPrincipal,
     ) -> ClaimSubmissionResponse:
+        """Authorize, pin, verify, and anchor one claim in irreversible order.
+
+        The exact canonical bytes are read back from IPFS before their Keccak hash
+        is sent to Sepolia. A successful return means the anchor was mined and its
+        ``ClaimSubmitted`` event decoded; model assessment remains asynchronous and
+        is represented by ``assessment=None``.
+        """
+
         # These exact bytes are uploaded to IPFS and hashed for the contract.
         payload = canonical_claim_bytes(claim, principal, self.authorization)
         try:

@@ -10,6 +10,7 @@ from apps.listener.claims_listener import (
     ClaimEventProcessor,
     ConfirmedBlockPoller,
     deployment_state_paths,
+    required_listener_start_block,
 )
 from packages.integrations.ipfs import IPFSClient, IPFSError
 
@@ -46,6 +47,18 @@ def test_listener_state_files_are_isolated_by_deployment(tmp_path):
     assert "0xabcdef" in hardened[0].name
 
 
+def test_listener_requires_an_explicit_non_negative_deployment_block():
+    assert required_listener_start_block({"LISTENER_START_BLOCK": "11377814"}) == (
+        11_377_814
+    )
+    with pytest.raises(ValueError, match="required"):
+        required_listener_start_block({})
+    with pytest.raises(ValueError, match="non-negative"):
+        required_listener_start_block({"LISTENER_START_BLOCK": "-1"})
+    with pytest.raises(ValueError, match="non-negative"):
+        required_listener_start_block({"LISTENER_START_BLOCK": "latest"})
+
+
 class FakePublisher:
     topic = "claims.submitted.v1"
 
@@ -62,6 +75,18 @@ class FakeDeadLetter:
 
     def record(self, event, error) -> None:
         self.entries.append((event, error))
+
+
+class RecordingClaimIndexer:
+    def __init__(self) -> None:
+        self.submissions = []
+        self.assessments = []
+
+    def index_claim_submitted(self, **values) -> None:
+        self.submissions.append(values)
+
+    def index_claim_assessed(self, **values) -> None:
+        self.assessments.append(values)
 
 
 class PointerValidatingIPFS:
@@ -100,7 +125,7 @@ def submission_event(payload: bytes):
             "dataPointer": "ipfs://verified-claim",
             "timestamp": 1_750_000_000,
         },
-        "blockNumber": 102,
+        "blockNumber": 100,
         "blockHash": bytes.fromhex("11" * 32),
         "transactionHash": bytes.fromhex("22" * 32),
         "logIndex": 1,
@@ -110,15 +135,17 @@ def submission_event(payload: bytes):
 def assessment_event():
     return {
         "event": "ClaimAssessed",
+        "blockNumber": 101,
+        "blockHash": bytes.fromhex("44" * 32),
+        "transactionHash": bytes.fromhex("33" * 32),
+        "logIndex": 2,
         "args": {
             "claimId": 7,
             "newStatus": 1,
             "fraudScore": 4200,
             "assessor": "0x3333333333333333333333333333333333333333",
+            "timestamp": 1_750_000_100,
         },
-        "blockNumber": 101,
-        "transactionHash": bytes.fromhex("33" * 32),
-        "logIndex": 2,
     }
 
 
@@ -143,11 +170,39 @@ def test_processor_orders_events_and_publishes_only_verified_claims(caplog):
         processor.process_range(100, 102)
 
     events = [getattr(record, "event_name", None) for record in caplog.records]
-    assert events.index("claim.assessed") < events.index("claim.submitted")
+    assert events.index("claim.submitted") < events.index("claim.assessed")
     assert len(publisher.events) == 1
     event = publisher.events[0]
     assert event.claim_id == 7
     assert event.event_id == f"11155111:0x{'22' * 32}:1"
+
+
+def test_processor_projects_submission_and_assessment_in_chain_order():
+    payload = b'{"schemaVersion":3,"claimReference":"verified"}'
+    indexer = RecordingClaimIndexer()
+    contract = SimpleNamespace(
+        events=SimpleNamespace(
+            ClaimSubmitted=FakeEventType([submission_event(payload)]),
+            ClaimAssessed=FakeEventType([assessment_event()]),
+        )
+    )
+    processor = ClaimEventProcessor(
+        chain_id=11_155_111,
+        contract_address="0x1111111111111111111111111111111111111111",
+        contract=contract,
+        ipfs=FakeIPFS(payload),
+        publisher=None,
+        indexer=indexer,
+    )
+
+    processor.process_range(100, 102)
+
+    assert len(indexer.submissions) == 1
+    assert indexer.submissions[0]["claim_id"] == 7
+    assert indexer.submissions[0]["block_hash"] == f"0x{'11' * 32}"
+    assert len(indexer.assessments) == 1
+    assert indexer.assessments[0]["status"] == 1
+    assert indexer.assessments[0]["fraud_score"] == 4200
 
 
 def test_processor_rejects_tampered_ipfs_bytes_before_kafka_publish():

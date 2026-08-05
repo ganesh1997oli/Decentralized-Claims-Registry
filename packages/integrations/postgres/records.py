@@ -4,9 +4,105 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from packages.model.contracts import FraudReason, FraudScore
+
+
+@dataclass(frozen=True)
+class IndexedClaim:
+    """Current public contract state reconstructed from confirmed event logs.
+
+    The record intentionally mirrors the compact Solidity ``Claim`` structure.
+    It contains no downloaded IPFS document or insurer credential, so returning
+    it from the public dashboard cannot widen the existing data boundary.
+    """
+
+    claim_id: int
+    claimant: str
+    claim_hash: str
+    data_pointer: str
+    status: int
+    fraud_score: int
+    submitted_at: int
+    updated_at: int
+
+
+@dataclass(frozen=True)
+class ClaimIndexStatus:
+    """Durable progress of one chain-and-contract projection."""
+
+    chain_id: int
+    contract_address: str
+    last_processed_block: int
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class ClaimIndexEventRecord:
+    """One immutable public contract event shown to index operators.
+
+    ``event_id`` is the cross-retry identity; block number, log index, and event
+    ID together form the newest-first keyset pagination position.
+    """
+
+    event_id: str
+    claim_id: int
+    event_type: str
+    block_number: int
+    transaction_hash: str
+    log_index: int
+    event_timestamp: int
+    status: int
+    fraud_score: int
+    indexed_at: datetime
+
+
+@dataclass(frozen=True)
+class ClaimIndexEventPage:
+    """One stable newest-first slice of the immutable event audit stream.
+
+    ``has_more`` comes from fetching one row beyond the requested limit. The
+    service converts the last returned event into an opaque browser cursor.
+    """
+
+    events: tuple[ClaimIndexEventRecord, ...]
+    has_more: bool
+
+
+@dataclass(frozen=True)
+class ClaimIndexReconciliationRecord:
+    """Durable result of comparing one checkpoint with authoritative state."""
+
+    indexed_through_block: int
+    chain_claims: int
+    indexed_claims: int
+    missing_claim_ids: tuple[int, ...]
+    unexpected_claim_ids: tuple[int, ...]
+    mismatched_claim_ids: tuple[int, ...]
+    consistent: bool
+    duration_ms: int
+    checked_at: datetime
+
+
+@dataclass(frozen=True)
+class ClaimIndexOperationsSnapshot:
+    """One bounded database snapshot for the authenticated operations UI.
+
+    This record contains only durable PostgreSQL facts. The service layer adds a
+    best-effort chain-head sample and derives lag/state without contaminating the
+    repository with RPC availability concerns.
+    """
+
+    checkpoint: ClaimIndexStatus | None
+    total_claims: int
+    total_events: int
+    submitted_events: int
+    assessed_events: int
+    claim_status_counts: tuple[int, int, int, int, int]
+    recent_events: tuple[ClaimIndexEventRecord, ...]
+    last_reconciliation: ClaimIndexReconciliationRecord | None
 
 
 @dataclass(frozen=True)
@@ -38,6 +134,13 @@ class AssessmentRecord:
         claim_id: int,
         score: FraudScore,
     ) -> AssessmentRecord:
+        """Create the initial durable worker record from a deterministic score.
+
+        Status is derived once from the model's flagged decision and contract scope
+        is normalized for later idempotent lookups. On-chain receipt fields remain
+        empty until the worker completes write-back.
+        """
+
         return cls(
             event_id=event_id,
             chain_id=chain_id,
