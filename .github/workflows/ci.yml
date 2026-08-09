@@ -62,6 +62,7 @@ jobs:
           --cov=apps.backend.app
           --cov=apps.listener.block_cursor
           --cov=apps.listener.claims_listener
+          --cov=apps.relayer
           --cov=packages.duplicates
           --cov=packages.integrations.ipfs
           --cov=packages.integrations.kafka
