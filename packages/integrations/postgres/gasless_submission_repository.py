@@ -1,4 +1,22 @@
-"""Durable idempotency, sponsorship limits, and relay outbox persistence."""
+"""Durable idempotency, sponsorship limits, and relay outbox persistence.
+
+The table managed here is both a user-visible workflow record and a
+transactional outbox. Its state machine is intentionally monotonic::
+
+    preparing -> prepared -> authorized -> signed -> broadcast -> confirmed
+         |           |            |          |           |
+         +-----------+------------+----------+-----------+--> failed/expired
+
+The API owns transitions through ``authorized``; the isolated relayer owns the
+remaining transitions. SQL predicates such as ``WHERE state = 'prepared'`` act
+as compare-and-set guards, so two replicas cannot silently move the same row in
+different directions.
+
+Most importantly, signed raw Ethereum bytes are committed in ``signed`` before
+they are sent to an RPC node. If the process crashes after broadcasting, a new
+worker can safely rebroadcast the identical bytes and hash rather than signing
+a different transaction for the already-reserved relayer nonce.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +29,9 @@ from .database import PostgresDatabase, PostgresStorageError
 from .records import GaslessSubmissionRecord, gasless_submission_from_row
 
 ACTIVE_STATES = ("preparing", "prepared", "authorized", "signed", "broadcast")
+# An API replica that dies during IPFS/RPC preparation must not reserve an
+# insurer's forwarder nonce forever. Only the unsigned ``preparing`` lease is
+# reclaimed; signed or broadcast records need receipt reconciliation instead.
 PREPARATION_LEASE = timedelta(minutes=10)
 
 
@@ -38,7 +59,13 @@ class GaslessSubmissionLimitError(GaslessSubmissionError):
 
 @dataclass(frozen=True)
 class SignedRelayTransaction:
-    """A deterministic EOA transaction persisted before it is broadcast."""
+    """A deterministic EOA transaction persisted before it is broadcast.
+
+    ``raw_transaction`` is the signed byte sequence Ethereum hashes and
+    executes. Persisting it together with its derived hash makes replay after a
+    crash deterministic and provides evidence that a nonce was not reused for
+    different calldata.
+    """
 
     nonce: int
     raw_transaction: str
@@ -53,6 +80,8 @@ class PostgresGaslessSubmissionRepository:
     Keeping the state machine in SQL transactions makes behavior consistent
     across multiple API or relayer replicas. Callers request transitions; they
     do not read a row, make an unlocked decision, and write it back later.
+    Advisory locks protect cross-row invariants such as per-signer active work
+    and monotonic allocation of the relayer account's Ethereum nonce.
     """
 
     def __init__(self, database: PostgresDatabase) -> None:

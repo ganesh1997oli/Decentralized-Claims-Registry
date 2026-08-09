@@ -1,3 +1,7 @@
+// Browser-side coordinator for a durable sponsored submission. The workflow is
+// intentionally split into prepare -> sign -> authorize -> poll. Retrying an
+// uncertain network request reuses the same server record; it never asks the
+// insurer wallet or the relayer to create an untracked second transaction.
 import {
   authorizeGaslessClaim,
   getGaslessNetwork,
@@ -24,6 +28,11 @@ export type SubmissionProgress =
   | 'Broadcasting transaction'
   | 'Waiting for confirmations'
 
+/**
+ * Signals a durable terminal state in which the current idempotency key may be
+ * discarded. Network and polling errors use ordinary `Error` because the same
+ * server-side submission may still be progressing and should be resumed.
+ */
 export class GaslessSubmissionTerminalError extends Error {
   readonly submissionId: string
   readonly state: 'failed' | 'expired'
@@ -56,6 +65,14 @@ type SubmitGaslessClaimOptions = {
   provider?: EthereumProvider
 }
 
+/**
+ * Narrows a server response to the exact request safe to show to the wallet.
+ *
+ * The API response is untrusted input at this point. In addition to the generic
+ * runtime validation in `api.ts`, this check binds the request to the connected
+ * signer and to all three identifiers of the deployment discovered moments
+ * earlier: chain, forwarder, and registry target.
+ */
 function assertPreparedRequest(
   submission: GaslessSubmission,
   signer: string,
@@ -87,6 +104,7 @@ function assertPreparedRequest(
   }
 }
 
+/** Waits between status reads while allowing React to cancel obsolete polling. */
 function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
   // Make polling delay cancellable so navigation/unmount stops both the timer
   // and the next network request instead of updating an abandoned component.
@@ -107,6 +125,7 @@ function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+/** Maps internal outbox states to the smaller progress vocabulary shown in UI. */
 function progressFor(submission: GaslessSubmission): SubmissionProgress {
   // Collapse durable backend states into language meaningful to an insurer;
   // detailed state and error codes remain available in API responses and logs.
@@ -115,6 +134,13 @@ function progressFor(submission: GaslessSubmission): SubmissionProgress {
   return 'Waiting for confirmations'
 }
 
+/**
+ * Follows one durable server record until it has a confirmed public receipt.
+ *
+ * Polling FastAPI instead of Ethereum keeps RPC details and replacement hashes
+ * behind the relayer boundary. Three consecutive read failures stop this UI
+ * attempt, but they do not cancel or mutate the server-side submission.
+ */
 async function pollUntilConfirmed(
   initial: GaslessSubmission,
   insurerApiKey: string,
@@ -159,6 +185,14 @@ async function pollUntilConfirmed(
   }
 }
 
+/**
+ * Executes the complete non-custodial, gas-sponsored browser workflow.
+ *
+ * The insurer credential authenticates the organization, while the connected
+ * wallet proves authorization over the exact EIP-712 request. FastAPI stores
+ * that proof durably, and the separate relayer pays for and monitors the chain
+ * transaction. The returned promise resolves only after confirmation.
+ */
 export async function submitGaslessClaim({
   claim,
   insurerApiKey,

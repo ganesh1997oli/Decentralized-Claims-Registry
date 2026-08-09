@@ -11,11 +11,17 @@ import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 /// @notice Anchors synthetic insurance claims while keeping their payloads
 ///         off-chain. The pointer and hash are public; they must never reference
 ///         personal, confidential, or unencrypted real-claim data.
+/// @dev Direct and ERC-2771-forwarded calls share the same role checks because
+///      authorization always uses `_msgSender()`. For a forwarded call that is
+///      the insurer recovered from the signed request, not the gas-paying
+///      relayer visible in Solidity's raw `msg.sender`.
 contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     bytes32 public constant SUBMITTER_ROLE = keccak256("SUBMITTER_ROLE");
     bytes32 public constant ASSESSOR_ROLE = keccak256("ASSESSOR_ROLE");
     uint256 public constant MAX_DATA_POINTER_LENGTH = 128;
 
+    /// @dev Stored lifecycle values. Approved and Rejected are terminal; Flagged
+    ///      can still be resolved to either of those terminal decisions.
     enum Status {
         Submitted,
         UnderReview,
@@ -24,6 +30,8 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
         Flagged
     }
 
+    /// @dev Compact public anchor. The full claim stays off-chain and can be
+    ///      checked against `claimHash` with `verifyClaimData`.
     struct Claim {
         address claimant;
         bytes32 claimHash;
@@ -121,6 +129,12 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     }
 
     /// @notice Record a synthetic claim and its public IPFS CID.
+    /// @dev `_msgSender()` preserves the insurer identity for both direct and
+    ///      trusted-forwarder calls. The contract stores no claim payload and
+    ///      transfers no ETH or token value.
+    /// @param claimHash Keccak-256 hash of the canonical off-chain claim bytes.
+    /// @param dataPointer Public `ipfs://<CID>` location of those exact bytes.
+    /// @return claimId Monotonic identifier assigned to the new claim anchor.
     function submitClaim(
         bytes32 claimHash,
         string calldata dataPointer
@@ -157,6 +171,9 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     /// @notice Advance a claim through its allowed lifecycle.
     /// @dev The first assessment fixes the fraud score. Later status changes
     ///      must carry the same score, preserving the original model output.
+    /// @param claimId Existing claim whose public assessment state will change.
+    /// @param newStatus Allowed next state in the explicit lifecycle graph.
+    /// @param fraudScore Model score in basis points from 0 through 10,000.
     function assessClaim(
         uint256 claimId,
         Status newStatus,
@@ -193,6 +210,16 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     }
 
     /// @notice Return the current compact public record for one claim.
+    /// @dev Reverts for an unknown ID rather than returning an all-zero struct,
+    ///      so indexers can distinguish missing data from a legitimate value.
+    /// @param claimId Identifier assigned by `submitClaim`.
+    /// @return claimant Insurer address recovered from the submission context.
+    /// @return claimHash Permanent hash of the canonical off-chain bytes.
+    /// @return dataPointer Public IPFS pointer supplied at submission.
+    /// @return status Current lifecycle state.
+    /// @return fraudScore Immutable first-assessment score in basis points.
+    /// @return submittedAt Unix timestamp recorded when the claim was created.
+    /// @return updatedAt Unix timestamp of the latest lifecycle transition.
     function getClaim(
         uint256 claimId
     )
@@ -222,6 +249,9 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     }
 
     /// @notice Compare supplied off-chain bytes with the permanent claim hash.
+    /// @param claimId Identifier of the anchor being verified.
+    /// @param payload Canonical bytes downloaded from the off-chain pointer.
+    /// @return True only when `keccak256(payload)` equals the stored hash.
     function verifyClaimData(
         uint256 claimId,
         bytes calldata payload
@@ -232,16 +262,23 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     }
 
     /// @notice Report whether an account may create new claim anchors.
+    /// @param account Address to check against `SUBMITTER_ROLE`.
+    /// @return True when the account currently has submission permission.
     function isSubmitter(address account) external view returns (bool) {
         return hasRole(SUBMITTER_ROLE, account);
     }
 
     /// @notice Report whether an account may assess claims in its insurer scope.
+    /// @param account Address to check against `ASSESSOR_ROLE`.
+    /// @return True when at least one insurer scope keeps the role active.
     function isAssessor(address account) external view returns (bool) {
         return hasRole(ASSESSOR_ROLE, account);
     }
 
     /// @notice Report whether an assessor may update one insurer's claims.
+    /// @param assessor Scoring account whose scope is being queried.
+    /// @param insurer Submitter address that originally anchors the claims.
+    /// @return True only when the role and the exact insurer scope are active.
     function isAssessorFor(
         address assessor,
         address insurer
@@ -252,6 +289,11 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     }
 
     /// @notice Grant or revoke claim-submission permission.
+    /// @dev Admin, submitter, and assessor duties are mutually exclusive. Use
+    ///      this function instead of generic `grantRole`/`revokeRole` so that
+    ///      invariant cannot be bypassed.
+    /// @param submitter Insurer service account to configure.
+    /// @param authorized True to grant permission; false to revoke it.
     function setSubmitter(
         address submitter,
         bool authorized
@@ -272,6 +314,12 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     }
 
     /// @notice Grant a scoped assessor or revoke its existing scope.
+    /// @dev The global assessor role is granted with the first insurer scope and
+    ///      revoked after the last scope is removed. Assessment authorization
+    ///      therefore always requires both the role and a matching scope entry.
+    /// @param assessor Scoring account to configure.
+    /// @param insurer Authorized submitter whose claims it may assess.
+    /// @param authorized True to add the scope; false to remove it.
     function setAssessor(
         address assessor,
         address insurer,
@@ -312,6 +360,10 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     }
 
     /// @notice Start OpenZeppelin's delayed two-step admin transfer.
+    /// @dev The proposed admin cannot already be a submitter or assessor. The
+    ///      inherited delay and explicit acceptance reduce accidental or
+    ///      immediate transfer of the most powerful registry role.
+    /// @param newAdmin Proposed admin, or zero to cancel a pending transfer.
     function beginDefaultAdminTransfer(
         address newAdmin
     ) public override onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -328,6 +380,8 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     }
 
     /// @notice Accept admin control after the configured delay has elapsed.
+    /// @dev Rechecks role separation at acceptance because the proposed account
+    ///      could have received a business role while the delay was pending.
     function acceptDefaultAdminTransfer() public override {
         address sender = _msgSender();
         if (

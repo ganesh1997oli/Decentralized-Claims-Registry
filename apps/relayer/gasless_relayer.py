@@ -4,6 +4,13 @@ The worker is deliberately separate from FastAPI. The API never receives the
 relayer key, and HTTP retries never allocate EOA nonces. PostgreSQL persists raw
 signed transactions before broadcast so a crash can safely replay the same
 bytes and transaction hash.
+
+The poll loop provides *at-least-once processing* with idempotent effects. A row
+may be inspected or broadcast more than once, but state predicates, persisted
+raw bytes, transaction hashes, and semantic receipt checks ensure that one
+logical authorization produces at most one claim. Fee replacements reuse the
+same EOA nonce, and the worker checks every hash in that replacement history
+because Ethereum is free to mine an earlier attempt.
 """
 
 from __future__ import annotations
@@ -32,7 +39,12 @@ logger = get_event_logger(__name__)
 
 
 class GaslessRelayWorker:
-    """Move each durable relay request through sign, broadcast, and confirm."""
+    """Move each durable relay request through sign, broadcast, and confirm.
+
+    The worker is intentionally stateless between polls. PostgreSQL is the
+    source of truth for progress, which makes a process restart or a second
+    replica equivalent to another safe attempt at the current transition.
+    """
 
     def __init__(
         self,

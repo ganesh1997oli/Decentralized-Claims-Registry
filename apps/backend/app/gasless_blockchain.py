@@ -1,4 +1,20 @@
-"""ERC-2771 preparation and least-privilege relay adapters for Sepolia."""
+"""ERC-2771 preparation and least-privilege relay adapters for Sepolia.
+
+This module deliberately exposes two different blockchain boundaries:
+
+* :class:`GaslessClaimsGateway` is used by FastAPI. It has no private key. It
+  creates the one allowlisted ``submitClaim`` request an insurer may sign and
+  asks the deployed forwarder to verify the resulting EIP-712 signature.
+* :class:`GaslessRelayChain` is used only by the isolated relayer process. It
+  owns the gas-paying key, revalidates the request, signs a restricted
+  ``ClaimsForwarder.execute`` transaction, and verifies the mined event.
+
+There are also two independent nonces. The *forwarder nonce* belongs to the
+insurer signer and prevents replaying its EIP-712 authorization. The *relayer
+nonce* belongs to the gas-paying Ethereum account and orders its transactions.
+PostgreSQL persists both because confusing or reconstructing either one during
+a retry could relay the wrong authorization or replace the wrong transaction.
+"""
 
 from __future__ import annotations
 
@@ -61,7 +77,12 @@ def _hex(value: Any) -> str:
 
 @dataclass(frozen=True)
 class PreparedForwardRequest:
-    """The exact request an insurer signs and the forwarder later executes."""
+    """The exact request an insurer signs and the forwarder later executes.
+
+    Instances are immutable because every field contributes to the signature.
+    After preparation, changing even the gas allowance or deadline would make
+    the wallet signature invalid and would break idempotent recovery.
+    """
 
     from_address: str
     to: str
@@ -168,7 +189,13 @@ class PreparedForwardRequest:
 
 
 class GaslessClaimsGateway:
-    """Prepare and verify signed claims without receiving a transaction key."""
+    """Prepare and verify signed claims without receiving a transaction key.
+
+    This is the safe blockchain adapter for the HTTP process. Its interface is
+    intentionally narrower than Web3: callers provide claim content and an
+    insurer address, while this class fixes the contract, function, ETH value,
+    gas allowance, signature lifetime, and EIP-712 domain.
+    """
 
     def __init__(
         self,
@@ -316,7 +343,12 @@ class GaslessClaimsGateway:
 
 
 class GaslessRelayChain(GaslessClaimsGateway):
-    """Sign and broadcast only pre-authorized ClaimsForwarder executions."""
+    """Sign and broadcast only pre-authorized ClaimsForwarder executions.
+
+    The relayer key pays network fees but has no registry role. Consequently a
+    leaked payer key cannot submit a claim by itself: the forwarder still needs
+    a current insurer signature over the exact allowlisted calldata.
+    """
 
     def __init__(
         self,

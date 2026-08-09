@@ -1,3 +1,6 @@
+// EIP-1193 wallet boundary for the sponsored-claim flow. This module requests
+// only account access, chain selection, and an EIP-712 signature; it never asks
+// the wallet to send a transaction because the isolated relayer pays the gas.
 import type { EIP712TypedData } from './api.ts'
 
 type EthereumRequest = {
@@ -41,6 +44,12 @@ function providerError(error: unknown, fallback: string): Error {
   return new Error(fallback)
 }
 
+/**
+ * Returns the browser-injected EIP-1193 provider without requesting access.
+ *
+ * Discovery is kept separate from `connectWallet` so rendering the form has no
+ * wallet side effect and tests can supply a provider without modifying Window.
+ */
 export function browserWallet(): EthereumProvider {
   // Discover the EIP-1193 provider lazily so rendering the form does not prompt
   // for wallet access and tests can inject a deterministic provider.
@@ -52,6 +61,13 @@ export function browserWallet(): EthereumProvider {
   return window.ethereum
 }
 
+/**
+ * Requests the account the insurer intends to use for this submission.
+ *
+ * This only establishes browser-side intent. FastAPI independently verifies
+ * that the authenticated insurer credential is bound to the returned address
+ * and that the address still holds `SUBMITTER_ROLE` on the active deployment.
+ */
 export async function connectWallet(
   provider: EthereumProvider = browserWallet(),
 ): Promise<string> {
@@ -70,6 +86,13 @@ export async function connectWallet(
   return address
 }
 
+/**
+ * Aligns the wallet with the chain selected by the backend deployment manifest.
+ *
+ * EIP-712 includes `chainId` in its domain, so signing while the wallet shows a
+ * different network is both confusing to the user and unusable by the deployed
+ * forwarder. The application does not add unknown chains automatically.
+ */
 export async function switchWalletChain(
   chainId: number,
   provider: EthereumProvider = browserWallet(),
@@ -89,6 +112,13 @@ export async function switchWalletChain(
   }
 }
 
+/**
+ * Requests an EIP-712 authorization for one prepared forwarder request.
+ *
+ * The return value is a signature, not a transaction. The private key remains
+ * in the wallet, and a valid signature can execute only the target, calldata,
+ * nonce, deadline, value, and gas allowance displayed in `typedData`.
+ */
 export async function signForwardRequest(
   address: string,
   typedData: EIP712TypedData,

@@ -235,6 +235,7 @@ function isAddress(value: unknown): value is string {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value)
 }
 
+/** Validates the public chain receipt before it enters React application state. */
 export function isClaimReceipt(value: unknown): value is ClaimReceipt {
   // TypeScript types disappear at runtime. Validate FastAPI responses here so a
   // partial deployment or older backend produces a useful error instead of a
@@ -584,6 +585,13 @@ function errorMessage(body: unknown, status: number): string {
   return `The claims API returned HTTP ${status}`
 }
 
+/**
+ * Fetches the deployment identity used to configure the wallet signing flow.
+ *
+ * This endpoint is public because it contains only chain metadata. The caller
+ * must still compare it with the authenticated preparation response before
+ * allowing a signature, which protects against configuration changing mid-flow.
+ */
 export async function getGaslessNetwork(
   signal?: AbortSignal,
 ): Promise<GaslessNetwork> {
@@ -607,6 +615,13 @@ export async function getGaslessNetwork(
   return body
 }
 
+/**
+ * Creates or resumes the credential-scoped durable preparation for one claim.
+ *
+ * The idempotency key represents this exact claim attempt. Reusing it after an
+ * uncertain HTTP result is safe; reusing it with changed claim data is rejected
+ * by the backend rather than silently creating a different authorization.
+ */
 export async function prepareGaslessClaim(
   payload: ClaimPayload,
   insurerApiKey: string,
@@ -652,6 +667,12 @@ export async function prepareGaslessClaim(
   return body
 }
 
+/**
+ * Persists the insurer's verified wallet signature for asynchronous relaying.
+ *
+ * A successful response means the authorization is durable, not necessarily
+ * that an Ethereum transaction has already been signed or broadcast.
+ */
 export async function authorizeGaslessClaim(
   submissionId: string,
   signature: string,
@@ -687,6 +708,7 @@ export async function authorizeGaslessClaim(
   return body
 }
 
+/** Reads one submission within the credential that originally created it. */
 export async function getGaslessSubmission(
   submissionId: string,
   insurerApiKey: string,
@@ -715,6 +737,11 @@ export async function getGaslessSubmission(
   return body
 }
 
+/**
+ * Returns the latest asynchronous model result, or `null` while none exists.
+ * A not-found response is part of normal polling; network and schema failures
+ * remain exceptions so the UI does not mistake an outage for pending work.
+ */
 export async function getClaimAssessment(
   claimId: number,
   signal?: AbortSignal,
@@ -747,6 +774,7 @@ export async function getClaimAssessment(
   return body
 }
 
+/** Reads one validated page from the PostgreSQL blockchain projection. */
 export async function listClaims(
   page = 1,
   pageSize = 10,
@@ -783,6 +811,10 @@ export async function listClaims(
   return body
 }
 
+/**
+ * Loads the authenticated, read-only indexer health and reconciliation view.
+ * The raw operations key stays in a request header and is never placed in URLs.
+ */
 export async function getIndexerOperations(
   operationsApiKey: string,
   signal?: AbortSignal,
@@ -816,6 +848,13 @@ export async function getIndexerOperations(
   return body
 }
 
+/**
+ * Searches indexed blockchain events using opaque keyset pagination.
+ *
+ * `cursor` is generated and validated by FastAPI; the browser deliberately does
+ * not decode it. Returning that token unchanged preserves stable pagination even
+ * while newly confirmed events are inserted at the head of the audit stream.
+ */
 export async function searchIndexerEvents(
   operationsApiKey: string,
   filters: IndexerEventSearch,

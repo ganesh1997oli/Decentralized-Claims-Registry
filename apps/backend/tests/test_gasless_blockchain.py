@@ -1,4 +1,11 @@
-"""Focused unit tests for the keyless gateway and restricted relay adapter."""
+"""Focused unit tests for the keyless gateway and restricted relay adapter.
+
+These tests replace Web3 contracts, RPC calls, and account signing with small
+fakes so they exercise policy and recovery branches without a live blockchain.
+The real deployment-validation and PostgreSQL paths have separate integration
+tests; this suite documents the decisions expected at the adapter boundary and
+keeps the mandatory isolated-unit coverage job deterministic.
+"""
 
 from __future__ import annotations
 

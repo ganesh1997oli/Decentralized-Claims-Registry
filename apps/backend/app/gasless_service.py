@@ -1,4 +1,19 @@
-"""Two-stage claim preparation and insurer authorization workflow."""
+"""Two-stage claim preparation and insurer authorization workflow.
+
+The service is the application-level coordinator used by FastAPI. A normal
+submission moves through these durable states::
+
+    preparing -> prepared -> authorized -> signed -> broadcast -> confirmed
+
+``prepare`` authenticates the insurer, pins canonical claim bytes to IPFS, and
+returns EIP-712 data for the wallet. ``authorize`` verifies and stores the
+wallet signature. The later states are owned by the separate relayer, so this
+module never holds the payer key or broadcasts an Ethereum transaction.
+
+Every externally visible retry is tied to a credential-scoped idempotency key.
+That lets a browser safely repeat an uncertain HTTP request while PostgreSQL
+decides whether to resume the existing workflow or reject changed claim data.
+"""
 
 from __future__ import annotations
 
@@ -134,7 +149,9 @@ class GaslessClaimSubmissionService:
 
     The API phase prepares content and validates insurer intent. It never signs
     an Ethereum transaction; the isolated relayer consumes only records that
-    reach the durable ``authorized`` state.
+    reach the durable ``authorized`` state. Methods in this class orchestrate
+    adapters, while concurrency, quota counting, and compare-and-set state
+    transitions remain inside the PostgreSQL repository.
     """
 
     def __init__(
