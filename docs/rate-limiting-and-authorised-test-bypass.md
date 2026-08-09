@@ -8,15 +8,18 @@ before and after a test.
 The bypass is an operator-controlled backend capability. It is deliberately not
 exposed in the browser or through an administrator endpoint.
 
-> Use fictional claims only. A successful API request uploads the claim to
-> public IPFS and submits a Sepolia transaction. Use mocked adapters or a local
-> chain for sustained performance testing.
+> Use fictional claims only. A successful preparation uploads the claim to
+> public IPFS, and a later wallet authorization can make the relayer spend
+> Sepolia ETH. Use the automated in-memory tests for sustained API load; use the
+> live gasless path only for a small, explicitly funded end-to-end test.
 
 ## Implementation map
 
 | Component | Technical responsibility |
 | --- | --- |
 | `apps/backend/app/submission_auth.py` | Parses credential records, authenticates API keys, applies counters, evaluates the dual bypass controls, and emits the bypass audit event |
+| `apps/backend/app/gasless_service.py` | Passes authenticated exemption policy into durable sponsorship reservation |
+| `packages/integrations/postgres/gasless_submission_repository.py` | Serializes per-insurer/client decisions and enforces sponsorship limits consistently across API replicas |
 | `apps/backend/app/main.py` | Builds one cached `SubmissionBoundary`, converts boundary failures to HTTP responses, and records the master-switch state at startup |
 | `apps/backend/tests/test_submission_auth.py` | Verifies normal limits, dual-control activation, fail-closed behaviour, invalid-attempt handling, UTC reset, and audit logging |
 | `.env.example` | Documents safe local defaults |
@@ -25,8 +28,12 @@ exposed in the browser or through an administrator endpoint.
 
 ## Limits applied by the gateway
 
-The counters are checked inside `SubmissionBoundary.authorize_and_reserve`
-before the service uploads to IPFS or sends a blockchain transaction.
+Two layers run before IPFS upload or relay authorization:
+
+1. `SubmissionBoundary.authorize_and_reserve` provides fast in-process abuse
+   protection, including invalid API-key attempts; and
+2. `PostgresGaslessSubmissionRepository.begin_preparation` serializes valid
+   sponsorship reservations across API workers and survives restarts.
 
 | Boundary | Key | Window | Default | Counts |
 | --- | --- | --- | --- | --- |
@@ -44,11 +51,13 @@ the first request after UTC midnight. A normal authorised request reserves the
 IP allowance first and the insurer allowances second, so an attempt rejected by
 an insurer limit still consumes one IP attempt.
 
-These counters live in process memory. They reset when FastAPI restarts and are
-not shared between multiple API workers or hosts. This is suitable for the
-single-process dissertation prototype. A multi-instance deployment would need
-an atomic shared implementation, such as Redis, plus load testing to establish
-production thresholds.
+The gateway's invalid-attempt and early authenticated counters live in process
+memory and reset with FastAPI. The valid gasless sponsorship decision is checked
+again under PostgreSQL advisory locks using durable rows, so multiple API
+replicas cannot each grant the final quota slot. A production edge should still
+add distributed invalid-credential throttling (for example at an API gateway or
+Redis-backed boundary), because PostgreSQL intentionally never stores raw or
+fingerprinted failed credentials.
 
 ## Bypass activation logic
 
@@ -91,41 +100,47 @@ separate credential for a unique synthetic insurer.
 
 ### Local walkthrough
 
-The consolidated `.env.example` already contains this dedicated digest-only
-record inside `INSURER_CREDENTIALS_JSON`:
+The safe `.env.example` intentionally does **not** include an exempt credential.
+Create one for a dedicated fictional wallet whose address already holds
+`SUBMITTER_ROLE` in the selected deployment:
+
+```bash
+apps/backend/.venv/bin/python \
+  apps/backend/scripts/generate_insurer_credential.py \
+  performance-test-insurer performance-test-v1 \
+  0xYOUR_ROLE_AUTHORIZED_TEST_SIGNER \
+  --daily-quota 25
+```
+
+The generator prints a raw key once and a digest-only JSON record. Add
+`"rateLimitExempt": true` to that generated record before appending it to
+`INSURER_CREDENTIALS_JSON`:
 
 ```json
 {
   "credentialId": "performance-test-v1",
   "insurerId": "performance-test-insurer",
-  "apiKeySha256": "a046fd6eea194db30bba3f5deb7a6d9fc5b7b7f62ac6009f539052509bae3036",
+  "signerAddress": "0xYOUR_ROLE_AUTHORIZED_TEST_SIGNER",
+  "apiKeySha256": "GENERATED_64_CHARACTER_SHA256_DIGEST",
   "dailyQuota": 25,
   "rateLimitExempt": true
 }
 ```
 
-Its corresponding fictional local raw key is:
-
-```text
-local-performance-test-insurer-api-key-change-me
-```
-
-Copying `.env.example` to `.env.local` therefore provides all configuration in
-one file. No rate-limit override file is required. The raw key is intentionally
-public for local fictional-data testing and must not be reused in a hosted
-environment.
-
-The performance-test insurer is not shown in the normal React insurer selector.
-Use `curl`, an API client, or the FastAPI documentation at
-`http://127.0.0.1:8000/docs` for the controlled test.
+The raw key cannot be recovered from the digest. Keep it outside source control.
+If the performance insurer is not in the normal React selector, use a controlled
+test client that implements the complete gasless protocol described below; a
+direct `POST /claims` is disabled and returns HTTP 410.
 
 ### Hosted or independently secured test
 
 Generate a new random credential from the repository root:
 
 ```bash
-python apps/backend/scripts/generate_insurer_credential.py \
+apps/backend/.venv/bin/python \
+  apps/backend/scripts/generate_insurer_credential.py \
   performance-test-insurer performance-test-v1 \
+  0xYOUR_ROLE_AUTHORIZED_TEST_SIGNER \
   --daily-quota 25
 ```
 
@@ -144,6 +159,7 @@ Add the exemption to the generated digest-only JSON record:
 {
   "credentialId": "performance-test-v1",
   "insurerId": "performance-test-insurer",
+  "signerAddress": "0xYOUR_ROLE_AUTHORIZED_TEST_SIGNER",
   "apiKeySha256": "GENERATED_64_CHARACTER_SHA256_DIGEST",
   "dailyQuota": 25,
   "rateLimitExempt": true
@@ -159,9 +175,9 @@ prototype permits one active credential per insurer.
 
 ## Enable and run a controlled test
 
-1. Confirm that `.env.local` contains the dedicated credential record with
-   `"rateLimitExempt": true`. A local file copied from the current
-   `.env.example` already contains it.
+1. Confirm that `.env.local` contains a separately generated credential record
+   with `"rateLimitExempt": true`, and that its `signerAddress` holds the
+   submitter role.
 2. In `.env.local`, change only the server-side master switch:
 
    ```bash
@@ -182,7 +198,8 @@ prototype permits one active credential per insurer.
    changes:
 
    ```bash
-   python -m uvicorn apps.backend.app.main:app \
+   apps/backend/.venv/bin/python -m uvicorn \
+     apps.backend.app.main:app \
      --host 127.0.0.1 \
      --port 8000
    ```
@@ -194,34 +211,18 @@ prototype permits one active credential per insurer.
    api.submission_boundary_configured
    ```
 
-6. Send local claims with the dedicated raw key in `X-Insurer-API-Key` and use
-   the matching synthetic insurer ID in the JSON body:
+6. Run the complete protocol with the raw key and matching test wallet:
 
-   ```bash
-   curl http://127.0.0.1:8000/claims \
-     -H 'Content-Type: application/json' \
-     -H 'X-Insurer-API-Key: local-performance-test-insurer-api-key-change-me' \
-     -d '{
-       "insurerId": "performance-test-insurer",
-       "claimReference": "load-test-0001",
-       "policyReference": "synthetic-load-policy-0001",
-       "claimType": "collision",
-       "incidentDate": "2026-08-04",
-       "claimAmountUsd": 2500,
-       "policyPremiumUsd": 480,
-       "vehicleAge": 6,
-       "vehicleType": "sedan",
-       "country": "Nigeria",
-       "regionType": "urban",
-       "thirdPartyInjuryFlag": false,
-       "totalLossFlag": false,
-       "description": "Fictional performance-test claim",
-       "evidence": []
-     }'
-   ```
+   1. `GET /claims/gasless/config` and select the returned chain;
+   2. `POST /claims/gasless/prepare` with `X-Insurer-API-Key`,
+      `X-Insurer-Signer-Address`, and a unique `Idempotency-Key`;
+   3. sign the returned EIP-712 typed data with that insurer wallet;
+   4. `POST /claims/gasless/{submission_id}/authorize` with the signature; and
+   5. poll `GET /claims/gasless/{submission_id}` until a terminal state.
 
-   Use a new `claimReference` for each request. Repeating references can exercise
-   duplicate or contract behaviour instead of measuring a clean submission.
+   Reuse an Idempotency-Key only when retrying the exact same claim. For a load
+   test, automate the EIP-712 signer in a protected test harness; never put its
+   private key in FastAPI or the React bundle.
 
 7. Check for one warning event per bypassed request:
 
@@ -251,12 +252,15 @@ docker compose \
 | `401` | The API key is absent or does not match a configured digest | `WWW-Authenticate: ApiKey` |
 | `403` | The key is valid but cannot submit for the requested insurer or operation | None |
 | `429` | A normal credential has reached an IP, insurer-minute, or daily boundary | `Retry-After` in seconds |
-| `201` | IPFS verification and the Sepolia anchor both completed | None |
+| `201` | Preparation is durable; EIP-712 wallet signature may be required | None |
+| `202` | Wallet authorization is durable and queued for sponsorship | None |
+| `200` | Status read; a confirmed response includes the public receipt | None |
 
 A bypass removes only rate-limit `429` responses for a correctly authenticated
 and authorised exempt credential. Upstream failures can still produce other
 responses, and throughput remains bounded by IPFS, RPC, wallet nonce, and
-transaction confirmation performance.
+transaction confirmation performance. In the gasless design the relayer, rather
+than FastAPI, owns the payer nonce and broadcast rate.
 
 ## Verify the implementation without external writes
 
@@ -264,9 +268,12 @@ The focused automated tests use in-memory objects and do not upload to IPFS or
 submit Sepolia transactions:
 
 ```bash
-source apps/backend/.venv/bin/activate
-python -m pytest apps/backend/tests/test_submission_auth.py -q
-ruff check apps/backend/app/submission_auth.py \
+apps/backend/.venv/bin/python -m pytest \
+  apps/backend/tests/test_submission_auth.py \
+  apps/backend/tests/test_gasless_service.py -q
+apps/backend/.venv/bin/python -m ruff check \
+  apps/backend/app/submission_auth.py \
+  apps/backend/app/gasless_service.py \
   apps/backend/tests/test_submission_auth.py
 ```
 
@@ -281,9 +288,7 @@ After the controlled test:
 1. Restore `ALLOW_RATE_LIMIT_BYPASS="false"` in `.env.local`.
 2. Reload `.env.local`, restart FastAPI, and confirm the startup event reports
    `"rate_limit_bypass_enabled":false`.
-3. Remove or rotate a generated hosted test credential if it is no longer
-   needed. The public local example may remain because the master switch is
-   disabled.
+3. Remove or rotate a generated test credential if it is no longer needed.
 4. Delete any temporary file containing a generated hosted raw key.
 5. Retain only redacted audit evidence required for the dissertation.
 

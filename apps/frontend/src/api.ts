@@ -167,6 +167,60 @@ export type ClaimReceipt = {
   assessment: ClaimAssessment | null
 }
 
+export type EIP712TypedData = {
+  types: Record<string, { name: string; type: string }[]>
+  primaryType: 'ForwardRequest'
+  domain: {
+    name: 'ClaimsRegistryForwarder'
+    version: '1'
+    chainId: number
+    verifyingContract: string
+  }
+  message: {
+    from: string
+    to: string
+    value: string
+    gas: string
+    nonce: string
+    deadline: string
+    data: string
+  }
+}
+
+export type GaslessSubmissionState =
+  | 'preparing'
+  | 'prepared'
+  | 'authorized'
+  | 'signed'
+  | 'broadcast'
+  | 'confirmed'
+  | 'failed'
+  | 'expired'
+
+export type GaslessSubmission = {
+  submission_id: string
+  state: GaslessSubmissionState
+  signer_address: string
+  chain_id: number
+  contract_address: string
+  forwarder_address: string
+  claim_hash: string | null
+  data_pointer: string | null
+  deadline: number | null
+  typed_data: EIP712TypedData | null
+  receipt: ClaimReceipt | null
+  error_code: string | null
+  poll_after_ms: number
+}
+
+export type GaslessNetwork = {
+  chain_id: number
+  contract_address: string
+  forwarder_address: string
+  domain_name: 'ClaimsRegistryForwarder'
+  domain_version: '1'
+}
+
 const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
 ).replace(/\/$/, '')
@@ -177,6 +231,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+function isAddress(value: unknown): value is string {
+  return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value)
+}
+
+/** Validates the public chain receipt before it enters React application state. */
 export function isClaimReceipt(value: unknown): value is ClaimReceipt {
   // TypeScript types disappear at runtime. Validate FastAPI responses here so a
   // partial deployment or older backend produces a useful error instead of a
@@ -190,6 +249,110 @@ export function isClaimReceipt(value: unknown): value is ClaimReceipt {
     typeof value.data_pointer === 'string' &&
     typeof value.claim_hash === 'string' &&
     (value.assessment === null || isClaimAssessment(value.assessment))
+  )
+}
+
+function isEip712TypedData(value: unknown): value is EIP712TypedData {
+  // Use an exact allowlist for the wallet prompt. Accepting extra types or a
+  // different primary type could authorize semantics the UI never reviewed.
+  if (!isRecord(value) || !isRecord(value.domain) || !isRecord(value.message)) {
+    return false
+  }
+  if (!isRecord(value.types)) return false
+  const expectedTypes = {
+    EIP712Domain: [
+      { name: 'name', type: 'string' },
+      { name: 'version', type: 'string' },
+      { name: 'chainId', type: 'uint256' },
+      { name: 'verifyingContract', type: 'address' },
+    ],
+    ForwardRequest: [
+      { name: 'from', type: 'address' },
+      { name: 'to', type: 'address' },
+      { name: 'value', type: 'uint256' },
+      { name: 'gas', type: 'uint256' },
+      { name: 'nonce', type: 'uint256' },
+      { name: 'deadline', type: 'uint48' },
+      { name: 'data', type: 'bytes' },
+    ],
+  }
+  const typesAreExact =
+    Object.keys(value.types).length === 2 &&
+    JSON.stringify(value.types.EIP712Domain) ===
+      JSON.stringify(expectedTypes.EIP712Domain) &&
+    JSON.stringify(value.types.ForwardRequest) ===
+      JSON.stringify(expectedTypes.ForwardRequest)
+  const isDecimal = (field: unknown) =>
+    // uint256 values arrive as decimal strings to avoid JavaScript precision
+    // loss; the EIP-712 wallet encoder accepts these lossless representations.
+    typeof field === 'string' && /^[0-9]+$/.test(field)
+  return (
+    typesAreExact &&
+    value.primaryType === 'ForwardRequest' &&
+    value.domain.name === 'ClaimsRegistryForwarder' &&
+    value.domain.version === '1' &&
+    typeof value.domain.chainId === 'number' &&
+    isAddress(value.domain.verifyingContract) &&
+    isAddress(value.message.from) &&
+    isAddress(value.message.to) &&
+    isDecimal(value.message.value) &&
+    isDecimal(value.message.gas) &&
+    isDecimal(value.message.nonce) &&
+    isDecimal(value.message.deadline) &&
+    typeof value.message.data === 'string' &&
+    /^0x(?:[0-9a-fA-F]{2})+$/.test(value.message.data)
+  )
+}
+
+function isGaslessSubmission(value: unknown): value is GaslessSubmission {
+  // Validate both field shapes and state-specific invariants. In particular, a
+  // prepared response must be signable and a confirmed response must contain a
+  // complete public receipt before orchestration code can advance.
+  if (!isRecord(value)) return false
+  const states: GaslessSubmissionState[] = [
+    'preparing',
+    'prepared',
+    'authorized',
+    'signed',
+    'broadcast',
+    'confirmed',
+    'failed',
+    'expired',
+  ]
+  return (
+    typeof value.submission_id === 'string' &&
+    typeof value.state === 'string' &&
+    states.includes(value.state as GaslessSubmissionState) &&
+    isAddress(value.signer_address) &&
+    typeof value.chain_id === 'number' &&
+    isAddress(value.contract_address) &&
+    isAddress(value.forwarder_address) &&
+    (value.claim_hash === null ||
+      (typeof value.claim_hash === 'string' &&
+        /^0x[0-9a-fA-F]{64}$/.test(value.claim_hash))) &&
+    (value.data_pointer === null ||
+      (typeof value.data_pointer === 'string' &&
+        /^ipfs:\/\/[A-Za-z0-9]{1,121}$/.test(value.data_pointer))) &&
+    (value.deadline === null || typeof value.deadline === 'number') &&
+    (value.typed_data === null || isEip712TypedData(value.typed_data)) &&
+    (value.receipt === null || isClaimReceipt(value.receipt)) &&
+    (value.error_code === null || typeof value.error_code === 'string') &&
+    typeof value.poll_after_ms === 'number' &&
+    (value.state !== 'prepared' || value.typed_data !== null) &&
+    (value.state !== 'confirmed' || value.receipt !== null)
+  )
+}
+
+function isGaslessNetwork(value: unknown): value is GaslessNetwork {
+  // Pin the EIP-712 domain name/version used by the deployed forwarder; an API
+  // returning a different signing protocol is incompatible, not a soft upgrade.
+  return (
+    isRecord(value) &&
+    typeof value.chain_id === 'number' &&
+    isAddress(value.contract_address) &&
+    isAddress(value.forwarder_address) &&
+    value.domain_name === 'ClaimsRegistryForwarder' &&
+    value.domain_version === '1'
   )
 }
 
@@ -422,21 +585,62 @@ function errorMessage(body: unknown, status: number): string {
   return `The claims API returned HTTP ${status}`
 }
 
-export async function submitClaim(
-  payload: ClaimPayload,
-  insurerApiKey: string,
+/**
+ * Fetches the deployment identity used to configure the wallet signing flow.
+ *
+ * This endpoint is public because it contains only chain metadata. The caller
+ * must still compare it with the authenticated preparation response before
+ * allowing a signature, which protects against configuration changing mid-flow.
+ */
+export async function getGaslessNetwork(
   signal?: AbortSignal,
-): Promise<ClaimReceipt> {
-  // The insurer key is header-only and the canonical claim is JSON request data.
-  // Network, non-JSON, HTTP, and response-shape failures are separated so the form
-  // can present an actionable message without trusting unvalidated server output.
+): Promise<GaslessNetwork> {
+  // Deployment discovery is intentionally unauthenticated and read-only. The
+  // browser compares these values with the subsequent prepared response before
+  // it allows the insurer wallet to sign.
   let response: Response
   try {
-    response = await fetch(`${API_BASE_URL}/claims`, {
+    response = await fetch(`${API_BASE_URL}/claims/gasless/config`, { signal })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error(
+      'Could not reach FastAPI. Confirm that the backend is running on port 8000.',
+    )
+  }
+  const body: unknown = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isGaslessNetwork(body)) {
+    throw new Error('The claims API returned an unexpected gasless configuration')
+  }
+  return body
+}
+
+/**
+ * Creates or resumes the credential-scoped durable preparation for one claim.
+ *
+ * The idempotency key represents this exact claim attempt. Reusing it after an
+ * uncertain HTTP result is safe; reusing it with changed claim data is rejected
+ * by the backend rather than silently creating a different authorization.
+ */
+export async function prepareGaslessClaim(
+  payload: ClaimPayload,
+  insurerApiKey: string,
+  signerAddress: string,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<GaslessSubmission> {
+  // Send credential, signer binding, and idempotency identity as headers while
+  // the body remains the schema-validated claim. The API stores credential/key
+  // fingerprints, not the raw header values, in its sponsorship tables.
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/claims/gasless/prepare`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Insurer-API-Key': insurerApiKey,
+        'X-Insurer-Signer-Address': signerAddress,
+        'Idempotency-Key': idempotencyKey,
       },
       body: JSON.stringify(payload),
       signal,
@@ -456,13 +660,88 @@ export async function submitClaim(
   }
 
   if (!response.ok) throw new Error(errorMessage(body, response.status))
-  if (!isClaimReceipt(body)) {
-    throw new Error('The claims API returned an unexpected response shape')
+  if (!isGaslessSubmission(body)) {
+    throw new Error('The claims API returned an unexpected gasless response')
   }
 
   return body
 }
 
+/**
+ * Persists the insurer's verified wallet signature for asynchronous relaying.
+ *
+ * A successful response means the authorization is durable, not necessarily
+ * that an Ethereum transaction has already been signed or broadcast.
+ */
+export async function authorizeGaslessClaim(
+  submissionId: string,
+  signature: string,
+  insurerApiKey: string,
+  signal?: AbortSignal,
+): Promise<GaslessSubmission> {
+  // This endpoint records an insurer signature; it does not broadcast. Durable
+  // authorization lets the isolated relayer safely continue after HTTP/browser
+  // failure without receiving another signature.
+  let response: Response
+  try {
+    response = await fetch(
+      `${API_BASE_URL}/claims/gasless/${encodeURIComponent(submissionId)}/authorize`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Insurer-API-Key': insurerApiKey,
+        },
+        body: JSON.stringify({ signature }),
+        signal,
+      },
+    )
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error('Could not send the insurer authorization to FastAPI.')
+  }
+  const body: unknown = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isGaslessSubmission(body)) {
+    throw new Error('The claims API returned an unexpected gasless response')
+  }
+  return body
+}
+
+/** Reads one submission within the credential that originally created it. */
+export async function getGaslessSubmission(
+  submissionId: string,
+  insurerApiKey: string,
+  signal?: AbortSignal,
+): Promise<GaslessSubmission> {
+  // Status is scoped by the same insurer credential used for preparation. A
+  // guessed UUID cannot reveal another insurer's workflow or public receipt.
+  let response: Response
+  try {
+    response = await fetch(
+      `${API_BASE_URL}/claims/gasless/${encodeURIComponent(submissionId)}`,
+      {
+        headers: { 'X-Insurer-API-Key': insurerApiKey },
+        signal,
+      },
+    )
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error('Could not check the sponsored transaction status.')
+  }
+  const body: unknown = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isGaslessSubmission(body)) {
+    throw new Error('The claims API returned an unexpected gasless response')
+  }
+  return body
+}
+
+/**
+ * Returns the latest asynchronous model result, or `null` while none exists.
+ * A not-found response is part of normal polling; network and schema failures
+ * remain exceptions so the UI does not mistake an outage for pending work.
+ */
 export async function getClaimAssessment(
   claimId: number,
   signal?: AbortSignal,
@@ -495,6 +774,7 @@ export async function getClaimAssessment(
   return body
 }
 
+/** Reads one validated page from the PostgreSQL blockchain projection. */
 export async function listClaims(
   page = 1,
   pageSize = 10,
@@ -531,6 +811,10 @@ export async function listClaims(
   return body
 }
 
+/**
+ * Loads the authenticated, read-only indexer health and reconciliation view.
+ * The raw operations key stays in a request header and is never placed in URLs.
+ */
 export async function getIndexerOperations(
   operationsApiKey: string,
   signal?: AbortSignal,
@@ -564,6 +848,13 @@ export async function getIndexerOperations(
   return body
 }
 
+/**
+ * Searches indexed blockchain events using opaque keyset pagination.
+ *
+ * `cursor` is generated and validated by FastAPI; the browser deliberately does
+ * not decode it. Returning that token unchanged preserves stable pagination even
+ * while newly confirmed events are inserted at the head of the audit stream.
+ */
 export async function searchIndexerEvents(
   operationsApiKey: string,
   filters: IndexerEventSearch,

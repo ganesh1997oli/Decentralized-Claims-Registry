@@ -47,9 +47,9 @@ how the synthetic label was generated.
 From the repository root:
 
 ```bash
-source apps/backend/.venv/bin/activate
-python -m pip install --require-hashes -r requirements-dev.lock
-python -m packages.model.train_xgboost --download
+apps/backend/.venv/bin/python -m pip install --require-hashes \
+  -r requirements-dev.lock
+apps/backend/.venv/bin/python -m packages.model.train_xgboost --download
 ```
 
 On macOS, install OpenMP once if XGBoost cannot find it:
@@ -75,7 +75,7 @@ from a user or untrusted storage because deserialization can execute code.
 
 ```mermaid
 flowchart LR
-    Claim["Verified schema-v4 claim"] --> Enrich["Add reviewed country frequency"]
+    Claim["Verified schema-v5 claim"] --> Enrich["Add reviewed country frequency"]
     Enrich --> Frame["Ordered one-row feature frame"]
     Frame --> Pipeline["Saved preprocessing + XGBoost"]
     Pipeline --> Probability["Probability 0..1"]
@@ -122,14 +122,14 @@ fraud, or innocence. One-hot categories may appear as `Country: Ghana` or
 The intended entry point is the asynchronous worker:
 
 ```bash
-python -m packages.integrations.kafka.scoring_worker
+apps/backend/.venv/bin/python \
+  -m packages.integrations.kafka.scoring_worker
 ```
 
 ## Verify
 
 ```bash
-source apps/backend/.venv/bin/activate
-python -m pytest packages/model/tests -q
+apps/backend/.venv/bin/python -m pytest packages/model/tests -q
 ```
 
 Tests cover leakage controls, chronological splitting, artifact integrity,

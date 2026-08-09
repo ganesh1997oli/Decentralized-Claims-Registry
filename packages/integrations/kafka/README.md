@@ -8,7 +8,7 @@ model work. Messages contain blockchain and IPFS references—not the full claim
 ```mermaid
 flowchart LR
     Chain["Confirmed ClaimSubmitted"] --> Listener["Listener verifies IPFS hash"]
-    Listener --> Topic[("claims.submitted.v1")]
+    Listener --> Topic[("deployment-specific claims topic")]
     Topic --> Worker["Scoring worker"]
     Worker --> Verify["Reverify hash + signed insurer authorization"]
     Verify --> Duplicate["Cross-insurer duplicate check"]
@@ -58,15 +58,22 @@ docker compose -f packages/integrations/kafka/compose.yml up -d
 docker compose -f packages/integrations/kafka/compose.yml ps
 ```
 
-The initialization service creates `claims.submitted.v1` with three partitions
-and seven-day retention. Kafka UI is available at <http://127.0.0.1:8081>.
+The initialization service creates the legacy `claims.submitted.v1` topic. The
+gasless deployment deliberately uses a new topic name so its event stream cannot
+be confused with legacy contract history. After loading `.env.local`, create the
+configured topic once:
 
 ```bash
+set -a; source .env.local; set +a
 docker compose -f packages/integrations/kafka/compose.yml exec kafka \
   /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
-  --describe --topic claims.submitted.v1
+  --create --if-not-exists \
+  --topic "$KAFKA_CLAIM_SUBMITTED_TOPIC" \
+  --partitions 3 --replication-factor 1
 ```
+
+Kafka UI is available at <http://127.0.0.1:8081>.
 
 ## Configure and run
 
@@ -76,8 +83,10 @@ set -a
 source .env.local
 set +a
 
-python -m packages.integrations.postgres.migrations upgrade
-python -m packages.integrations.postgres.migrations check
+apps/backend/.venv/bin/python \
+  -m packages.integrations.postgres.migrations upgrade
+apps/backend/.venv/bin/python \
+  -m packages.integrations.postgres.migrations check
 ```
 
 The local example uses:
@@ -85,16 +94,17 @@ The local example uses:
 ```dotenv
 KAFKA_ENABLED="true"
 KAFKA_BOOTSTRAP_SERVERS="127.0.0.1:9092"
-KAFKA_CLAIM_SUBMITTED_TOPIC="claims.submitted.v1"
-KAFKA_CONSUMER_GROUP_ID="claims-registry-scorer-v1"
+KAFKA_CLAIM_SUBMITTED_TOPIC="claims.submitted.sepolia-gasless-v1"
+KAFKA_CONSUMER_GROUP_ID="claims-registry-scorer-sepolia-gasless-v1"
 KAFKA_SECURITY_PROTOCOL="PLAINTEXT"
 ```
 
 Start the worker and listener in separate configured terminals:
 
 ```bash
-python -m packages.integrations.kafka.scoring_worker
-python -m apps.listener.claims_listener
+apps/backend/.venv/bin/python \
+  -m packages.integrations.kafka.scoring_worker
+apps/backend/.venv/bin/python -m apps.listener.claims_listener
 ```
 
 The worker needs the assessor wallet, IPFS gateway, PostgreSQL, model artifact,
@@ -109,8 +119,8 @@ group divide partitions and would take messages away from the scoring worker.
 Isolated tests:
 
 ```bash
-source apps/backend/.venv/bin/activate
-python -m pytest packages/integrations/kafka/tests -m "not integration" -q
+apps/backend/.venv/bin/python -m pytest \
+  packages/integrations/kafka/tests -m "not integration" -q
 ```
 
 Broker- and database-backed tests:
@@ -118,7 +128,7 @@ Broker- and database-backed tests:
 ```bash
 TEST_DATABASE_URL=postgresql://claims:claims-local@127.0.0.1:5432/claims_registry \
 TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
-  python -m pytest -m integration
+  apps/backend/.venv/bin/python -m pytest -m integration
 ```
 
 The integration suite exercises a schema round trip, the real listener-to-topic

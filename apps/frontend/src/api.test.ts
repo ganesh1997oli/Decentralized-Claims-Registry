@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  authorizeGaslessClaim,
+  getGaslessNetwork,
+  getGaslessSubmission,
   getClaimAssessment,
   getIndexerOperations,
   listClaims,
+  prepareGaslessClaim,
   searchIndexerEvents,
-  submitClaim,
   type ClaimPayload,
   type ClaimPage,
   type ClaimReceipt,
@@ -33,8 +36,8 @@ const receipt: ClaimReceipt = {
   claim_id: 4,
   transaction_hash: '0xtx',
   block_number: 11319478,
-  data_pointer: 'ipfs://bafy-test',
-  claim_hash: '0xhash',
+  data_pointer: 'ipfs://bafytest',
+  claim_hash: `0x${'12'.repeat(32)}`,
   assessment: {
     status: 'Flagged',
     fraud_score: 8500,
@@ -64,6 +67,56 @@ const receipt: ClaimReceipt = {
       ],
     },
   },
+}
+
+const gaslessSubmission = {
+  submission_id: '11111111-1111-4111-8111-111111111111',
+  state: 'prepared' as const,
+  signer_address: '0x1111111111111111111111111111111111111111',
+  chain_id: 11155111,
+  contract_address: '0x2222222222222222222222222222222222222222',
+  forwarder_address: '0x3333333333333333333333333333333333333333',
+  claim_hash: `0x${'12'.repeat(32)}`,
+  data_pointer: 'ipfs://bafytest',
+  deadline: 2_000_000_000,
+  typed_data: {
+    types: {
+      EIP712Domain: [
+        { name: 'name', type: 'string' },
+        { name: 'version', type: 'string' },
+        { name: 'chainId', type: 'uint256' },
+        { name: 'verifyingContract', type: 'address' },
+      ],
+      ForwardRequest: [
+        { name: 'from', type: 'address' },
+        { name: 'to', type: 'address' },
+        { name: 'value', type: 'uint256' },
+        { name: 'gas', type: 'uint256' },
+        { name: 'nonce', type: 'uint256' },
+        { name: 'deadline', type: 'uint48' },
+        { name: 'data', type: 'bytes' },
+      ],
+    },
+    primaryType: 'ForwardRequest' as const,
+    domain: {
+      name: 'ClaimsRegistryForwarder' as const,
+      version: '1' as const,
+      chainId: 11155111,
+      verifyingContract: '0x3333333333333333333333333333333333333333',
+    },
+    message: {
+      from: '0x1111111111111111111111111111111111111111',
+      to: '0x2222222222222222222222222222222222222222',
+      value: '0',
+      gas: '250000',
+      nonce: '7',
+      deadline: '2000000000',
+      data: '0x1234',
+    },
+  },
+  receipt: null,
+  error_code: null,
+  poll_after_ms: 1500,
 }
 
 const claimPage: ClaimPage = {
@@ -143,49 +196,130 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('submitClaim', () => {
-  it('posts the claim and returns a validated receipt', async () => {
+describe('gasless claims API', () => {
+  it('loads the server-authoritative wallet network', async () => {
+    const network = {
+      chain_id: 11155111,
+      contract_address: gaslessSubmission.contract_address,
+      forwarder_address: gaslessSubmission.forwarder_address,
+      domain_name: 'ClaimsRegistryForwarder',
+      domain_version: '1',
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(network), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+
+    await expect(getGaslessNetwork()).resolves.toEqual(network)
+  })
+
+  it('prepares a claim with signer and idempotency bindings', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(receipt), {
+      new Response(JSON.stringify(gaslessSubmission), {
         status: 201,
         headers: { 'Content-Type': 'application/json' },
       }),
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(submitClaim(payload, 'insurer-api-key')).resolves.toEqual(receipt)
+    await expect(
+      prepareGaslessClaim(
+        payload,
+        'insurer-api-key',
+        gaslessSubmission.signer_address,
+        'request-123',
+      ),
+    ).resolves.toEqual(gaslessSubmission)
     expect(fetchMock).toHaveBeenCalledOnce()
 
     const [url, request] = fetchMock.mock.calls[0]
-    expect(url).toBe('http://127.0.0.1:8000/claims')
+    expect(url).toBe('http://127.0.0.1:8000/claims/gasless/prepare')
     expect(request).toMatchObject({
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Insurer-API-Key': 'insurer-api-key',
+        'X-Insurer-Signer-Address': gaslessSubmission.signer_address,
+        'Idempotency-Key': 'request-123',
+      },
+    })
+    expect(JSON.parse(request.body)).toEqual(payload)
+  })
+
+  it('authorizes and polls an existing submission', async () => {
+    const authorized = { ...gaslessSubmission, state: 'authorized', typed_data: null }
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(authorized), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const signature = `0x${'ab'.repeat(65)}`
+
+    await expect(
+      authorizeGaslessClaim(
+        gaslessSubmission.submission_id,
+        signature,
+        'insurer-api-key',
+      ),
+    ).resolves.toEqual(authorized)
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Insurer-API-Key': 'insurer-api-key',
       },
     })
-    expect(JSON.parse(request.body)).toEqual(payload)
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(authorized), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    await expect(
+      getGaslessSubmission(gaslessSubmission.submission_id, 'insurer-api-key'),
+    ).resolves.toEqual(authorized)
   })
 
-  it('accepts a receipt while asynchronous scoring is pending', async () => {
-    const pendingReceipt = { ...receipt, assessment: null }
+  it('rejects typed data with fields outside the forwarder protocol', async () => {
+    const malicious = {
+      ...gaslessSubmission,
+      typed_data: {
+        ...gaslessSubmission.typed_data,
+        types: {
+          ...gaslessSubmission.typed_data.types,
+          Permit: [{ name: 'spender', type: 'address' }],
+        },
+      },
+    }
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
-        new Response(JSON.stringify(pendingReceipt), {
+        new Response(JSON.stringify(malicious), {
           status: 201,
           headers: { 'Content-Type': 'application/json' },
         }),
       ),
     )
 
-    await expect(submitClaim(payload, 'insurer-api-key')).resolves.toEqual(
-      pendingReceipt,
-    )
+    await expect(
+      prepareGaslessClaim(
+        payload,
+        'insurer-api-key',
+        gaslessSubmission.signer_address,
+        'request-123',
+      ),
+    ).rejects.toThrow('unexpected gasless response')
   })
 
-  it('surfaces FastAPI error details', async () => {
+  it('surfaces FastAPI preparation error details', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
@@ -196,17 +330,27 @@ describe('submitClaim', () => {
       ),
     )
 
-    await expect(submitClaim(payload, 'insurer-api-key')).rejects.toThrow(
-      'upstream unavailable',
-    )
+    await expect(
+      prepareGaslessClaim(
+        payload,
+        'insurer-api-key',
+        gaslessSubmission.signer_address,
+        'request-123',
+      ),
+    ).rejects.toThrow('upstream unavailable')
   })
 
   it('explains when the backend is offline', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('offline')))
 
-    await expect(submitClaim(payload, 'insurer-api-key')).rejects.toThrow(
-      'Confirm that the backend is running',
-    )
+    await expect(
+      prepareGaslessClaim(
+        payload,
+        'insurer-api-key',
+        gaslessSubmission.signer_address,
+        'request-123',
+      ),
+    ).rejects.toThrow('Confirm that the backend is running')
   })
 })
 

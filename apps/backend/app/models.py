@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -77,7 +78,7 @@ class SubmissionAuthorization(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    version: Literal["insurer-principal-hmac-sha256-v1"]
+    version: Literal["insurer-principal-wallet-hmac-sha256-v2"]
     credential_id: str = Field(
         min_length=1,
         max_length=100,
@@ -85,12 +86,16 @@ class SubmissionAuthorization(BaseModel):
         alias="credentialId",
     )
     signature: str = Field(pattern=r"^[0-9a-f]{64}$")
+    signer_address: str = Field(
+        pattern=r"^0x[0-9a-fA-F]{40}$",
+        alias="signerAddress",
+    )
 
 
 class StoredClaimDocument(ClaimSubmission):
     """The versioned claim document downloaded from IPFS by workers."""
 
-    schema_version: Literal[4] = Field(alias="schemaVersion")
+    schema_version: Literal[5] = Field(alias="schemaVersion")
     submission_authorization: SubmissionAuthorization = Field(
         alias="submissionAuthorization"
     )
@@ -105,6 +110,107 @@ class ClaimSubmissionResponse(BaseModel):
     data_pointer: str
     claim_hash: str
     assessment: ClaimAssessmentResponse | None = None
+
+
+GaslessSubmissionState = Literal[
+    "preparing",
+    "prepared",
+    "authorized",
+    "signed",
+    "broadcast",
+    "confirmed",
+    "failed",
+    "expired",
+]
+
+
+class EIP712Field(BaseModel):
+    """One field in an EIP-712 type definition returned to a wallet."""
+
+    name: str
+    type: str
+
+
+class EIP712DomainData(BaseModel):
+    """Immutable domain of the checked-in ClaimsForwarder deployment."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: Literal["ClaimsRegistryForwarder"]
+    version: Literal["1"]
+    chain_id: int = Field(gt=0, alias="chainId")
+    verifying_contract: str = Field(
+        pattern=r"^0x[0-9a-fA-F]{40}$",
+        alias="verifyingContract",
+    )
+
+
+class EIP712ForwardRequestMessage(BaseModel):
+    """Exact ERC2771Forwarder request values covered by the insurer signature."""
+
+    from_address: str = Field(
+        pattern=r"^0x[0-9a-fA-F]{40}$",
+        alias="from",
+    )
+    to: str = Field(pattern=r"^0x[0-9a-fA-F]{40}$")
+    value: str = Field(pattern=r"^[0-9]+$")
+    gas: str = Field(pattern=r"^[0-9]+$")
+    nonce: str = Field(pattern=r"^[0-9]+$")
+    deadline: str = Field(pattern=r"^[0-9]+$")
+    data: str = Field(pattern=r"^0x[0-9a-fA-F]+$")
+
+
+class EIP712TypedData(BaseModel):
+    """Wallet-ready typed data; clients must sign this object unchanged."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    types: dict[str, list[EIP712Field]]
+    primary_type: Literal["ForwardRequest"] = Field(alias="primaryType")
+    domain: EIP712DomainData
+    message: EIP712ForwardRequestMessage
+
+
+class GaslessAuthorizationRequest(BaseModel):
+    """Insurer wallet signature authorizing a prepared forward request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    signature: str = Field(pattern=r"^0x[0-9a-fA-F]{130}$")
+
+
+class GaslessSubmissionResponse(BaseModel):
+    """Idempotent status shared by prepare, authorize, and polling routes."""
+
+    submission_id: UUID
+    state: GaslessSubmissionState
+    signer_address: str = Field(pattern=r"^0x[0-9a-fA-F]{40}$")
+    chain_id: int = Field(gt=0)
+    contract_address: str = Field(pattern=r"^0x[0-9a-fA-F]{40}$")
+    forwarder_address: str = Field(pattern=r"^0x[0-9a-fA-F]{40}$")
+    claim_hash: str | None = Field(
+        default=None,
+        pattern=r"^0x[0-9a-fA-F]{64}$",
+    )
+    data_pointer: str | None = Field(
+        default=None,
+        pattern=r"^ipfs://[A-Za-z0-9]{1,121}$",
+    )
+    deadline: int | None = None
+    typed_data: EIP712TypedData | None = None
+    receipt: ClaimSubmissionResponse | None = None
+    error_code: str | None = None
+    poll_after_ms: int = Field(default=1_500, ge=250, le=10_000)
+
+
+class GaslessNetworkResponse(BaseModel):
+    """Public wallet preflight data for the active sponsored deployment."""
+
+    chain_id: int = Field(gt=0)
+    contract_address: str = Field(pattern=r"^0x[0-9a-fA-F]{40}$")
+    forwarder_address: str = Field(pattern=r"^0x[0-9a-fA-F]{40}$")
+    domain_name: Literal["ClaimsRegistryForwarder"] = "ClaimsRegistryForwarder"
+    domain_version: Literal["1"] = "1"
 
 
 class AssessmentReasonResponse(BaseModel):

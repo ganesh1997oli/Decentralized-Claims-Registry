@@ -55,6 +55,7 @@ def settings(
             "credentialId": "northstar-test-v1",
             "insurerId": "northstar-mutual",
             "apiKeySha256": hashlib.sha256(API_KEY.encode()).hexdigest(),
+            "signerAddress": "0x1111111111111111111111111111111111111111",
             "dailyQuota": daily_quota,
             "rateLimitExempt": rate_limit_exempt,
         }
@@ -322,6 +323,7 @@ def test_worker_can_verify_gateway_authorized_claim_identity():
     principal = InsurerPrincipal(
         insurer_id="northstar-mutual",
         credential_id="northstar-test-v1",
+        signer_address="0x1111111111111111111111111111111111111111",
         permitted_operations=frozenset({"submit_claim"}),
         daily_quota=2,
     )
@@ -330,9 +332,10 @@ def test_worker_can_verify_gateway_authorized_claim_identity():
     stored = StoredClaimDocument.model_validate_json(payload)
     verified = signer.verify_claim(stored)
 
-    assert stored.schema_version == 4
+    assert stored.schema_version == 5
     assert verified.insurer_id == "northstar-mutual"
     assert verified.credential_id == "northstar-test-v1"
+    assert verified.signer_address == "0x1111111111111111111111111111111111111111"
 
 
 def test_worker_rejects_insurer_label_changed_after_gateway_authorization():
@@ -340,6 +343,7 @@ def test_worker_rejects_insurer_label_changed_after_gateway_authorization():
     principal = InsurerPrincipal(
         insurer_id="northstar-mutual",
         credential_id="northstar-test-v1",
+        signer_address="0x1111111111111111111111111111111111111111",
         permitted_operations=frozenset({"submit_claim"}),
         daily_quota=2,
     )

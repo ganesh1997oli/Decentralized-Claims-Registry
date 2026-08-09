@@ -15,6 +15,9 @@ from packages.integrations.postgres.duplicate_repository import (
     PostgresDuplicateRepository,
 )
 from packages.integrations.postgres.feature_repository import PostgresFeatureRepository
+from packages.integrations.postgres.gasless_submission_repository import (
+    PostgresGaslessSubmissionRepository,
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,7 @@ class PostgresRepositories:
     assessments: PostgresAssessmentRepository
     duplicates: PostgresDuplicateRepository
     features: PostgresFeatureRepository
+    gasless_submissions: PostgresGaslessSubmissionRepository
     database: PostgresDatabase
 
     @classmethod
@@ -45,6 +49,7 @@ class PostgresRepositories:
             assessments=PostgresAssessmentRepository(database),
             duplicates=PostgresDuplicateRepository(database),
             features=PostgresFeatureRepository(database),
+            gasless_submissions=PostgresGaslessSubmissionRepository(database),
             database=database,
         )
 

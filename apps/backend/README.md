@@ -1,8 +1,9 @@
 # FastAPI backend
 
-The backend is the trusted entry point for a synthetic claim. It authenticates
-the insurer, creates one deterministic document, verifies its public IPFS copy,
-and then anchors the document hash and CID on Sepolia.
+The backend is a keyless preparation and status service. It authenticates the
+insurer, binds the credential to its wallet, creates and verifies one canonical
+IPFS document, and returns an exact EIP-712 request. A separate relayer sponsors
+only wallet-authorized requests from the PostgreSQL outbox.
 
 > Claim content is public and unencrypted on IPFS. Use fictional test data only.
 
@@ -13,21 +14,29 @@ sequenceDiagram
     participant B as Browser
     participant A as FastAPI
     participant I as IPFS / Pinata
-    participant E as Sepolia
+    participant P as PostgreSQL outbox
+    participant R as Relayer
+    participant E as Forwarder + registry
 
-    B->>A: POST /claims + X-Insurer-API-Key
-    A->>A: Authenticate, authorize, reserve quota
-    A->>A: Validate and sign canonical schema-v4 JSON
+    B->>A: API key + wallet + Idempotency-Key
+    A->>A: Bind credential to wallet; reserve durable quota
+    A->>A: Validate and authorize canonical schema-v5 JSON
     A->>I: Upload exact bytes
     A->>I: Download and compare exact bytes
-    A->>E: submitClaim(Keccak-256, ipfs://CID)
-    E-->>A: ClaimSubmitted receipt
-    A-->>B: 201 receipt, assessment = null
+    A->>P: Store exact ForwardRequest
+    A-->>B: EIP-712 typed data
+    B->>B: Insurer wallet signs
+    B->>A: POST signature
+    A->>E: Verify signature
+    A->>P: Authorized outbox state
+    R->>P: Persist raw sponsored transaction
+    R->>E: execute(ForwardRequest)
+    A-->>B: Poll durable confirmed receipt
 ```
 
-The API stops at the permanent anchor. The listener and Kafka worker own
-duplicate screening, feature persistence, XGBoost/SHAP, and assessment
-write-back. The browser polls the assessment endpoint for that later result.
+The API stops after durable authorization; the isolated relayer creates the
+permanent anchor. The listener and Kafka worker own duplicate screening,
+feature persistence, XGBoost/SHAP, and assessment write-back.
 
 ## Code map
 
@@ -36,8 +45,9 @@ write-back. The browser polls the assessment endpoint for that later result.
 | `app/main.py` | Routes, dependencies, CORS, liveness and error translation |
 | `app/models.py` | Strict request, IPFS document and response shapes |
 | `app/submission_auth.py` | Digest-based credentials, quotas, request size and HMAC attestation |
-| `app/service.py` | Indexed claim queries plus IPFS-to-Sepolia submission |
-| `app/blockchain.py` | Role checks, nonce allocation, receipts and reconciliation reads |
+| `app/gasless_service.py` | Idempotent IPFS, EIP-712, sponsorship and status workflow |
+| `app/gasless_blockchain.py` | Keyless preparation plus least-privilege relay adapter |
+| `apps/relayer/gasless_relayer.py` | Separate durable sign/broadcast/confirm worker |
 | `app/health.py` | Dependency-safe readiness reporting |
 
 The query service reads the deployment-scoped PostgreSQL projection. Loading the
@@ -52,27 +62,62 @@ dashboard does not construct a Web3 client, wallet, or Pinata upload client.
 | `GET` | `/health/ready` | Checks auth config, migrations, IPFS signing config and Sepolia access |
 | `GET` | `/claims?page=1&page_size=10` | Confirmed indexed state, newest first; maximum page size 50 |
 | `GET` | `/claims/{claim_id}/assessment` | Stored model and duplicate result, or `404` while pending |
-| `POST` | `/claims` | Authenticate, validate, upload, verify and anchor a claim |
+| `GET` | `/claims/gasless/config` | Public server-authoritative wallet network preflight |
+| `POST` | `/claims/gasless/prepare` | Authenticate, upload, and return exact EIP-712 typed data |
+| `POST` | `/claims/gasless/{id}/authorize` | Verify wallet signature and enqueue sponsorship |
+| `GET` | `/claims/gasless/{id}` | Read durable relay/confirmation status for the owning credential |
+| `POST` | `/claims` | Disabled with HTTP 410; no custodial fallback |
 
-`assessment: null` in a successful `201` response is expected. It means the
-claim is safely anchored and asynchronous screening has not completed yet.
+`201` means a wallet-signable request was prepared, not that it was mined.
+Only a `confirmed` polling response contains the anchor receipt;
+`assessment: null` then means asynchronous screening has not completed yet.
 
 ## Run locally
 
-From the repository root:
+The complete startup order is documented in the
+[local development guide](../../docs/local-development.md). For the backend
+alone, run from the repository root after PostgreSQL is healthy and migrations
+are current:
 
 ```bash
-python3 -m venv apps/backend/.venv
-source apps/backend/.venv/bin/activate
-python -m pip install --require-hashes -r requirements-dev.lock
-
-cp .env.example .env.local
+test -f .env.local || cp .env.example .env.local
 set -a
 source .env.local
 set +a
 
-uvicorn apps.backend.app.main:app --reload --host 127.0.0.1 --port 8000
+# The API must remain keyless even though the shared local file also contains
+# worker/relayer settings for developer convenience.
+unset SEPOLIA_DEPLOYER_PRIVATE_KEY
+unset SEPOLIA_ASSESSOR_PRIVATE_KEY
+unset SEPOLIA_RELAYER_PRIVATE_KEY
+unset SEPOLIA_RELAYER_PRIVATE_KEY_FILE
+
+apps/backend/.venv/bin/python -m uvicorn \
+  apps.backend.app.main:app \
+  --reload \
+  --host 127.0.0.1 \
+  --port 8000
 ```
+
+`--reload` is a development convenience: Uvicorn starts a watcher and replaces
+the application process when Python files change. It does not reload values in
+`.env.local` automatically; stop and restart the command after changing a
+credential digest, deployment ID, or other environment setting.
+
+Verify the process and its dependencies separately:
+
+```bash
+curl --fail --silent http://127.0.0.1:8000/health/live \
+  | apps/backend/.venv/bin/python -m json.tool
+curl --fail --silent http://127.0.0.1:8000/health/ready \
+  | apps/backend/.venv/bin/python -m json.tool
+curl --fail --silent http://127.0.0.1:8000/claims/gasless/config \
+  | apps/backend/.venv/bin/python -m json.tool
+```
+
+Liveness only proves that FastAPI can answer HTTP. Readiness also checks insurer
+configuration, current migrations, the gasless contracts and submitter roles,
+Pinata configuration, claim authorization, and the operations credential.
 
 Useful URLs:
 
@@ -86,11 +131,12 @@ Useful URLs:
 
 | Setting | Used by | Meaning |
 | --- | --- | --- |
-| `INSURER_CREDENTIALS_JSON` | API | Credential IDs, insurer IDs, SHA-256 digests, quotas and optional test exemptions; never raw keys |
+| `INSURER_CREDENTIALS_JSON` | API | Credential IDs, insurer IDs, unique wallet signer addresses, SHA-256 digests, quotas and optional test exemptions |
 | `CLAIM_AUTHORIZATION_KEY` | API + worker | Signs the canonical claim so the worker can trust its insurer identity |
-| `SEPOLIA_SUBMITTER_PRIVATE_KEY` | API | Sepolia-only wallet with `SUBMITTER_ROLE` |
+| `GASLESS_REQUEST_FINGERPRINT_KEY` | API | HMACs idempotency content and client fingerprints stored in PostgreSQL |
 | `PINATA_JWT` | API | Server-side public upload credential |
-| `DATABASE_URL` | API reads | Confirmed claim index, assessments, and duplicate results |
+| `DATABASE_URL` | API + relayer | Durable idempotency, relay outbox, index, assessments and duplicate results |
+| `SEPOLIA_RELAYER_PRIVATE_KEY_FILE` | Relayer only | Dedicated gas-paying account; forbidden from all registry roles |
 | `FRONTEND_ORIGINS` | API | Allowed browser origins |
 | `MAX_CLAIM_BODY_BYTES` | API | Request limit; default 16 KiB |
 | `INSURER_RATE_LIMIT_PER_MINUTE` | API | Per-insurer submission limit; default 5 |
@@ -100,8 +146,10 @@ Useful URLs:
 | `INDEXER_STALE_AFTER_SECONDS` | API | Marks a lagging checkpoint stalled after this age; default 120 seconds |
 | `CONFIRMATION_BLOCKS` | API + listener | Keeps the displayed safe head consistent with listener confirmation depth |
 
-The deployer key, assessor key, duplicate-fingerprint key, and raw insurer keys
-do not belong in the API container. Never put any secret in a `VITE_` variable.
+The deployer, relayer, assessor, and insurer wallet keys do not belong in the API
+container. Never put any secret in a `VITE_` variable. See the
+[production gasless runbook](../../docs/production-gasless-transactions.md) for
+deployment, limits, replacements, monitoring, compromise, and rollback.
 
 ### Indexer operations authentication
 
@@ -112,7 +160,8 @@ RPC request. Neither exposes a repair, reset, replay, or mutation action.
 Generate a hosted credential with:
 
 ```bash
-python apps/backend/scripts/generate_operations_credential.py
+apps/backend/.venv/bin/python \
+  apps/backend/scripts/generate_operations_credential.py
 ```
 
 Give the raw value to trusted operators and store only the printed
@@ -123,33 +172,39 @@ behind an enterprise identity-aware proxy when one is available.
 
 ### Local insurer credentials
 
-The example configuration stores only the SHA-256 digests of these intentionally
-public local keys:
+The example configuration contains one intentionally public local credential:
 
 | Fictional insurer | Local key |
 | --- | --- |
 | `northstar-mutual` | `local-northstar-mutual-api-key-change-me` |
-| `harbour-shield` | `local-harbour-shield-api-key-change-me` |
-| `cedar-insurance` | `local-cedar-insurance-api-key-change-me` |
-| `performance-test-insurer` (API only) | `local-performance-test-insurer-api-key-change-me` |
+
+Its configured signer is the initial submitter in `sepolia-gasless-v1`. To use
+another fictional insurer, generate a credential bound to that insurer wallet,
+grant the wallet the on-chain submitter role, and grant the assessor scope for
+that signer. FastAPI readiness checks every configured signer; leaving a
+placeholder address in the JSON intentionally prevents the API from becoming
+ready.
 
 For a hosted research run, generate a random key and its digest-only record:
 
 ```bash
-python apps/backend/scripts/generate_insurer_credential.py \
-  northstar-mutual northstar-cloud-v1 --daily-quota 25
+apps/backend/.venv/bin/python \
+  apps/backend/scripts/generate_insurer_credential.py \
+  northstar-mutual northstar-cloud-v1 0xYOUR_INSURER_WALLET \
+  --daily-quota 25
 ```
 
 The raw key is shown once for the fictional insurer operator. Put only the
-printed JSON record in `INSURER_CREDENTIALS_JSON`. The built-in quotas are
-process-local, reset on restart, and assume one FastAPI process.
+printed JSON record in `INSURER_CREDENTIALS_JSON`. Valid sponsorship quotas are
+rechecked durably under PostgreSQL locks; the earlier invalid-credential abuse
+counter remains process-local and should also be enforced at a production edge.
 
 ### Authorised performance-test bypass
 
 The normal claim form has no control that disables submission limits. For an
-isolated local performance test, `.env.example` includes a dedicated API-only
-credential for `performance-test-insurer`. Its digest-only record contains the
-explicit exemption:
+isolated performance test, create a dedicated credential for a test wallet that
+has the required on-chain role. Its digest-only record must contain the explicit
+exemption:
 
 ```json
 {
@@ -184,42 +239,35 @@ See the dedicated
 for the counter algorithm, activation matrix, operator procedure, audit fields,
 HTTP outcomes, verification commands, and cleanup steps.
 
-## Example request
+## Trying the API
+
+Start with the public preflight endpoint:
 
 ```bash
-curl http://127.0.0.1:8000/claims \
-  -H 'Content-Type: application/json' \
-  -H 'X-Insurer-API-Key: local-northstar-mutual-api-key-change-me' \
-  -d '{
-    "insurerId": "northstar-mutual",
-    "claimReference": "synthetic-api-1",
-    "policyReference": "synthetic-policy-42",
-    "claimType": "collision",
-    "incidentDate": "2026-07-13",
-    "claimAmountUsd": 2500,
-    "policyPremiumUsd": 480,
-    "vehicleAge": 6,
-    "vehicleType": "sedan",
-    "country": "Nigeria",
-    "regionType": "urban",
-    "thirdPartyInjuryFlag": false,
-    "totalLossFlag": false,
-    "description": "Synthetic bumper damage for API testing",
-    "evidence": []
-  }'
+curl --fail --silent http://127.0.0.1:8000/claims/gasless/config \
+  | apps/backend/.venv/bin/python -m json.tool
 ```
+
+The normal end-to-end client is the React form because preparation requires a
+credential-bound wallet address and authorization requires an EIP-712 signature.
+Swagger can inspect the request/response schemas, but it cannot safely replace
+the wallet-signing step. Open <http://127.0.0.1:5173>, connect the configured
+test wallet, and follow the browser progress states.
+
+`POST /claims` is intentionally disabled and returns HTTP 410. There is no
+server-custodial fallback that silently uses a backend submitter key.
 
 ## Failure behaviour
 
 ```mermaid
 flowchart TD
-    Request["POST /claims"] --> Auth{"Authenticated and within quota?"}
+    Request["POST /claims/gasless/prepare"] --> Auth{"Credential bound to wallet and within quota?"}
     Auth -->|No| FourXX["401 / 403 / 429"]
     Auth -->|Yes| Config{"Dependencies configured?"}
     Config -->|No| Unavailable["503 with safe JSON detail"]
-    Config -->|Yes| Submit["IPFS round trip + Sepolia write"]
-    Submit -->|Fails| Gateway["502; no successful anchor receipt"]
-    Submit -->|Succeeds| Created["201; asynchronous assessment pending"]
+    Config -->|Yes| Prepare["IPFS round trip + durable EIP-712 request"]
+    Prepare -->|Fails| Gateway["409 / 502; no authorization queued"]
+    Prepare -->|Succeeds| Created["201; wallet signature required"]
 ```
 
 Readiness logs the dependency and exception type while public responses omit
@@ -228,9 +276,9 @@ connection strings, credentials, and upstream response bodies.
 ## Test
 
 ```bash
-source apps/backend/.venv/bin/activate
-python -m pytest apps/backend/tests -q
-ruff check apps/backend packages/duplicates packages/integrations
+apps/backend/.venv/bin/python -m pytest apps/backend/tests -q
+apps/backend/.venv/bin/python -m ruff check \
+  apps/backend packages/duplicates packages/integrations
 ```
 
 The isolated tests use in-memory adapters; they do not spend test ETH, upload to
@@ -239,11 +287,12 @@ Pinata, or require PostgreSQL.
 ## Known limits
 
 - Public IPFS cannot protect real claim data.
-- Direct contract pagination fits this prototype, not a large registry.
-- API keys and process-local quotas are not enterprise identity or distributed
-  abuse prevention.
-- Process-level testnet wallets should be replaced by managed signing for a
-  production design.
+- Claims pagination is served by the confirmed PostgreSQL event projection and
+  can lag Sepolia by the configured confirmation depth.
+- API keys and process-local invalid-attempt limits are not enterprise identity
+  or distributed edge abuse prevention. Valid sponsorship quotas are durable.
+- The relayer key should use a secret-manager file mount or managed signer and a
+  capped balance. It never belongs in the API process.
 
 See the [root runbook](../../README.md) and the
 [Kafka worker guide](../../packages/integrations/kafka/README.md).

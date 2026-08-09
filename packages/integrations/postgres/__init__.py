@@ -26,6 +26,14 @@ from .feature_processor import (
     ClaimFeatureSnapshot,
 )
 from .feature_repository import PostgresFeatureRepository
+from .gasless_submission_repository import (
+    GaslessSubmissionConflictError,
+    GaslessSubmissionError,
+    GaslessSubmissionLimitError,
+    GaslessSubmissionNotFoundError,
+    PostgresGaslessSubmissionRepository,
+    SignedRelayTransaction,
+)
 from .migrations import MigrationStatus, PostgresMigrator
 from .records import (
     AssessmentRecord,
@@ -34,6 +42,8 @@ from .records import (
     ClaimIndexOperationsSnapshot,
     ClaimIndexReconciliationRecord,
     ClaimIndexStatus,
+    GaslessSubmissionRecord,
+    GaslessSubmissionState,
     IndexedClaim,
 )
 from .repositories import PostgresRepositories
@@ -54,6 +64,12 @@ __all__ = [
     "ClaimIndexStatus",
     "DuplicateCheck",
     "DuplicateMatch",
+    "GaslessSubmissionConflictError",
+    "GaslessSubmissionError",
+    "GaslessSubmissionLimitError",
+    "GaslessSubmissionNotFoundError",
+    "GaslessSubmissionRecord",
+    "GaslessSubmissionState",
     "IndexedClaim",
     "MigrationStatus",
     "PostgresAssessmentRepository",
@@ -63,8 +79,10 @@ __all__ = [
     "PostgresDatabase",
     "PostgresDuplicateRepository",
     "PostgresFeatureRepository",
+    "PostgresGaslessSubmissionRepository",
     "PostgresMigrator",
     "PostgresRepositories",
     "PostgresStorageError",
+    "SignedRelayTransaction",
     "claim_index_event_id",
 ]

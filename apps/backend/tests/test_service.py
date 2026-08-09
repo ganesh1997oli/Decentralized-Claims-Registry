@@ -17,6 +17,7 @@ AUTHORIZATION = ClaimAuthorizationSigner(
 PRINCIPAL = InsurerPrincipal(
     insurer_id="northstar-mutual",
     credential_id="northstar-test-v1",
+    signer_address="0x1111111111111111111111111111111111111111",
     permitted_operations=frozenset({"submit_claim"}),
     daily_quota=25,
 )
@@ -111,8 +112,9 @@ def test_canonical_serialization_is_stable():
     second = canonical_claim_bytes(claim_model(), PRINCIPAL, AUTHORIZATION)
 
     assert first == second
-    assert b'"schemaVersion":4' in first
+    assert b'"schemaVersion":5' in first
     assert b'"credentialId":"northstar-test-v1"' in first
+    assert b'"signerAddress":"0x1111111111111111111111111111111111111111"' in first
     assert b'"signature":' in first
 
 

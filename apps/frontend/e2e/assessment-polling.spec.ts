@@ -1,4 +1,12 @@
 import { expect, test } from '@playwright/test'
+import {
+  GASLESS_SUBMISSION_ID,
+  authorizedGaslessSubmission,
+  confirmedGaslessSubmission,
+  gaslessNetwork,
+  installMockWallet,
+  preparedGaslessSubmission,
+} from './gasless-mock.ts'
 
 /**
  * Browser regression for the asynchronous scoring lifecycle.
@@ -49,6 +57,7 @@ test('shows a delayed assessment without reloading the browser', async ({
 }) => {
   let submitted = false
   let assessmentRequests = 0
+  await installMockWallet(page)
 
   // Preserve the production polling sequence while compressing its delays so
   // the regression remains deterministic and completes in a few seconds. The
@@ -78,14 +87,34 @@ test('shows a delayed assessment without reloading the browser', async ({
     const request = route.request()
     const path = new URL(request.url()).pathname
 
-    // Submission returns the public blockchain receipt immediately. Assessment
-    // remains null because scoring is performed asynchronously after anchoring.
-    if (request.method() === 'POST' && path === '/api/claims') {
+    if (request.method() === 'GET' && path === '/api/claims/gasless/config') {
+      await route.fulfill({ json: gaslessNetwork() })
+      return
+    }
+
+    if (request.method() === 'POST' && path === '/api/claims/gasless/prepare') {
       submitted = true
       await route.fulfill({
         status: 201,
-        contentType: 'application/json',
-        body: JSON.stringify({
+        json: preparedGaslessSubmission(),
+      })
+      return
+    }
+
+    if (
+      request.method() === 'POST' &&
+      path === `/api/claims/gasless/${GASLESS_SUBMISSION_ID}/authorize`
+    ) {
+      await route.fulfill({ status: 202, json: authorizedGaslessSubmission() })
+      return
+    }
+
+    if (
+      request.method() === 'GET' &&
+      path === `/api/claims/gasless/${GASLESS_SUBMISSION_ID}`
+    ) {
+      await route.fulfill({
+        json: confirmedGaslessSubmission({
           claim_id: pendingClaim.claim_id,
           transaction_hash: '0xsubmission',
           block_number: 200,
@@ -141,7 +170,7 @@ test('shows a delayed assessment without reloading the browser', async ({
   await page
     .getByRole('textbox', { name: /^Insurer API credential/ })
     .fill('local-northstar-mutual-api-key-change-me')
-  await page.getByRole('button', { name: /Submit synthetic claim/ }).click()
+  await page.getByRole('button', { name: /Sign & submit gaslessly/ }).click()
 
   // This assertion is intentionally made without page.reload(). It protects the
   // exact user-facing regression where a delayed score appeared only on refresh.

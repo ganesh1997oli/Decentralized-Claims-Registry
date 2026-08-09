@@ -39,7 +39,7 @@ PostgreSQL, Kafka, and metrics bind to Docker networking or VM loopback.
 | One Kafka broker, replication factor one | A production event cluster |
 | One PostgreSQL container and persistent volume | Managed backups or regional durability |
 | HTTP for a short-lived fictional-data demo | Production TLS and a managed domain |
-| Separate submitter and assessor test wallets | Managed transaction signing |
+| Browser insurer wallets plus separate relayer and assessor | Managed/HSM transaction signing |
 | Structured logs and a focused metrics dashboard | Full production incident response |
 
 Review current Google Cloud pricing and your billing account before applying
@@ -159,7 +159,8 @@ Create one insurer credential at a time:
 
 ```bash
 python apps/backend/scripts/generate_insurer_credential.py \
-  northstar-mutual northstar-cloud-v1 --daily-quota 25
+  northstar-mutual northstar-cloud-v1 0xYOUR_INSURER_WALLET \
+  --daily-quota 25
 ```
 
 Give the raw key only to that fictional insurer operator and place only the
@@ -180,20 +181,27 @@ identity-aware proxy in addition to the application key.
 
 ```mermaid
 flowchart TD
-    API["FastAPI"] --> A["submitter key + Pinata JWT + insurer digests + claim-auth key"]
+    API["FastAPI"] --> A["no wallet key; Pinata + insurer digests + HMAC keys"]
+    Relayer["Gasless relayer"] --> R["dedicated gas key + outbox only"]
     Listener["Listener"] --> B["public chain/IPFS reads + Kafka config only"]
     Worker["Scoring worker"] --> C["assessor key + claim-auth key + duplicate HMAC + model + database"]
     Trainer["Model trainer"] --> D["no wallet, Pinata, database or HMAC secrets"]
 ```
 
 The deployment/admin key must not be copied to the VM. Use URL-safe hexadecimal
-for `POSTGRES_PASSWORD` because Compose builds it into a connection URL. Keep
-`CLAIMS_DEPLOYMENT_ID="sepolia-security-audit-v1"` for the checked-in hardened
-artifact.
+for `POSTGRES_PASSWORD` because Compose builds it into a connection URL. Select
+a new deployment containing both ClaimsRegistry and ClaimsForwarder; the
+checked-in `sepolia-security-audit-v1` artifact is read-only legacy history.
 
-The API uses one process, so its minute limits and daily quotas are process-local
-and reset on restart. Nginx and FastAPI both enforce a 16 KiB request limit;
-change both settings together.
+Invalid-attempt limits are process-local in this single-VM topology. Valid
+sponsorship quotas and idempotency are transactional in PostgreSQL. Nginx and
+FastAPI both enforce a 16 KiB request limit; change both settings together.
+
+This Compose file demonstrates the new process separation but remains a
+research topology. Follow the
+[production gasless runbook](../../docs/production-gasless-transactions.md) for
+contract migration, secret mounts, fee replacement, HA, monitoring, and
+incident response.
 
 Keep `ALLOW_RATE_LIMIT_BYPASS="false"` for normal deployments. A controlled
 performance-test deployment may enable it only when

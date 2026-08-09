@@ -1,4 +1,12 @@
 import { expect, test } from '@playwright/test'
+import {
+  GASLESS_SUBMISSION_ID,
+  authorizedGaslessSubmission,
+  confirmedGaslessSubmission,
+  gaslessNetwork,
+  installMockWallet,
+  preparedGaslessSubmission,
+} from './gasless-mock.ts'
 
 /**
  * Browser contract for claim submission and cross-insurer duplicate screening.
@@ -63,6 +71,9 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
   const consoleErrors: string[] = []
   let submittedPayload: Record<string, unknown> | undefined
   let submittedApiKey: string | undefined
+  let submittedSigner: string | undefined
+  let submittedIdempotencyKey: string | undefined
+  await installMockWallet(page)
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text())
   })
@@ -71,15 +82,39 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
     const request = route.request()
     const path = new URL(request.url()).pathname
 
-    // Capture both request channels: ordinary claim data belongs in JSON, while
-    // the insurer credential must be confined to the authentication header.
-    if (request.method() === 'POST' && path === '/api/claims') {
+    if (request.method() === 'GET' && path === '/api/claims/gasless/config') {
+      await route.fulfill({ json: gaslessNetwork() })
+      return
+    }
+
+    // Capture claim data in JSON while the insurer credential, wallet address,
+    // and idempotency key stay in their dedicated headers.
+    if (request.method() === 'POST' && path === '/api/claims/gasless/prepare') {
       submittedPayload = request.postDataJSON() as Record<string, unknown>
       submittedApiKey = request.headers()['x-insurer-api-key']
+      submittedSigner = request.headers()['x-insurer-signer-address']
+      submittedIdempotencyKey = request.headers()['idempotency-key']
       await route.fulfill({
         status: 201,
-        contentType: 'application/json',
-        body: JSON.stringify({
+        json: preparedGaslessSubmission(),
+      })
+      return
+    }
+
+    if (
+      request.method() === 'POST' &&
+      path === `/api/claims/gasless/${GASLESS_SUBMISSION_ID}/authorize`
+    ) {
+      await route.fulfill({ status: 202, json: authorizedGaslessSubmission() })
+      return
+    }
+
+    if (
+      request.method() === 'GET' &&
+      path === `/api/claims/gasless/${GASLESS_SUBMISSION_ID}`
+    ) {
+      await route.fulfill({
+        json: confirmedGaslessSubmission({
           claim_id: 7,
           transaction_hash: '0xsubmission',
           block_number: 200,
@@ -122,7 +157,7 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
     .fill('local-harbour-shield-api-key-change-me')
   await page.getByLabel('Claim reference').fill('harbour-production-test')
   await page.getByLabel('Policy reference').fill('harbour-policy-test')
-  await page.getByRole('button', { name: /Submit synthetic claim/ }).click()
+  await page.getByRole('button', { name: /Sign & submit gaslessly/ }).click()
 
   await expect(
     page.getByRole('heading', { name: 'Possible duplicate incident found' }),
@@ -142,5 +177,9 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
   })
   expect(submittedPayload).not.toHaveProperty('insurerApiKey')
   expect(submittedApiKey).toBe('local-harbour-shield-api-key-change-me')
+  expect(submittedSigner).toBe(
+    '0x2222222222222222222222222222222222222222',
+  )
+  expect(submittedIdempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
   expect(consoleErrors).toEqual([])
 })

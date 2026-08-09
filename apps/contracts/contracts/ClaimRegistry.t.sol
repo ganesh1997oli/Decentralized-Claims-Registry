@@ -2,11 +2,13 @@
 pragma solidity ^0.8.28;
 
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {ClaimsForwarder} from "./ClaimsForwarder.sol";
 import {ClaimsRegistry} from "./ClaimsRegistry.sol";
 import {Test} from "forge-std/Test.sol";
 
 contract ClaimsRegistryTest is Test {
   ClaimsRegistry registry;
+  ClaimsForwarder forwarder;
 
   address admin = makeAddr("admin");
   address insurer = makeAddr("insurer");
@@ -33,7 +35,39 @@ contract ClaimsRegistryTest is Test {
   );
 
   function setUp() public {
-    registry = new ClaimsRegistry(admin, insurer, assessor, 0);
+    forwarder = new ClaimsForwarder();
+    registry = new ClaimsRegistry(admin, insurer, assessor, address(forwarder), 0);
+  }
+
+  function test_TrustedForwarderRestoresInsurerIdentity() public {
+    bytes memory callData = abi.encodeCall(
+      registry.submitClaim,
+      (CLAIM_HASH, DATA_POINTER)
+    );
+
+    vm.prank(address(forwarder));
+    (bool success, ) = address(registry).call(
+      abi.encodePacked(callData, insurer)
+    );
+
+    assertTrue(success);
+    (address storedClaimant, , , , , , ) = registry.getClaim(0);
+    assertEq(storedClaimant, insurer);
+  }
+
+  function test_UntrustedCallerCannotForgeInsurerIdentity() public {
+    bytes memory callData = abi.encodeCall(
+      registry.submitClaim,
+      (CLAIM_HASH, DATA_POINTER)
+    );
+
+    vm.prank(otherInsurer);
+    (bool success, ) = address(registry).call(
+      abi.encodePacked(callData, insurer)
+    );
+
+    assertFalse(success);
+    assertEq(registry.claimCount(), 0);
   }
 
   function test_SubmitClaimStoresAndEmits() public {
@@ -146,6 +180,33 @@ contract ClaimsRegistryTest is Test {
       )
     );
     registry.assessClaim(0, ClaimsRegistry.Status.Flagged, 5000);
+  }
+
+  function test_AssessorCanBeScopedToMultipleInsurers() public {
+    vm.startPrank(admin);
+    registry.setSubmitter(otherInsurer, true);
+    registry.setAssessor(assessor, otherInsurer, true);
+    vm.stopPrank();
+
+    assertTrue(registry.isAssessorFor(assessor, insurer));
+    assertTrue(registry.isAssessorFor(assessor, otherInsurer));
+
+    vm.prank(otherInsurer);
+    registry.submitClaim(CLAIM_HASH, DATA_POINTER);
+    vm.prank(assessor);
+    registry.assessClaim(0, ClaimsRegistry.Status.UnderReview, 1200);
+  }
+
+  function test_RevokeOneScopeKeepsOtherAssessorScopeActive() public {
+    vm.startPrank(admin);
+    registry.setSubmitter(otherInsurer, true);
+    registry.setAssessor(assessor, otherInsurer, true);
+    registry.setAssessor(assessor, insurer, false);
+    vm.stopPrank();
+
+    assertTrue(registry.isAssessor(assessor));
+    assertFalse(registry.isAssessorFor(assessor, insurer));
+    assertTrue(registry.isAssessorFor(assessor, otherInsurer));
   }
 
   function test_LifecycleIsMonotonicAndScoreIsImmutable() public {

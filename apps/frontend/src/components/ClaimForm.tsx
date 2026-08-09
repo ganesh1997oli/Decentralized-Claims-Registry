@@ -1,12 +1,19 @@
 // Claim intake keeps the insurer credential in component memory and emits only
 // a server-validated public receipt to the rest of the application.
 import {
+  useEffect,
+  useRef,
   useState,
   type ChangeEvent,
   type FormEvent,
 } from 'react'
-import { submitClaim, type ClaimPayload, type ClaimReceipt } from '../api.ts'
+import type { ClaimPayload, ClaimReceipt } from '../api.ts'
 import { RESEARCH_INSURERS } from '../claim-display.ts'
+import {
+  GaslessSubmissionTerminalError,
+  submitGaslessClaim,
+  type SubmissionProgress,
+} from '../gasless-submission.ts'
 
 type FormValues = {
   insurerId: string
@@ -26,6 +33,8 @@ type FormValues = {
 }
 
 function initialForm(): FormValues {
+  // Generate a fresh synthetic reference each time the form is intentionally
+  // reset; it is human-readable test data, not the submission's idempotency key.
   return {
     insurerId: RESEARCH_INSURERS[0].id,
     claimReference: `synthetic-web-${Date.now().toString().slice(-6)}`,
@@ -60,20 +69,37 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
   // localStorage, query parameters, analytics, or application logs.
   const [insurerApiKey, setInsurerApiKey] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [progress, setProgress] = useState<SubmissionProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const idempotencyKey = useRef<string | null>(null)
+  const submissionAbort = useRef<AbortController | null>(null)
+
+  useEffect(
+    () => () => {
+      // Cancel status polling when the form unmounts. The server-side outbox is
+      // durable and continues independently; this only stops obsolete UI work.
+      submissionAbort.current?.abort()
+    },
+    [],
+  )
 
   function update(
     event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>,
   ) {
+    // Editing claim content invalidates the retry key because the backend binds
+    // each Idempotency-Key to a fingerprint of one exact request payload.
     const { name, value } = event.target
     const nextValue =
       event.target instanceof HTMLInputElement && event.target.type === 'checkbox'
         ? event.target.checked
         : value
+    idempotencyKey.current = null
     setForm((current) => ({ ...current, [name]: nextValue }))
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    // Perform fast browser validation before any sponsored/IPFS side effect. The
+    // API repeats authoritative schema, credential, quota, and role validation.
     event.preventDefault()
     setError(null)
 
@@ -117,24 +143,47 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
     }
 
     setIsSubmitting(true)
+    setProgress('Connecting wallet')
+    const controller = new AbortController()
+    submissionAbort.current = controller
     try {
-      const receipt = await submitClaim(payload, insurerApiKey.trim())
+      // Reuse the key after recoverable transport errors so FastAPI returns the
+      // same durable workflow. Rotate it only after success, a terminal state,
+      // form edits, or an explicit reset.
+      idempotencyKey.current ??= crypto.randomUUID()
+      const receipt = await submitGaslessClaim({
+        claim: payload,
+        insurerApiKey: insurerApiKey.trim(),
+        idempotencyKey: idempotencyKey.current,
+        signal: controller.signal,
+        onProgress: setProgress,
+      })
+      idempotencyKey.current = null
       onSubmitted(receipt)
     } catch (submissionError) {
+      if (submissionError instanceof GaslessSubmissionTerminalError) {
+        idempotencyKey.current = null
+      }
       setError(
         submissionError instanceof Error
           ? submissionError.message
           : 'The claim could not be submitted.',
       )
     } finally {
+      submissionAbort.current = null
       setIsSubmitting(false)
+      setProgress(null)
     }
   }
 
   function resetForm() {
+    // Reset secrets and retry identity together; neither should leak into the
+    // next synthetic claim prepared from this browser tab.
     setForm(initialForm())
     setInsurerApiKey('')
+    setProgress(null)
     setError(null)
+    idempotencyKey.current = null
   }
 
   return (
@@ -151,13 +200,15 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
               <button
                 type="button"
                 onClick={resetForm}
-                className="self-start text-sm font-semibold text-slate underline decoration-slate/30 underline-offset-4 transition hover:text-teal"
+                disabled={isSubmitting}
+                className="self-start text-sm font-semibold text-slate underline decoration-slate/30 underline-offset-4 transition hover:text-teal disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Reset sample
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="mt-7 space-y-6">
+            <form onSubmit={handleSubmit} className="mt-7">
+              <fieldset disabled={isSubmitting} className="space-y-6">
               <div className="grid gap-5 sm:grid-cols-2">
                 <div className="field-group sm:col-span-2">
                   <label className="field-label" htmlFor="insurer-id">
@@ -193,7 +244,10 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
                     className="field-control font-mono"
                     type="password"
                     value={insurerApiKey}
-                    onChange={(event) => setInsurerApiKey(event.target.value)}
+                    onChange={(event) => {
+                      idempotencyKey.current = null
+                      setInsurerApiKey(event.target.value)
+                    }}
                     required
                     minLength={24}
                     maxLength={256}
@@ -439,8 +493,8 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
 
               <div className="flex flex-col gap-4 border-t border-ink/8 pt-6 sm:flex-row sm:items-center sm:justify-between">
                 <p className="max-w-md text-xs leading-5 text-slate">
-                  The browser authenticates the synthetic insurer to FastAPI.
-                  Wallet, claim-attestation and Pinata credentials remain server-side.
+                  Your insurer wallet signs the exact claim request; it never pays gas.
+                  A restricted relayer sponsors only that verified contract call.
                 </p>
                 <button
                   type="submit"
@@ -450,13 +504,14 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
                   {isSubmitting ? (
                     <>
                       <span className="size-4 animate-spin rounded-full border-2 border-ink/25 border-t-ink" />
-                      IPFS, scoring & Sepolia
+                      {progress ?? 'Submitting sponsored transaction'}
                     </>
                   ) : (
-                    <>Submit synthetic claim <span aria-hidden="true">→</span></>
+                    <>Sign & submit gaslessly <span aria-hidden="true">→</span></>
                   )}
                 </button>
               </div>
+              </fieldset>
             </form>
           </section>
   )

@@ -81,15 +81,9 @@ assessor_account = w3.eth.account.from_key(assessor_private_key)
 assessor_authorized = contract.functions.isAssessor(
     assessor_account.address
 ).call()
-assessor_insurer = contract.functions.assessorInsurer(
-    assessor_account.address
-).call()
-if not assessor_authorized or not contract.functions.isSubmitter(
-    assessor_insurer
-).call():
+if not assessor_authorized:
     raise SystemExit(
-        "The assessor wallet lacks an active assessor-to-submitter scope on the "
-        "selected deployment"
+        "The assessor wallet has no active assessor role on the selected deployment"
     )
 
 submitter_account = None
@@ -183,9 +177,17 @@ if args.assess_existing is None:
         credential_id=os.environ.get(
             "DEMO_INSURER_CREDENTIAL_ID", "northstar-local-v1"
         ),
+        signer_address=os.environ.get(
+            "DEMO_INSURER_SIGNER_ADDRESS",
+            submitter_account.address,
+        ),
         permitted_operations=frozenset({SUBMIT_CLAIM_OPERATION}),
         daily_quota=1,
     )
+    if demo_principal.signer_address.lower() != submitter_account.address.lower():
+        raise SystemExit(
+            "DEMO_INSURER_SIGNER_ADDRESS must match the direct submitter wallet"
+        )
     payload = ClaimAuthorizationSigner.from_env().authorized_claim_bytes(
         claim,
         demo_principal,
@@ -238,6 +240,19 @@ else:
     print(
         f"Resuming claim #{claim_id} at {existing_claim[2]} "
         "without uploading or submitting another claim"
+    )
+
+claim_owner = (
+    submitter_account.address
+    if submitter_account is not None
+    else existing_claim[0]
+)
+if not contract.functions.isAssessorFor(
+    assessor_account.address,
+    claim_owner,
+).call():
+    raise SystemExit(
+        "The assessor wallet lacks a scope for this claim's insurer wallet"
     )
 
 # Step 2: write a fixed demonstration assessment to the contract.

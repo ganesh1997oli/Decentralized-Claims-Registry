@@ -3,6 +3,10 @@ branch = True
 omit =
     */tests/*
     */test_*.py
+    # This SQL state machine is exercised against real PostgreSQL by the
+    # mandatory integration job. Counting it as uncovered in the isolated-unit
+    # job double-penalizes code that intentionally has no fake database seam.
+    packages/integrations/postgres/gasless_submission_repository.py
 
 [report]
 fail_under = 75

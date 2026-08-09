@@ -1,14 +1,17 @@
 # React frontend
 
 The browser lets a researcher submit a fictional motor claim and follow its
-public anchor, screening result, and current Sepolia state. It talks only to
-FastAPI; wallet, Pinata, Kafka, model, and database access stay server-side.
+public anchor, screening result, and current Sepolia state. The insurer wallet
+signs EIP-712 typed data but never pays gas; Pinata, Kafka, model, database, and
+the restricted relayer stay server-side.
 
 ## UI flow
 
 ```mermaid
 flowchart LR
-    Form["Synthetic claim form"] -->|"API key kept in memory"| API["FastAPI"]
+    Form["Synthetic claim form"] -->|"API key + wallet address"| API["FastAPI"]
+    API --> Typed["Exact EIP-712 request"]
+    Typed -->|"Insurer wallet signature"| API
     API --> Receipt["Anchor receipt"]
     Receipt --> Pending["Assessment pending"]
     Pending -->|"poll every 2 seconds"| Result["Duplicate check + score + SHAP"]
@@ -29,7 +32,9 @@ both mean a person would need to review the claim.
 | `src/components/ReceiptCard.tsx` | Anchor, duplicate, score and SHAP presentation |
 | `src/components/ClaimsDashboard.tsx` | Newest-first indexed list, checkpoint and selection |
 | `src/components/IndexerOperationsDashboard.tsx` | Authenticated lag, counts, reconciliation and recent-event telemetry |
-| `src/api.ts` | Fetch calls plus runtime response-shape validation |
+| `src/api.ts` | Gasless fetch calls plus runtime response-shape validation |
+| `src/wallet.ts` | Narrow EIP-1193 connect, chain switch, and EIP-712 boundary |
+| `src/gasless-submission.ts` | Idempotent prepare, sign, authorize, recovery, and polling workflow |
 | `src/display-receipt.ts` | Safe merge of a browser receipt and current chain state |
 | `src/receipt-storage.ts` | Latest public submission receipt only |
 
@@ -40,7 +45,7 @@ flowchart TD
     Memory["React memory"] --> A["Form fields + insurer API key"]
     Storage["localStorage"] --> B["Latest public receipt only"]
     Bundle["Vite bundle"] --> C["VITE_API_BASE_URL + VITE_IPFS_GATEWAY"]
-    Never["Never in browser"] --> D["Wallet keys, Pinata JWT, HMAC keys, database credentials"]
+    Never["Never in browser"] --> D["Relayer key, Pinata JWT, HMAC keys, database credentials"]
 ```
 
 The insurer credential is cleared when the form resets and is not written to
@@ -49,12 +54,14 @@ a lost convenience, not as an application failure.
 
 ## Install and run
 
-From the repository root:
+Start PostgreSQL, Kafka, migrations, and FastAPI first. The complete order is in
+the [local development guide](../../docs/local-development.md). From the
+repository root:
 
 ```bash
 npm --prefix apps/frontend ci
 
-cp .env.example .env.local
+test -f .env.local || cp .env.example .env.local
 set -a
 source .env.local
 set +a
@@ -62,13 +69,24 @@ set +a
 npm --prefix apps/frontend run dev -- --host 127.0.0.1
 ```
 
-Start FastAPI first, then open <http://127.0.0.1:5173>.
+Open <http://127.0.0.1:5173>. A complete submission also requires:
+
+- an EIP-1193 wallet extension enabled in this browser;
+- the test wallet address bound to the selected insurer credential;
+- Sepolia available in the wallet (the UI asks it to switch networks); and
+- the raw insurer API key, not the SHA-256 digest stored by FastAPI.
+
+The wallet signs the exact EIP-712 `ForwardRequest`. It does not send the
+transaction and does not pay gas. The isolated relayer performs those steps only
+after FastAPI verifies and durably records the signature.
 
 The dedicated indexer dashboard is at <http://127.0.0.1:5173/operations>. For
 the checked-in local configuration, use
 `local-indexer-operations-key-change-before-hosting`. The raw key is submitted
 only as `X-Operations-API-Key` and retained in session storage for the current
-tab. Generate a different high-entropy key before hosting.
+tab. If a newly generated raw key is rejected, update the digest in `.env.local`
+and fully restart FastAPI; restarting Vite alone cannot change server
+authentication. Generate a different high-entropy key before hosting.
 
 | Setting | Default | Browser-visible purpose |
 | --- | --- | --- |
@@ -80,8 +98,18 @@ secret.
 
 ## State behaviour
 
-- A successful submission displays the transaction, block, hash, and CID
-  immediately.
+- Preparation can legitimately return `preparing`: another request with the same
+  idempotency key is already doing IPFS work. The browser polls rather than
+  uploading the same document twice.
+- A network error after authorization does not immediately trigger another
+  signature. The browser first reads durable state because the original request
+  may already have reached FastAPI.
+- The wallet is connected and switched using server-authoritative network data
+  before claim bytes are pinned.
+- A stable idempotency key survives network retry but resets if form content or
+  credentials change.
+- A successful submission displays the confirmed sponsored transaction, block,
+  hash, and CID.
 - The workspace polls for up to one minute while the Kafka worker finishes.
 - The newest successful public receipt survives a refresh.
 - If storage is empty, the newest indexed claim becomes the details view.

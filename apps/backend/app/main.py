@@ -6,10 +6,12 @@ import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import (
     Depends,
     FastAPI,
+    Header,
     HTTPException,
     Path,
     Query,
@@ -21,6 +23,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
+from apps.backend.app.gasless_service import (
+    GaslessClaimSubmissionService,
+    GaslessSubmissionAccessError,
+    GaslessSubmissionRateLimitError,
+    GaslessSubmissionServiceError,
+    GaslessSubmissionStateError,
+)
 from apps.backend.app.health import ReadinessProbe, build_readiness_probe
 from apps.backend.app.indexer_operations import (
     IndexerOperationsAuthenticationError,
@@ -36,9 +45,11 @@ from apps.backend.app.models import (
     ClaimIndexEventPageResponse,
     ClaimPageResponse,
     ClaimSubmission,
-    ClaimSubmissionResponse,
     DuplicateDetectionResponse,
     DuplicateMatchResponse,
+    GaslessAuthorizationRequest,
+    GaslessNetworkResponse,
+    GaslessSubmissionResponse,
     HealthResponse,
     IndexerOperationsResponse,
     ReadinessResponse,
@@ -46,8 +57,6 @@ from apps.backend.app.models import (
 from apps.backend.app.service import (
     ClaimQueryService,
     ClaimQueryServiceError,
-    ClaimSubmissionService,
-    ClaimSubmissionServiceError,
 )
 from apps.backend.app.submission_auth import (
     ClaimRequestSizeLimitMiddleware,
@@ -134,12 +143,19 @@ def get_insurer_principal(
     claim: ClaimSubmission,
     boundary: SubmissionBoundaryDependency,
     api_key: Annotated[str | None, Security(insurer_api_key_header)],
+    signer_address: Annotated[
+        str,
+        Header(
+            alias="X-Insurer-Signer-Address",
+            pattern=r"^0x[0-9a-fA-F]{40}$",
+        ),
+    ],
 ) -> InsurerPrincipal:
     """Authenticate the insurer and reserve quota before any external write."""
 
     client_ip = request.client.host if request.client is not None else "unknown"
     try:
-        return boundary.authorize_and_reserve(
+        principal = boundary.authorize_and_reserve(
             api_key=api_key,
             claimed_insurer_id=claim.insurer_id,
             client_ip=client_ip,
@@ -161,11 +177,54 @@ def get_insurer_principal(
             detail=str(exc),
             headers={"Retry-After": str(exc.retry_after)},
         ) from exc
+    if principal.signer_address.lower() != signer_address.lower():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "The connected wallet does not match the insurer's authorized signer"
+            ),
+        )
+    return principal
 
 
 InsurerPrincipalDependency = Annotated[
     InsurerPrincipal,
     Depends(get_insurer_principal),
+]
+
+
+def get_authenticated_insurer_principal(
+    request: Request,
+    boundary: SubmissionBoundaryDependency,
+    api_key: Annotated[str | None, Security(insurer_api_key_header)],
+) -> InsurerPrincipal:
+    """Authenticate idempotent authorize/status operations without new quota."""
+
+    client_ip = request.client.host if request.client is not None else "unknown"
+    try:
+        return boundary.authenticate(api_key=api_key, client_ip=client_ip)
+    except SubmissionAuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "ApiKey"},
+        ) from exc
+    except SubmissionAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except SubmissionRateLimitError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+
+
+AuthenticatedInsurerPrincipalDependency = Annotated[
+    InsurerPrincipal,
+    Depends(get_authenticated_insurer_principal),
 ]
 
 
@@ -182,6 +241,7 @@ async def lifespan(_app: FastAPI):
     # Artifact selection is local and fast. Refuse to start with a missing,
     # legacy, or incompatible contract instead of discovering it on first use.
     deployment = load_active_deployment()
+    deployment.require_gasless()
     boundary = load_submission_boundary()
     logger.info(
         "api.deployment_configured",
@@ -203,14 +263,16 @@ app = FastAPI(
     title="Decentralized Claims Registry API",
     version="0.1.0",
     description=(
-        "Synthetic-data demonstration API: validate a claim, upload it to public "
-        "IPFS, and anchor its hash and CID on Sepolia."
+        "Validate a claim, prepare an insurer-signed ERC-2771 request, and track "
+        "its sponsored Sepolia transaction without holding a submitter key."
     ),
     lifespan=lifespan,
 )
 
 
 def _claim_body_limit() -> int:
+    """Read the positive request cap used by pre-parser ASGI middleware."""
+
     try:
         value = int(os.environ.get("MAX_CLAIM_BODY_BYTES", "16384"))
     except ValueError as exc:
@@ -245,29 +307,39 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=[
         "Content-Type",
+        "Idempotency-Key",
         "X-Insurer-API-Key",
+        "X-Insurer-Signer-Address",
         "X-Operations-API-Key",
     ],
 )
 
 
 @lru_cache
-def get_claim_submission_service() -> ClaimSubmissionService:
-    """Create write clients once and explain missing configuration as JSON."""
+def get_gasless_submission_service() -> GaslessClaimSubmissionService:
+    """Create and cache the keyless preparation service for this API process.
+
+    Construction performs configuration and adapter validation but receives no
+    relayer or assessor key. Uvicorn must be restarted after environment changes
+    because this dependency is intentionally cached for consistent requests.
+    """
 
     try:
-        return ClaimSubmissionService.from_env()
-    except ClaimSubmissionServiceError as exc:
-        # Dependency construction happens before the route function. Translating
-        # the error here prevents FastAPI from returning an unexplained plain 500.
+        return GaslessClaimSubmissionService.from_env()
+    except (
+        GaslessSubmissionServiceError,
+        SubmissionAuthConfigurationError,
+        ValueError,
+    ) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Claim submission is unavailable: {exc}",
+            detail=f"Gasless claim submission is unavailable: {exc}",
         ) from exc
 
 
-ClaimServiceDependency = Annotated[
-    ClaimSubmissionService, Depends(get_claim_submission_service)
+GaslessSubmissionServiceDependency = Annotated[
+    GaslessClaimSubmissionService,
+    Depends(get_gasless_submission_service),
 ]
 
 
@@ -626,30 +698,162 @@ def get_claim_assessment(
     )
 
 
+@app.post("/claims", status_code=status.HTTP_410_GONE, tags=["claims"])
+def legacy_submit_claim() -> None:
+    """Refuse the former backend-custodial transaction path."""
+
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "Direct server-signed submission is disabled. Use "
+            "/claims/gasless/prepare and authorize the returned EIP-712 request."
+        ),
+    )
+
+
+@app.get(
+    "/claims/gasless/config",
+    response_model=GaslessNetworkResponse,
+    tags=["claims"],
+)
+def get_gasless_network(
+    service: GaslessSubmissionServiceDependency,
+) -> GaslessNetworkResponse:
+    """Return server-authoritative wallet preflight configuration.
+
+    This read-only endpoint lets the browser select and pin the expected chain,
+    registry, forwarder, and EIP-712 domain before any upload or signature.
+    """
+
+    try:
+        return service.network()
+    except GaslessSubmissionServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+
 @app.post(
-    "/claims",
-    response_model=ClaimSubmissionResponse,
+    "/claims/gasless/prepare",
+    response_model=GaslessSubmissionResponse,
     status_code=status.HTTP_201_CREATED,
     tags=["claims"],
 )
-def submit_claim(
+def prepare_gasless_claim(
+    request: Request,
     claim: ClaimSubmission,
     principal: InsurerPrincipalDependency,
-    service: ClaimServiceDependency,
-) -> ClaimSubmissionResponse:
-    """Submit one authenticated insurer claim through the write workflow.
+    service: GaslessSubmissionServiceDependency,
+    idempotency_key: Annotated[
+        str,
+        Header(
+            alias="Idempotency-Key",
+            min_length=8,
+            max_length=128,
+            pattern=r"^[A-Za-z0-9._:-]+$",
+        ),
+    ],
+) -> GaslessSubmissionResponse:
+    """Create or replay one durable, wallet-signable claim preparation.
 
-    Authentication and quota reservation run as dependencies before this handler.
-    The service owns canonicalization, IPFS verification, and confirmed Sepolia
-    anchoring; this route only maps a workflow failure to an upstream 502 response.
+    Authentication binds the header credential and browser wallet; the
+    Idempotency-Key binds network retries to one exact claim payload. A 201 may
+    therefore describe either the newly prepared record or its safe replay.
     """
 
-    # The service owns the workflow; this route only translates failures into
-    # an HTTP response the frontend can understand.
+    client_ip = request.client.host if request.client is not None else "unknown"
     try:
-        return service.submit(claim, principal)
-    except ClaimSubmissionServiceError as exc:
+        return service.prepare(
+            claim,
+            principal,
+            idempotency_key=idempotency_key,
+            client_ip=client_ip,
+        )
+    except GaslessSubmissionRateLimitError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+    except GaslessSubmissionStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except GaslessSubmissionServiceError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+
+@app.post(
+    "/claims/gasless/{submission_id}/authorize",
+    response_model=GaslessSubmissionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["claims"],
+)
+def authorize_gasless_claim(
+    submission_id: UUID,
+    authorization: GaslessAuthorizationRequest,
+    principal: AuthenticatedInsurerPrincipalDependency,
+    service: GaslessSubmissionServiceDependency,
+) -> GaslessSubmissionResponse:
+    """Verify insurer intent and expose the durable record to the relayer.
+
+    The response is accepted/queued, not a blockchain receipt. Broadcasting and
+    confirmation happen asynchronously in the isolated payer process.
+    """
+
+    try:
+        return service.authorize(
+            submission_id,
+            authorization.signature,
+            principal,
+        )
+    except GaslessSubmissionAccessError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except GaslessSubmissionStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except GaslessSubmissionServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+
+@app.get(
+    "/claims/gasless/{submission_id}",
+    response_model=GaslessSubmissionResponse,
+    tags=["claims"],
+)
+def get_gasless_claim_status(
+    submission_id: UUID,
+    principal: AuthenticatedInsurerPrincipalDependency,
+    service: GaslessSubmissionServiceDependency,
+) -> GaslessSubmissionResponse:
+    """Return credential-scoped outbox state until safe confirmation.
+
+    Polling is read-only and safe at browser frequency; it never allocates an
+    Ethereum nonce, signs a payer transaction, or performs an RPC write.
+    """
+
+    try:
+        return service.status(submission_id, principal)
+    except GaslessSubmissionAccessError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except GaslessSubmissionServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc

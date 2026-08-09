@@ -49,19 +49,26 @@ testable without a live network.
 
 ## Run
 
-Reuse the repository Python environment:
+Start PostgreSQL, Kafka, the deployment-specific topic, and migrations first.
+Then reuse the repository Python environment:
 
 ```bash
-source apps/backend/.venv/bin/activate
-python -m pip install --require-hashes -r requirements-dev.lock
-
-cp .env.example .env.local
+test -f .env.local || cp .env.example .env.local
 set -a
 source .env.local
 set +a
 
-python -m apps.listener.claims_listener
+# The listener reads public chain/IPFS data and must not inherit wallet keys.
+unset SEPOLIA_DEPLOYER_PRIVATE_KEY SEPOLIA_ASSESSOR_PRIVATE_KEY
+unset SEPOLIA_RELAYER_PRIVATE_KEY SEPOLIA_RELAYER_PRIVATE_KEY_FILE
+
+apps/backend/.venv/bin/python -m apps.listener.claims_listener
 ```
+
+Using the explicit interpreter path avoids accidentally selecting a different
+`.venv`. The listener imports PostgreSQL, Prometheus, Web3, IPFS and Kafka
+adapters at startup, so an incomplete environment otherwise tends to appear as
+one missing-module error at a time.
 
 A healthy path emits structured events similar to:
 
@@ -108,8 +115,9 @@ publication access.
 
 A new index refuses to start without `LISTENER_START_BLOCK`. Beginning at the
 current head would look healthy while silently omitting historical claims. The
-checked-in hardened contract was deployed at Sepolia block `11377814`, which is
-therefore the example value.
+gasless `sepolia-gasless-v1` registry was deployed at Sepolia block `11426492`,
+which is the example value. The legacy read-only security-audit deployment used
+block `11377814`; never mix its start block with the gasless deployment ID.
 
 For a deliberate full rebuild, isolate the affected deployment and:
 
@@ -127,7 +135,7 @@ After catch-up, temporarily stop the listener and compare every indexed claim
 with the contract:
 
 ```bash
-python -m apps.listener.reconcile_claim_index
+apps/backend/.venv/bin/python -m apps.listener.reconcile_claim_index
 ```
 
 The command prints JSON and exits non-zero for missing, unexpected, or stale
@@ -139,16 +147,16 @@ and duration to `claim_index_reconciliations`, allowing the authenticated
 Do not discard the dead-letter file without reviewing why its immutable events
 were rejected.
 
-## Terminal-only demo
+## Legacy terminal-only diagnostic
 
-The web API is the normal submission route. For a trusted operator demo that
-uses both role wallets:
+The gasless web API and isolated relayer are the normal submission route. This
+direct-wallet script remains only for a trusted operator diagnostic:
 
 ```bash
 set -a
 source .env.local
 set +a
-python -m apps.listener.submit_and_assess_demo
+apps/backend/.venv/bin/python -m apps.listener.submit_and_assess_demo
 ```
 
 This script also needs the Pinata JWT, `CLAIM_AUTHORIZATION_KEY`, and separate
@@ -156,7 +164,8 @@ submitter and assessor keys. It is not a browser client. If assessment was
 interrupted after a successful submission, continue the existing claim:
 
 ```bash
-python -m apps.listener.submit_and_assess_demo --assess-existing 1
+apps/backend/.venv/bin/python \
+  -m apps.listener.submit_and_assess_demo --assess-existing 1
 ```
 
 Replace `1` with the actual claim ID.
@@ -164,8 +173,7 @@ Replace `1` with the actual claim ID.
 ## Test
 
 ```bash
-source apps/backend/.venv/bin/activate
-python -m pytest apps/listener/test_*.py -q
+apps/backend/.venv/bin/python -m pytest apps/listener/test_*.py -q
 ```
 
 Tests inject chain, IPFS, Kafka, index, checkpoint, and dead-letter adapters.
@@ -173,4 +181,4 @@ They cover event ordering, bounded catch-up, tamper rejection, replay, database
 checkpoint safety, and contract/index reconciliation without public services.
 
 See the [Kafka guide](../../packages/integrations/kafka/README.md) and the
-[root runbook](../../README.md).
+[local development guide](../../docs/local-development.md).
