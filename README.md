@@ -12,9 +12,13 @@ screens it off-chain, and leaves a compact result that anyone can verify.
 
 ```mermaid
 flowchart LR
-    Browser["React browser"] -->|"claim + insurer API key"| API["FastAPI"]
-    API -->|"signed canonical JSON"| IPFS[("Public IPFS")]
-    API -->|"Keccak hash + CID"| Chain[("Sepolia registry")]
+    Browser["React browser"] -->|"claim + API key + wallet"| API["Keyless FastAPI"]
+    API -->|"authorized canonical JSON"| IPFS[("Public IPFS")]
+    API -->|"exact EIP-712 request"| Browser
+    Browser -->|"insurer signature"| API
+    API --> Outbox[("PostgreSQL relay outbox")]
+    Relayer["Restricted gas relayer"] --> Outbox
+    Relayer -->|"ERC-2771 execute"| Chain[("Sepolia registry")]
     Chain -->|"confirmed ClaimSubmitted"| Listener["Listener"]
     Listener -->|"idempotent claim projection"| Postgres[("PostgreSQL")]
     Listener -->|"verified reference event"| Kafka[("Kafka")]
@@ -27,19 +31,19 @@ flowchart LR
     API --> Browser
 ```
 
-The split is intentional: the request finishes after the IPFS document has been
-verified and its hash has been anchored. Kafka handles the slower screening
-work without holding the browser request open.
+The split is intentional: the insurer authorizes the exact call, then the
+browser polls while an isolated relayer anchors it. Kafka handles the slower
+screening work without holding the submission request open.
 
 ## What is stored where
 
 | Place | Stored | Deliberately not stored |
 | --- | --- | --- |
 | Browser | Form state in memory; latest public receipt in local storage | Wallet keys, Pinata JWT, HMAC keys, saved insurer credential |
-| IPFS | Signed schema-v4 synthetic claim JSON | Encryption or access control |
+| IPFS | Authorized schema-v5 synthetic claim JSON | Encryption or access control |
 | Sepolia | Claim ID, submitter, hash, CID, status, score, timestamps | Full claim, SHAP reasons, private fingerprints |
 | Kafka | Versioned blockchain and IPFS references | Full claim payload |
-| PostgreSQL | Confirmed public claim index and event history; versioned features, keyed fingerprints, score, SHAP reasons, write receipt | HMAC keys, raw policy reference, description, evidence |
+| PostgreSQL | Gasless idempotency/outbox/transaction attempts; confirmed public index and event history; versioned features, keyed fingerprints, score, SHAP reasons | HMAC keys, raw policy reference, description, evidence |
 
 ## Trust and replay boundaries
 
@@ -47,7 +51,8 @@ work without holding the browser request open.
 sequenceDiagram
     participant A as FastAPI
     participant I as IPFS
-    participant E as Sepolia
+    participant R as Relayer
+    participant E as Forwarder + registry
     participant L as Listener
     participant K as Kafka
     participant W as Worker
@@ -55,7 +60,9 @@ sequenceDiagram
 
     A->>I: Upload exact canonical bytes
     A->>I: Download and compare bytes
-    A->>E: Submit hash and CID
+    A->>P: Persist wallet-authorized request
+    R->>P: Persist signed raw transaction before broadcast
+    R->>E: Execute exact request and pay gas
     E-->>L: Confirmed ClaimSubmitted log
     L->>P: Append event and update claim projection
     L->>I: Download and verify on-chain hash
@@ -80,10 +87,11 @@ sequenceDiagram
 
 ```text
 apps/
-├── backend/       FastAPI, authentication, IPFS and Sepolia submission
+├── backend/       Keyless FastAPI, authentication, IPFS and EIP-712 preparation
 ├── contracts/     Solidity registry, tests and Ignition deployments
 ├── frontend/      React intake, receipt and claims dashboard
-└── listener/      Confirmed-log indexing, IPFS verification and reconciliation
+├── listener/      Confirmed-log indexing, IPFS verification and reconciliation
+└── relayer/       Durable nonce, fee replacement, broadcast and confirmation
 
 packages/
 ├── duplicates/    Cross-insurer HMAC incident matching
@@ -94,136 +102,146 @@ packages/
 infrastructure/gcp/  Disposable single-VM research deployment
 ```
 
-## Local setup
+## Run the complete application locally
 
-### Prerequisites
+The application has five long-running processes in addition to PostgreSQL and
+Kafka. Start them in order; otherwise the first visible error is often only a
+downstream symptom of a missing migration, topic, or model artifact.
 
-- Node.js 24 and npm
-- Python 3.13
-- Docker Desktop
-- a Sepolia RPC endpoint
-- separate Sepolia-only submitter and assessor wallets with test ETH
-- a Pinata JWT for public test uploads
+The detailed [local development guide](docs/local-development.md) explains every
+setting, wallet role, terminal, readiness check, failure state, and shutdown
+step. The concise sequence is below.
 
-Never use a wallet that holds real assets.
+### 1. Install prerequisites and dependencies
 
-### 1. Install dependencies
-
-Run from the repository root:
+You need Python 3.13, Node.js 24, npm, Docker Desktop, a browser wallet, a
+Sepolia RPC URL, Pinata JWT, and fictional Sepolia role wallets. Never use a
+wallet that holds real assets.
 
 ```bash
+cd /Users/ganesh/Documents/Codex/Decentralized-Claims-Registry
+
 python3 -m venv apps/backend/.venv
-source apps/backend/.venv/bin/activate
-python -m pip install --require-hashes -r requirements-dev.lock
+apps/backend/.venv/bin/python -m pip install --require-hashes \
+  -r requirements-dev.lock
 
 npm --prefix apps/frontend ci
 npm --prefix apps/contracts ci
 ```
 
-On macOS, XGBoost also needs OpenMP:
+On macOS, install XGBoost's OpenMP runtime once with `brew install libomp`.
+Using the explicit `apps/backend/.venv/bin/python` path avoids accidentally
+running the root virtual environment or a system Python without dependencies.
+
+### 2. Configure the gasless deployment
 
 ```bash
-brew install libomp
+test -f .env.local || cp .env.example .env.local
 ```
 
-### 2. Create the local configuration
+Review `.env.local`; do not merely source it unchanged. The required local
+values are explained in [the configuration checklist](docs/local-development.md#3-create-and-review-envlocal).
+The selected `sepolia-gasless-v1` artifact uses registry block `11426492`.
+Every configured insurer `signerAddress` must have the submitter role and must
+match the account connected in the browser wallet.
+
+Build the reviewed synthetic model artifact:
 
 ```bash
-cp .env.example .env.local
+apps/backend/.venv/bin/python \
+  -m packages.model.train_xgboost --download
 ```
 
-Set at least:
-
-- `SEPOLIA_SUBMITTER_PRIVATE_KEY`
-- `SEPOLIA_ASSESSOR_PRIVATE_KEY`
-- `PINATA_JWT`
-
-Keep `CLAIMS_DEPLOYMENT_ID="sepolia-security-audit-v1"` unless you have reviewed
-and checked in another hardened Ignition deployment. The example file already
-contains fictional local insurer credentials and safe local service addresses.
-See the [backend guide](apps/backend/README.md#local-insurer-credentials) before
-changing authentication settings.
-
-Load the file in every terminal that runs an application process:
-
-```bash
-set -a
-source .env.local
-set +a
-```
-
-### 3. Build the reviewed model artifact
-
-```bash
-source apps/backend/.venv/bin/activate
-python -m packages.model.train_xgboost --download
-```
-
-This downloads the pinned synthetic dataset, verifies its checksum, and writes
-the ignored serving artifact under
-`packages/model/artifacts/xgboost-african-motor-v1/`.
-
-### 4. Start Kafka, PostgreSQL, and migrations
+### 3. Start infrastructure, migrate, and create the topic
 
 ```bash
 docker compose -f packages/integrations/kafka/compose.yml up -d
 docker compose -f packages/integrations/kafka/compose.yml ps
 
-python -m packages.integrations.postgres.migrations upgrade
-python -m packages.integrations.postgres.migrations check
+set -a
+source .env.local
+set +a
+
+apps/backend/.venv/bin/python \
+  -m packages.integrations.postgres.migrations upgrade
+apps/backend/.venv/bin/python \
+  -m packages.integrations.postgres.migrations check
+
+docker compose -f packages/integrations/kafka/compose.yml exec kafka \
+  /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 \
+  --create --if-not-exists \
+  --topic "$KAFKA_CLAIM_SUBMITTED_TOPIC" \
+  --partitions 3 --replication-factor 1
 ```
 
 Kafka UI is available at <http://127.0.0.1:8081>.
 
-### 5. Start the four application processes
+### 4. Start each application process
 
-Use a separate configured terminal for each command:
+Open five terminal tabs. In every tab, change to the repository root and load
+the local configuration:
 
 ```bash
-# FastAPI
-uvicorn apps.backend.app.main:app --reload --host 127.0.0.1 --port 8000
+cd /Users/ganesh/Documents/Codex/Decentralized-Claims-Registry
+set -a; source .env.local; set +a
+```
 
-# React
+Then run exactly one command per terminal:
+
+```bash
+# Terminal A — keyless FastAPI
+apps/backend/.venv/bin/python -m uvicorn \
+  apps.backend.app.main:app --reload --host 127.0.0.1 --port 8000
+
+# Terminal B — React/Vite
 npm --prefix apps/frontend run dev -- --host 127.0.0.1
 
-# Confirmed-block listener
-python -m apps.listener.claims_listener
+# Terminal C — sponsored-transaction relayer
+apps/backend/.venv/bin/python -m apps.relayer.gasless_relayer
 
-# Kafka scoring worker
-python -m packages.integrations.kafka.scoring_worker
+# Terminal D — confirmed-block listener and PostgreSQL indexer
+apps/backend/.venv/bin/python -m apps.listener.claims_listener
+
+# Terminal E — Kafka scoring and assessment worker
+apps/backend/.venv/bin/python \
+  -m packages.integrations.kafka.scoring_worker
 ```
 
-Open <http://127.0.0.1:5173>. Health and API documentation are available at:
+For better local key separation, unset unrelated wallet variables in each
+terminal as shown in the [full terminal instructions](docs/local-development.md#6-start-the-five-application-terminals).
 
-- <http://127.0.0.1:8000/health/live>
-- <http://127.0.0.1:8000/health/ready>
-- <http://127.0.0.1:8000/docs>
-- <http://127.0.0.1:5173/operations> (authenticated indexer operations)
+### 5. Verify before submitting
 
-The operations event explorer searches by claim ID or full transaction hash,
-event type, claim state, and block range. Its Newer/Older controls use stable
-keyset cursors, so newly indexed events do not shift an open historical page.
+```bash
+curl --fail --silent http://127.0.0.1:8000/health/ready \
+  | apps/backend/.venv/bin/python -m json.tool
+curl --fail --silent http://127.0.0.1:8000/claims/gasless/config \
+  | apps/backend/.venv/bin/python -m json.tool
+```
 
-The local operations key documented in `.env.example` is
-`local-indexer-operations-key-change-before-hosting`. Generate a different
-high-entropy key for any hosted environment. See the
-[indexer operations runbook](docs/indexer-operations-runbook.md) for deployment,
-monitoring, reconciliation and incident-response procedures.
+Readiness should report every dependency as `ok`. Open:
 
-### 6. Follow a claim
+- claims application: <http://127.0.0.1:5173>
+- API documentation: <http://127.0.0.1:8000/docs>
+- indexer operations: <http://127.0.0.1:5173/operations>
+- Kafka UI: <http://127.0.0.1:8081>
 
-Submit the pre-filled fictional claim. A healthy run looks like this:
+In the claims page, use the raw insurer API key—not its SHA-256 digest—and
+connect the wallet bound to that credential. The insurer signs EIP-712 data but
+does not pay gas. A healthy run progresses through:
 
 ```text
-Browser receipt: claim anchored, assessment pending
-Listener log:    ipfs.verified -> kafka.claim_published
-Worker log:      claim.assessed
-Browser receipt: duplicate check + score + SHAP reasons + chain status
+Browser:  prepared -> wallet signed -> authorized
+Relayer:  signed -> broadcast -> confirmed
+Listener: IPFS verified -> Kafka event published -> checkpoint advanced
+Worker:   features + duplicate check + score -> assessment confirmed
+Browser:  public anchor + review signals + indexed current state
 ```
 
-To demonstrate duplicate screening, submit the same incident fields through a
-second fictional insurer while changing its claim and policy references. The
-second claim should point to the first as a possible cross-insurer match.
+The operations page similarly accepts the raw operations key, while FastAPI
+stores only `INDEXER_OPERATIONS_API_KEY_SHA256`. Restart FastAPI after changing
+that digest.
 
 ## Claim lifecycle
 
@@ -243,27 +261,25 @@ The worker can create only `UnderReview` or `Flagged`. It never infers
 `Approved` or `Rejected`. The on-chain score is the probability multiplied by
 10,000: `0.2466` becomes `2,466`, displayed as `24.66%`.
 
-## Checked-in Sepolia deployment
+## Sepolia deployments
 
-| Item | Value |
-| --- | --- |
-| Chain | Sepolia (`11155111`) |
-| Deployment ID | `sepolia-security-audit-v1` |
-| Module | `ClaimsRegistryModule#ClaimsRegistry` |
-| Contract | `0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB` |
-| Explorer | [Open in Sepolia Etherscan](https://sepolia.etherscan.io/address/0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB) |
+| Purpose | Deployment ID | Registry | Forwarder | Start block |
+| --- | --- | --- | --- | --- |
+| Current gasless research flow | `sepolia-gasless-v1` | [`0x5A7A...A300`](https://sepolia.etherscan.io/address/0x5A7A3e22843397f998823D0d58aBd2E1f4b2A300) | [`0x0e68...5F0`](https://sepolia.etherscan.io/address/0x0e68Ac27a344f454373604Eec3144c427661E5F0) | `11426492` |
+| Read-only legacy history | `sepolia-security-audit-v1` | [`0x2AbA...B78cB`](https://sepolia.etherscan.io/address/0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB) | None | `11377814` |
 
-Every runtime process resolves the address and ABI from the same deployment ID
-and rejects a wrong chain, missing bytecode, legacy interface, or unauthorized
-write wallet.
+Both use Sepolia chain ID `11155111`. Runtime selection is explicit through
+`CLAIMS_DEPLOYMENT_ID`; the listener checkpoint and projection are additionally
+scoped by chain and registry address. The gasless API fails closed if the legacy
+deployment is selected because it has no trusted forwarder.
 
 ## Verification
 
 ```bash
 # Python lint, unit tests, and coverage
-source apps/backend/.venv/bin/activate
-ruff check apps packages --exclude packages/model/notebooks
-python -m pytest -m "not integration"
+apps/backend/.venv/bin/python -m ruff check \
+  apps packages --exclude packages/model/notebooks
+apps/backend/.venv/bin/python -m pytest -m "not integration"
 
 # Frontend
 npm --prefix apps/frontend test
@@ -271,9 +287,11 @@ npm --prefix apps/frontend run lint
 npm --prefix apps/frontend run build
 npm --prefix apps/frontend run test:e2e
 
-# Contract
-npm --prefix apps/contracts exec -- hardhat test
-npm --prefix apps/contracts exec -- hardhat build --build-profile production
+# Contract (Hardhat resolves its config from this directory)
+cd apps/contracts
+npm exec -- hardhat test
+npm exec -- hardhat build --build-profile production
+cd ../..
 ```
 
 Infrastructure-backed tests require the local Kafka and PostgreSQL services:
@@ -281,18 +299,21 @@ Infrastructure-backed tests require the local Kafka and PostgreSQL services:
 ```bash
 TEST_DATABASE_URL=postgresql://claims:claims-local@127.0.0.1:5432/claims_registry \
 TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
-  python -m pytest -m integration
+  apps/backend/.venv/bin/python -m pytest -m integration
 ```
 
 ## Limits that matter
 
 - IPFS content is public and unencrypted.
-- Insurer rate limits are process-local and reset on API restart.
+- Valid sponsorship quotas are durable in PostgreSQL; early/invalid-credential
+  abuse counters remain process-local and should be enforced at the edge in a
+  multi-instance production deployment.
 - The dashboard reads a confirmed-event PostgreSQL index and may lag the chain
   by the configured confirmation depth.
 - Exact incident fingerprints produce review candidates, not proof of fraud.
 - The synthetic model is an integration artifact, not a validated decision model.
-- Wallets are process-level testnet signers, not managed signing infrastructure.
+- Insurers sign through browser test wallets; relayer and assessor keys are
+  process-level testnet signers, not managed signing infrastructure.
 - Local and GCP Compose files use one Kafka broker and one PostgreSQL instance.
 
 Before real claim data, the design would still need encryption before IPFS,
@@ -304,7 +325,11 @@ retention rules, and a validated and monitored model.
 
 | Area | Guide |
 | --- | --- |
+| Complete local startup | [Local development](docs/local-development.md) |
 | FastAPI and insurer credentials | [Backend](apps/backend/README.md) |
+| Gasless relayer | [Relayer](apps/relayer/README.md) |
+| Gasless security and operations | [Production gasless runbook](docs/production-gasless-transactions.md) |
+| Indexer monitoring and recovery | [Indexer operations runbook](docs/indexer-operations-runbook.md) |
 | Claim limits and controlled test bypass | [Rate-limit runbook](docs/rate-limiting-and-authorised-test-bypass.md) |
 | Browser behaviour | [Frontend](apps/frontend/README.md) |
 | Block polling and recovery | [Listener](apps/listener/README.md) |

@@ -47,42 +47,80 @@ logger = get_event_logger(__name__)
 
 
 class ClaimReader(Protocol):
-    def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes: ...
+    """Read the exact public bytes referenced by a confirmed chain event."""
+
+    def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes:
+        """Download an IPFS pointer with bounded dependency retries."""
+
+        ...
 
 
 class ClaimScorer(Protocol):
-    def score(self, claim: StoredClaimDocument) -> FraudScore: ...
+    """Produce the versioned fraud score consumed by the workflow."""
+
+    def score(self, claim: StoredClaimDocument) -> FraudScore:
+        """Score one verified stored claim deterministically."""
+
+        ...
 
 
 class ClaimAuthorizationVerifier(Protocol):
-    def verify_claim(self, claim: StoredClaimDocument) -> InsurerPrincipal: ...
+    """Recover the API-authenticated identity embedded in IPFS bytes."""
+
+    def verify_claim(self, claim: StoredClaimDocument) -> InsurerPrincipal:
+        """Verify gateway authorization and return its insurer principal."""
+
+        ...
 
 
 class ClaimEventHandler(Protocol):
-    def __call__(self, event: ClaimSubmittedEvent) -> None: ...
+    """Callable boundary used by the Kafka consumer loop."""
+
+    def __call__(self, event: ClaimSubmittedEvent) -> None:
+        """Handle one validated, versioned claim event."""
+
+        ...
 
 
 class DuplicateDetector(Protocol):
+    """Check privacy-preserving incident identity against prior insurers."""
+
     def check(
         self,
         event: ClaimSubmittedEvent,
         claim: StoredClaimDocument,
-    ) -> DuplicateCheck: ...
+    ) -> DuplicateCheck:
+        """Return cross-insurer matches without exposing raw policy identity."""
+
+        ...
 
 
 class FeatureProcessor(Protocol):
+    """Persist a versioned, replay-safe feature snapshot for one claim."""
+
     def process(
         self,
         event: ClaimSubmittedEvent,
         claim: StoredClaimDocument,
         duplicate_check: DuplicateCheck,
-    ) -> ClaimFeatureSnapshot: ...
+    ) -> ClaimFeatureSnapshot:
+        """Return the exact persisted feature version used for this event."""
+
+        ...
 
 
 class AssessmentStore(Protocol):
-    def get_by_event_id(self, event_id: str) -> AssessmentRecord | None: ...
+    """Durable assessment state used to make Kafka redelivery idempotent."""
 
-    def save_scored(self, record: AssessmentRecord) -> None: ...
+    def get_by_event_id(self, event_id: str) -> AssessmentRecord | None:
+        """Return the prior score/write state for one immutable event ID."""
+
+        ...
+
+    def save_scored(self, record: AssessmentRecord) -> None:
+        """Persist model output before attempting the Sepolia write."""
+
+        ...
 
     def mark_completed(
         self,
@@ -90,20 +128,34 @@ class AssessmentStore(Protocol):
         *,
         transaction_hash: str | None,
         block_number: int | None,
-    ) -> None: ...
+    ) -> None:
+        """Persist successful or reconciled on-chain assessment completion."""
 
-    def mark_failed(self, event_id: str, error: str) -> None: ...
+        ...
+
+    def mark_failed(self, event_id: str, error: str) -> None:
+        """Record the latest failed write attempt for operational diagnosis."""
+
+        ...
 
 
 class AssessmentRegistry(Protocol):
-    def get_claim(self, claim_id: int) -> ChainClaim: ...
+    """Minimal chain interface needed for idempotent assessment write-back."""
+
+    def get_claim(self, claim_id: int) -> ChainClaim:
+        """Read authoritative lifecycle state before attempting an update."""
+
+        ...
 
     def assess_claim(
         self,
         claim_id: int,
         status: int,
         fraud_score: int,
-    ) -> ChainAssessment: ...
+    ) -> ChainAssessment:
+        """Write one allowed model outcome and wait for its receipt."""
+
+        ...
 
 
 def verify_claim_payload(event: ClaimSubmittedEvent, payload: bytes) -> None:
@@ -125,6 +177,8 @@ class MonitoredScorer:
         *,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
+        """Wrap a scorer with model-only latency and result metrics."""
+
         self.scorer = scorer
         self.metrics = metrics
         self.clock = clock
@@ -152,6 +206,8 @@ class MonitoredClaimHandler:
         *,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
+        """Wrap the full handler with success/failure and duration metrics."""
+
         self.handler = handler
         self.metrics = metrics
         self.clock = clock
@@ -191,6 +247,8 @@ class ClaimScoringHandler:
         registry: AssessmentRegistry,
         authorization: ClaimAuthorizationVerifier,
     ) -> None:
+        """Inject every external boundary in the event-to-assessment pipeline."""
+
         self.ipfs = ipfs
         self.scorer = scorer
         self.duplicate_detector = duplicate_detector
@@ -200,6 +258,14 @@ class ClaimScoringHandler:
         self.authorization = authorization
 
     def __call__(self, event: ClaimSubmittedEvent) -> None:
+        """Verify, enrich, score, and idempotently write one confirmed claim.
+
+        Chain hash and gateway authorization are checked before model input.
+        Model output is persisted before Sepolia submission so a retry reuses the
+        exact decision. Existing matching chain state repairs crash gaps without
+        submitting a second assessment transaction.
+        """
+
         existing = self.repository.get_by_event_id(event.event_id)
         if existing and existing.processing_status == "completed":
             # Kafka may redeliver a committed event after maintenance or an
@@ -220,6 +286,10 @@ class ClaimScoringHandler:
         principal = self.authorization.verify_claim(claim)
         if principal.insurer_id != claim.insurer_id:
             raise ValueError("Authorized insurer identity does not match the claim")
+        if principal.signer_address.lower() != event.claimant.lower():
+            raise ValueError(
+                "Authorized insurer signer does not match the on-chain claimant"
+            )
         duplicate_check = self.duplicate_detector.check(event, claim)
         feature_snapshot = self.feature_processor.process(
             event,
@@ -296,6 +366,12 @@ class ClaimScoringHandler:
 
 
 def main() -> None:
+    """Run the at-least-once Kafka scoring loop until graceful shutdown.
+
+    Offsets advance only after the monitored handler returns successfully;
+    PostgreSQL and chain-state checks make redelivery safe after failure.
+    """
+
     configure_logging("claims-scoring-worker")
     metrics = ScoringMetrics.start_from_env()
     shutdown = ShutdownSignal()

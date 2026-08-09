@@ -6,6 +6,10 @@ Branch: `security/solidity-contract-audit`
 This is an internal engineering review of the dissertation prototype, not a
 professional third-party audit or a guarantee of security.
 
+> Gasless ERC-2771 changes were implemented later and are outside this dated
+> review. They require a new independent review and deployment; see
+> `docs/production-gasless-transactions.md`.
+
 ## Scope
 
 - `contracts/ClaimsRegistry.sol`
@@ -19,7 +23,7 @@ professional third-party audit or a guarantee of security.
 | --- | --- |
 | Permissionless submissions could feed invalid pointers into the listener | `submitClaim` now requires `SUBMITTER_ROLE`, accepts only a bounded bare `ipfs://CID`, and the listener quarantines permanent invalid events |
 | Administration, submission and assessment reused one wallet | The contract enforces distinct admin, submitter and assessor addresses; application processes load separate environment keys |
-| Any assessor could modify any insurer's claim | Every assessor is explicitly scoped to one registered insurer |
+| Any assessor could modify any insurer's claim | Every assessor is explicitly scoped to authorized insurer wallets |
 | Status and score could be rewritten arbitrarily | The lifecycle is forward-only and the initial model score cannot change during later transitions |
 | Ownership transfer was immediate and one-step | OpenZeppelin `AccessControlDefaultAdminRules` adds a configurable delay and explicit acceptance |
 | Generic role calls could bypass scoped-role setup | Submitter and assessor roles can only be changed through their invariant-preserving configuration functions |

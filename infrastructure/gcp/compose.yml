@@ -208,7 +208,6 @@ services:
       <<: *chain-read-environment
       # Only the API uploads new claim documents, so only this service receives
       # the Pinata token.
-      SEPOLIA_SUBMITTER_PRIVATE_KEY: ${SEPOLIA_SUBMITTER_PRIVATE_KEY:?Set SEPOLIA_SUBMITTER_PRIVATE_KEY in .env.gcp}
       PINATA_JWT: ${PINATA_JWT:?Set PINATA_JWT in .env.gcp}
       IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
       FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:?Set FRONTEND_ORIGINS in .env.gcp}
@@ -218,6 +217,9 @@ services:
       ALLOW_RATE_LIMIT_BYPASS: ${ALLOW_RATE_LIMIT_BYPASS:-false}
       MAX_CLAIM_BODY_BYTES: ${MAX_CLAIM_BODY_BYTES:-16384}
       CLAIM_AUTHORIZATION_KEY: ${CLAIM_AUTHORIZATION_KEY:?Set CLAIM_AUTHORIZATION_KEY in .env.gcp}
+      GASLESS_REQUEST_FINGERPRINT_KEY: ${GASLESS_REQUEST_FINGERPRINT_KEY:?Set GASLESS_REQUEST_FINGERPRINT_KEY in .env.gcp}
+      GASLESS_FORWARD_GAS: ${GASLESS_FORWARD_GAS:-250000}
+      GASLESS_SIGNATURE_TTL_SECONDS: ${GASLESS_SIGNATURE_TTL_SECONDS:-600}
       INDEXER_OPERATIONS_API_KEY_SHA256: ${INDEXER_OPERATIONS_API_KEY_SHA256:?Set INDEXER_OPERATIONS_API_KEY_SHA256 in .env.gcp}
       INDEXER_STALE_AFTER_SECONDS: ${INDEXER_STALE_AFTER_SECONDS:-120}
       CONFIRMATION_BLOCKS: ${CONFIRMATION_BLOCKS:-12}
@@ -237,6 +239,28 @@ services:
       timeout: 5s
       retries: 10
     stop_grace_period: 240s
+
+  gasless-relayer:
+    <<: *python-service
+    command: ["python", "-m", "apps.relayer.gasless_relayer"]
+    environment:
+      <<: *chain-read-environment
+      # This dedicated account pays gas only. It must hold no registry role and
+      # its balance should be capped and monitored independently.
+      SEPOLIA_RELAYER_PRIVATE_KEY: ${SEPOLIA_RELAYER_PRIVATE_KEY:?Set SEPOLIA_RELAYER_PRIVATE_KEY in .env.gcp}
+      GASLESS_FORWARD_GAS: ${GASLESS_FORWARD_GAS:-250000}
+      GASLESS_SIGNATURE_TTL_SECONDS: ${GASLESS_SIGNATURE_TTL_SECONDS:-600}
+      GASLESS_MAX_TRANSACTION_GAS: ${GASLESS_MAX_TRANSACTION_GAS:-500000}
+      GASLESS_MAX_FEE_GWEI: ${GASLESS_MAX_FEE_GWEI:-100}
+      GASLESS_MAX_PRIORITY_FEE_GWEI: ${GASLESS_MAX_PRIORITY_FEE_GWEI:-3}
+      GASLESS_RELAY_POLL_SECONDS: ${GASLESS_RELAY_POLL_SECONDS:-2}
+      GASLESS_STUCK_TRANSACTION_SECONDS: ${GASLESS_STUCK_TRANSACTION_SECONDS:-120}
+      CONFIRMATION_BLOCKS: ${CONFIRMATION_BLOCKS:-12}
+      DATABASE_URL: "postgresql://claims:${POSTGRES_PASSWORD}@postgres:5432/claims_registry"
+    depends_on:
+      database-migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 30s
 
   listener:
     <<: *python-service

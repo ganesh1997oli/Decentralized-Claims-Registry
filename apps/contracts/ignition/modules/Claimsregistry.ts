@@ -10,12 +10,14 @@ export default buildModule("ClaimsRegistryModule", (m) => {
         "adminTransferDelaySeconds",
         86_400n,
     );
+    const claimsForwarder = m.contract("ClaimsForwarder");
     const claimRegistry = m.contract("ClaimsRegistry", [
         initialAdmin,
         initialSubmitter,
         initialAssessor,
+        claimsForwarder,
         adminTransferDelay,
     ]);
 
-    return { claimRegistry };
+    return { claimsForwarder, claimRegistry };
 });

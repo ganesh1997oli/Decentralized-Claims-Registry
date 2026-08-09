@@ -20,10 +20,12 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from web3 import Web3
+
 from apps.backend.app.models import ClaimSubmission, StoredClaimDocument
 from packages.observability import get_event_logger
 
-AUTHORIZATION_VERSION = "insurer-principal-hmac-sha256-v1"
+AUTHORIZATION_VERSION = "insurer-principal-wallet-hmac-sha256-v2"
 SUBMIT_CLAIM_OPERATION = "submit_claim"
 _MINIMUM_API_KEY_LENGTH = 24
 _MINIMUM_AUTHORIZATION_KEY_BYTES = 32
@@ -49,6 +51,8 @@ class SubmissionRateLimitError(RuntimeError):
     """Raised before external work when a submission limit has been reached."""
 
     def __init__(self, message: str, *, retry_after: int) -> None:
+        """Clamp retry guidance to a positive HTTP-compatible delay."""
+
         super().__init__(message)
         self.retry_after = max(1, retry_after)
 
@@ -67,6 +71,7 @@ class InsurerPrincipal:
 
     insurer_id: str
     credential_id: str
+    signer_address: str
     permitted_operations: frozenset[str]
     daily_quota: int
     rate_limit_exempt: bool = False
@@ -79,6 +84,8 @@ class _Credential:
 
 
 def _positive_integer(value: Any, *, name: str) -> int:
+    """Parse one positive security/quota setting without accepting booleans."""
+
     if isinstance(value, bool):
         raise SubmissionAuthConfigurationError(f"{name} must be a positive integer")
     try:
@@ -93,6 +100,8 @@ def _positive_integer(value: Any, *, name: str) -> int:
 
 
 def _required_text(value: Any, *, name: str) -> str:
+    """Normalize required configuration text while rejecting empty values."""
+
     if not isinstance(value, str) or not value.strip():
         raise SubmissionAuthConfigurationError(f"{name} must be a non-empty string")
     return value.strip()
@@ -112,6 +121,13 @@ def _boolean_setting(value: Any, *, name: str) -> bool:
 
 
 def _parse_credentials(raw_json: str) -> tuple[_Credential, ...]:
+    """Validate digest-only insurer configuration into immutable principals.
+
+    Uniqueness checks prevent credentials, insurers, or wallet signers from
+    becoming ambiguous. Raw API keys are never accepted in server configuration;
+    only their lowercase SHA-256 digests are retained for comparison.
+    """
+
     try:
         raw_credentials = json.loads(raw_json)
     except (json.JSONDecodeError, TypeError) as exc:
@@ -127,6 +143,7 @@ def _parse_credentials(raw_json: str) -> tuple[_Credential, ...]:
     credential_ids: set[str] = set()
     insurer_ids: set[str] = set()
     hashes: set[str] = set()
+    signer_addresses: set[str] = set()
     for index, raw in enumerate(raw_credentials):
         if not isinstance(raw, dict):
             raise SubmissionAuthConfigurationError(
@@ -157,17 +174,27 @@ def _parse_credentials(raw_json: str) -> tuple[_Credential, ...]:
             raise SubmissionAuthConfigurationError(
                 f"apiKeySha256 at index {index} must be 64 hexadecimal characters"
             )
+        raw_signer_address = _required_text(
+            raw.get("signerAddress"), name=f"signerAddress at index {index}"
+        )
+        try:
+            signer_address = Web3.to_checksum_address(raw_signer_address)
+        except ValueError as exc:
+            raise SubmissionAuthConfigurationError(
+                f"signerAddress at index {index} must be a valid Ethereum address"
+            ) from exc
+        if int(signer_address, 16) == 0:
+            raise SubmissionAuthConfigurationError(
+                f"signerAddress at index {index} cannot be the zero address"
+            )
         operations = raw.get("permittedOperations", [SUBMIT_CLAIM_OPERATION])
         if not isinstance(operations, list) or not all(
-            isinstance(operation, str) and operation.strip()
-            for operation in operations
+            isinstance(operation, str) and operation.strip() for operation in operations
         ):
             raise SubmissionAuthConfigurationError(
                 f"permittedOperations at index {index} must be a list of strings"
             )
-        permitted_operations = frozenset(
-            operation.strip() for operation in operations
-        )
+        permitted_operations = frozenset(operation.strip() for operation in operations)
         daily_quota = _positive_integer(
             raw.get("dailyQuota", 25), name=f"dailyQuota at index {index}"
         )
@@ -191,14 +218,21 @@ def _parse_credentials(raw_json: str) -> tuple[_Credential, ...]:
             raise SubmissionAuthConfigurationError(
                 "Two insurers cannot share the same API-key digest"
             )
+        normalized_signer = signer_address.lower()
+        if normalized_signer in signer_addresses:
+            raise SubmissionAuthConfigurationError(
+                "Two insurers cannot share the same Ethereum signer"
+            )
         credential_ids.add(credential_id)
         insurer_ids.add(insurer_id)
         hashes.add(api_key_sha256)
+        signer_addresses.add(normalized_signer)
         credentials.append(
             _Credential(
                 principal=InsurerPrincipal(
                     insurer_id=insurer_id,
                     credential_id=credential_id,
+                    signer_address=signer_address,
                     permitted_operations=permitted_operations,
                     daily_quota=daily_quota,
                     rate_limit_exempt=rate_limit_exempt,
@@ -221,6 +255,13 @@ class SubmissionBoundary:
         allow_rate_limit_bypass: bool,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        """Initialize the in-process authentication-abuse boundary.
+
+        These counters are a first line of defence and protect invalid-key paths.
+        PostgreSQL independently enforces durable sponsorship quotas across API
+        replicas when a valid gasless preparation reaches the service layer.
+        """
+
         self._credentials = credentials
         self._insurer_rate_limit = insurer_rate_limit_per_minute
         self._ip_rate_limit = ip_rate_limit_per_minute
@@ -241,6 +282,12 @@ class SubmissionBoundary:
 
         return self._allow_rate_limit_bypass
 
+    @property
+    def configured_principals(self) -> tuple[InsurerPrincipal, ...]:
+        """Expose immutable, keyless identities for deployment readiness checks."""
+
+        return tuple(credential.principal for credential in self._credentials)
+
     @classmethod
     def from_mapping(
         cls,
@@ -248,6 +295,8 @@ class SubmissionBoundary:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> SubmissionBoundary:
+        """Build the boundary from explicit settings with strict policy parsing."""
+
         raw_credentials = settings.get("INSURER_CREDENTIALS_JSON", "").strip()
         if not raw_credentials:
             raise SubmissionAuthConfigurationError(
@@ -272,6 +321,8 @@ class SubmissionBoundary:
 
     @classmethod
     def from_env(cls) -> SubmissionBoundary:
+        """Construct the authentication boundary from process configuration."""
+
         return cls.from_mapping(os.environ)
 
     @staticmethod
@@ -288,7 +339,9 @@ class SubmissionBoundary:
         attempts = self._ip_attempts[client_ip]
         self._prune(attempts, cutoff)
         if len(attempts) >= self._ip_rate_limit:
-            retry_after = int((attempts[0] + timedelta(minutes=1) - now).total_seconds())
+            retry_after = int(
+                (attempts[0] + timedelta(minutes=1) - now).total_seconds()
+            )
             raise SubmissionRateLimitError(
                 "Too many claim-submission attempts from this IP address",
                 retry_after=retry_after,
@@ -296,6 +349,13 @@ class SubmissionBoundary:
         attempts.append(now)
 
     def _find_principal(self, api_key: str) -> InsurerPrincipal:
+        """Match a raw API key against every configured digest in constant time.
+
+        Iterating all entries avoids revealing the matching credential's list
+        position through early-return timing. The returned principal contains no
+        API-key material and is safe to pass into downstream authorization code.
+        """
+
         if len(api_key) < _MINIMUM_API_KEY_LENGTH:
             raise SubmissionAuthenticationError("Invalid insurer API credential")
         supplied_digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
@@ -316,7 +376,9 @@ class SubmissionBoundary:
         attempts = self._insurer_attempts[principal.credential_id]
         self._prune(attempts, cutoff)
         if len(attempts) >= self._insurer_rate_limit:
-            retry_after = int((attempts[0] + timedelta(minutes=1) - now).total_seconds())
+            retry_after = int(
+                (attempts[0] + timedelta(minutes=1) - now).total_seconds()
+            )
             raise SubmissionRateLimitError(
                 "This insurer has reached its per-minute submission limit",
                 retry_after=retry_after,
@@ -390,9 +452,7 @@ class SubmissionBoundary:
             # harmless while the server-wide switch remains false. This
             # fail-closed pairing prevents an accidentally copied credential
             # record from silently disabling normal abuse protection.
-            bypassed = (
-                self._allow_rate_limit_bypass and principal.rate_limit_exempt
-            )
+            bypassed = self._allow_rate_limit_bypass and principal.rate_limit_exempt
             if not bypassed:
                 self._reserve_ip_attempt(client_ip=normalized_ip, now=now)
                 self._reserve_principal(principal, now=now)
@@ -409,8 +469,45 @@ class SubmissionBoundary:
             )
         return principal
 
+    def authenticate(
+        self,
+        *,
+        api_key: str | None,
+        client_ip: str,
+    ) -> InsurerPrincipal:
+        """Authenticate a follow-up operation without consuming claim quota.
+
+        Preparing a claim is the only operation that reserves sponsorship
+        capacity. Signature authorization and status polling still require the
+        same insurer credential, but retries must remain idempotent and free.
+        Invalid credentials continue to consume the process-local IP attempt
+        limit as a first line of defence in front of the durable sponsor quota.
+        """
+
+        now = self._clock()
+        if now.tzinfo is None:
+            raise SubmissionAuthConfigurationError(
+                "Submission clock must be timezone-aware"
+            )
+        now = now.astimezone(UTC)
+        normalized_ip = client_ip.strip() or "unknown"
+        with self._lock:
+            try:
+                principal = self._find_principal((api_key or "").strip())
+            except SubmissionAuthenticationError:
+                self._reserve_ip_attempt(client_ip=normalized_ip, now=now)
+                raise
+            if SUBMIT_CLAIM_OPERATION not in principal.permitted_operations:
+                self._reserve_ip_attempt(client_ip=normalized_ip, now=now)
+                raise SubmissionAuthorizationError(
+                    "This insurer credential cannot submit claims"
+                )
+        return principal
+
 
 def _canonical_json(document: Mapping[str, Any]) -> bytes:
+    """Serialize an authorization document to deterministic UTF-8 bytes."""
+
     return json.dumps(
         document,
         sort_keys=True,
@@ -423,6 +520,8 @@ class ClaimAuthorizationSigner:
     """Sign and verify the insurer identity embedded in an IPFS claim document."""
 
     def __init__(self, key: bytes) -> None:
+        """Require enough HMAC key material before signing public IPFS bytes."""
+
         if len(key) < _MINIMUM_AUTHORIZATION_KEY_BYTES:
             raise SubmissionAuthConfigurationError(
                 "CLAIM_AUTHORIZATION_KEY must contain at least 32 bytes"
@@ -431,6 +530,8 @@ class ClaimAuthorizationSigner:
 
     @classmethod
     def from_mapping(cls, settings: Mapping[str, str]) -> ClaimAuthorizationSigner:
+        """Load the API/worker shared authorization key from explicit settings."""
+
         raw_key = settings.get("CLAIM_AUTHORIZATION_KEY", "")
         if not raw_key:
             raise SubmissionAuthConfigurationError(
@@ -440,6 +541,8 @@ class ClaimAuthorizationSigner:
 
     @classmethod
     def from_env(cls) -> ClaimAuthorizationSigner:
+        """Construct the claim authorization signer from the environment."""
+
         return cls.from_mapping(os.environ)
 
     @staticmethod
@@ -447,13 +550,17 @@ class ClaimAuthorizationSigner:
         claim: ClaimSubmission,
         *,
         credential_id: str,
+        signer_address: str,
     ) -> dict[str, Any]:
+        """Build the exact schema-v5 document covered by the gateway HMAC."""
+
         return {
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             **claim.model_dump(by_alias=True, mode="json"),
             "submissionAuthorization": {
                 "version": AUTHORIZATION_VERSION,
                 "credentialId": credential_id,
+                "signerAddress": signer_address,
             },
         }
 
@@ -462,6 +569,13 @@ class ClaimAuthorizationSigner:
         claim: ClaimSubmission,
         principal: InsurerPrincipal,
     ) -> bytes:
+        """Bind the authenticated insurer and wallet to canonical claim bytes.
+
+        The HMAC is an internal API-to-worker attestation, not the EIP-712 wallet
+        authorization. The worker verifies both this identity binding and the
+        public on-chain claimant before it trusts claim fields for scoring.
+        """
+
         if not hmac.compare_digest(claim.insurer_id, principal.insurer_id):
             raise SubmissionAuthorizationError(
                 "Claim insurer does not match the authenticated principal"
@@ -469,6 +583,7 @@ class ClaimAuthorizationSigner:
         unsigned = self._unsigned_document(
             claim,
             credential_id=principal.credential_id,
+            signer_address=principal.signer_address,
         )
         signature = hmac.new(self._key, _canonical_json(unsigned), hashlib.sha256)
         authorized = {
@@ -481,10 +596,13 @@ class ClaimAuthorizationSigner:
         return _canonical_json(authorized)
 
     def verify_claim(self, claim: StoredClaimDocument) -> InsurerPrincipal:
+        """Verify the embedded gateway HMAC and recover its insurer principal."""
+
         authorization = claim.submission_authorization
         unsigned = self._unsigned_document(
             claim,
             credential_id=authorization.credential_id,
+            signer_address=authorization.signer_address,
         )
         expected = hmac.new(
             self._key,
@@ -498,6 +616,7 @@ class ClaimAuthorizationSigner:
         return InsurerPrincipal(
             insurer_id=claim.insurer_id,
             credential_id=authorization.credential_id,
+            signer_address=Web3.to_checksum_address(authorization.signer_address),
             permitted_operations=frozenset({SUBMIT_CLAIM_OPERATION}),
             daily_quota=0,
         )
@@ -507,6 +626,8 @@ class ClaimRequestSizeLimitMiddleware:
     """Reject oversized claim bodies before FastAPI parses or authenticates them."""
 
     def __init__(self, app: Any, *, max_bytes: int) -> None:
+        """Configure a strict pre-parser byte limit for claim preparation bodies."""
+
         if max_bytes < 1:
             raise SubmissionAuthConfigurationError(
                 "MAX_CLAIM_BODY_BYTES must be a positive integer"
@@ -515,10 +636,17 @@ class ClaimRequestSizeLimitMiddleware:
         self.max_bytes = max_bytes
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        """Buffer one claim body up to the cap, then replay it to FastAPI.
+
+        Both declared and streamed sizes are checked so a client cannot bypass
+        the limit by omitting or falsifying ``Content-Length``. Non-claim routes
+        pass through without buffering.
+        """
+
         if not (
             scope.get("type") == "http"
             and scope.get("method") == "POST"
-            and scope.get("path") == "/claims"
+            and scope.get("path") in {"/claims", "/claims/gasless/prepare"}
         ):
             await self.app(scope, receive, send)
             return
@@ -552,6 +680,8 @@ class ClaimRequestSizeLimitMiddleware:
         message_index = 0
 
         async def replay() -> dict[str, Any]:
+            """Feed the validated ASGI body messages to the downstream parser."""
+
             nonlocal message_index
             if message_index < len(messages):
                 message = messages[message_index]
@@ -562,6 +692,8 @@ class ClaimRequestSizeLimitMiddleware:
         await self.app(scope, replay, send)
 
     async def _reject(self, send: Any) -> None:
+        """Emit a small deterministic 413 response without parsing the body."""
+
         body = json.dumps(
             {"detail": f"Claim request body exceeds {self.max_bytes} bytes"},
             separators=(",", ":"),

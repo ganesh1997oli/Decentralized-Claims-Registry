@@ -8,10 +8,11 @@ that do not expose credentials, connection strings or upstream response bodies.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from apps.backend.app.blockchain import SepoliaClaimsRegistry
+from apps.backend.app.gasless_blockchain import GaslessClaimsGateway
 from apps.backend.app.indexer_operations import IndexerOperationsBoundary
 from apps.backend.app.submission_auth import (
     ClaimAuthorizationSigner,
@@ -115,11 +116,14 @@ def build_readiness_probe() -> ReadinessProbe:
         PostgresMigrator(repositories.database).require_current()
 
     def check_sepolia_contract() -> None:
-        """Verify RPC network, deployed bytecode, interface, and submitter role."""
+        """Verify contracts, trust link, and every configured insurer role."""
 
-        # The write-capable adapter verifies chain ID, bytecode, hardened
-        # interface and SUBMITTER_ROLE without submitting a transaction.
-        SepoliaClaimsRegistry.from_env()
+        # The FastAPI process is deliberately keyless. This check validates both
+        # contracts and all public submitter-role bindings without constructing
+        # the standalone relayer adapter.
+        gateway = GaslessClaimsGateway.from_env()
+        for principal in SubmissionBoundary.from_env().configured_principals:
+            gateway.validate_signer(principal.signer_address)
 
     def check_submission_dependencies() -> None:
         """Validate upload and signing configuration without performing a write."""
@@ -128,6 +132,10 @@ def build_readiness_probe() -> ReadinessProbe:
         # authorization key. Sepolia itself has a dedicated result above.
         IPFSClient.from_env(require_upload=True)
         ClaimAuthorizationSigner.from_env()
+        if len(os.environ.get("GASLESS_REQUEST_FINGERPRINT_KEY", "")) < 32:
+            raise ValueError(
+                "GASLESS_REQUEST_FINGERPRINT_KEY must contain at least 32 bytes"
+            )
 
     return ReadinessProbe(
         (
@@ -149,7 +157,7 @@ def build_readiness_probe() -> ReadinessProbe:
             ReadinessCheck(
                 "sepolia_contract",
                 check_sepolia_contract,
-                "the hardened Sepolia deployment is unavailable",
+                "the gasless Sepolia deployment is unavailable",
             ),
             ReadinessCheck(
                 "submission_dependencies",

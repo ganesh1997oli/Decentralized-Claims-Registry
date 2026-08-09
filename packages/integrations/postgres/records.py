@@ -5,9 +5,124 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
+from uuid import UUID
 
 from packages.model.contracts import FraudReason, FraudScore
+
+GaslessSubmissionState = Literal[
+    "preparing",
+    "prepared",
+    "authorized",
+    "signed",
+    "broadcast",
+    "confirmed",
+    "failed",
+    "expired",
+]
+
+
+@dataclass(frozen=True)
+class GaslessSubmissionRecord:
+    """Durable state of one idempotent insurer-authorized relay request.
+
+    One record is the current view of the state machine. Raw transaction fields
+    appear only after signing, receipt fields only after confirmation, and
+    immutable replacement history lives in ``gasless_relay_attempts`` rather
+    than being flattened into this view.
+    """
+
+    submission_id: UUID
+    credential_id: str
+    insurer_id: str
+    signer_address: str
+    chain_id: int
+    contract_address: str
+    forwarder_address: str
+    idempotency_key_hash: str
+    client_fingerprint: str
+    state: GaslessSubmissionState
+    request_fingerprint: str = ""
+    claim_hash: str | None = None
+    data_pointer: str | None = None
+    call_data: str | None = None
+    forwarder_nonce: int | None = None
+    forward_gas: int | None = None
+    deadline: int | None = None
+    insurer_signature: str | None = None
+    relayer_address: str | None = None
+    relayer_nonce: int | None = None
+    raw_transaction: str | None = None
+    transaction_hash: str | None = None
+    max_fee_per_gas: int | None = None
+    max_priority_fee_per_gas: int | None = None
+    block_number: int | None = None
+    claim_id: int | None = None
+    relay_attempts: int = 0
+    last_error_code: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    authorized_at: datetime | None = None
+    broadcast_at: datetime | None = None
+    last_broadcast_at: datetime | None = None
+    confirmed_at: datetime | None = None
+
+
+def gasless_submission_from_row(
+    row: dict[str, Any] | None,
+) -> GaslessSubmissionRecord | None:
+    """Translate one internal outbox row into its stable typed domain record.
+
+    Numeric PostgreSQL adapters may return ``Decimal`` or integer-compatible
+    values. Normalizing at this boundary keeps service and relayer code free of
+    database-driver details while preserving nullable state-specific fields.
+    """
+
+    if row is None:
+        return None
+
+    def optional_int(name: str) -> int | None:
+        """Normalize one nullable numeric database field to Python ``int``."""
+
+        value = row.get(name)
+        return int(value) if value is not None else None
+
+    return GaslessSubmissionRecord(
+        submission_id=UUID(str(row["submission_id"])),
+        credential_id=str(row["credential_id"]),
+        insurer_id=str(row["insurer_id"]),
+        signer_address=str(row["signer_address"]),
+        chain_id=int(row["chain_id"]),
+        contract_address=str(row["contract_address"]),
+        forwarder_address=str(row["forwarder_address"]),
+        idempotency_key_hash=str(row["idempotency_key_hash"]),
+        client_fingerprint=str(row["client_fingerprint"]),
+        state=str(row["state"]),  # type: ignore[arg-type]
+        request_fingerprint=str(row["request_fingerprint"]),
+        claim_hash=row.get("claim_hash"),
+        data_pointer=row.get("data_pointer"),
+        call_data=row.get("call_data"),
+        forwarder_nonce=optional_int("forwarder_nonce"),
+        forward_gas=optional_int("forward_gas"),
+        deadline=optional_int("deadline"),
+        insurer_signature=row.get("insurer_signature"),
+        relayer_address=row.get("relayer_address"),
+        relayer_nonce=optional_int("relayer_nonce"),
+        raw_transaction=row.get("raw_transaction"),
+        transaction_hash=row.get("transaction_hash"),
+        max_fee_per_gas=optional_int("max_fee_per_gas"),
+        max_priority_fee_per_gas=optional_int("max_priority_fee_per_gas"),
+        block_number=optional_int("block_number"),
+        claim_id=optional_int("claim_id"),
+        relay_attempts=int(row.get("relay_attempts", 0)),
+        last_error_code=row.get("last_error_code"),
+        created_at=row.get("created_at"),
+        updated_at=row.get("updated_at"),
+        authorized_at=row.get("authorized_at"),
+        broadcast_at=row.get("broadcast_at"),
+        last_broadcast_at=row.get("last_broadcast_at"),
+        confirmed_at=row.get("confirmed_at"),
+    )
 
 
 @dataclass(frozen=True)

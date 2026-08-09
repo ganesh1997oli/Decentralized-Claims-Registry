@@ -4,12 +4,19 @@ from types import SimpleNamespace
 import pytest
 
 from packages.integrations.ethereum import (
+    CLAIMS_FORWARDER_MODULE_ID,
     CLAIMS_REGISTRY_MODULE_ID,
     DEFAULT_DEPLOYMENTS_ROOT,
     DeploymentConfigurationError,
     DeploymentValidationError,
     connect_claims_deployment,
     load_claims_deployment,
+)
+from packages.integrations.ethereum.deployment import (
+    FORWARDER_REQUIRED_FUNCTIONS,
+    GASLESS_REGISTRY_FUNCTIONS,
+    REQUIRED_EVENTS,
+    REQUIRED_FUNCTIONS,
 )
 
 HARDENED_DEPLOYMENT_ID = "sepolia-security-audit-v1"
@@ -71,6 +78,51 @@ def test_malformed_artifact_has_a_configuration_error(tmp_path):
         load_claims_deployment(
             {"CLAIMS_DEPLOYMENT_ID": "broken"}, deployments_root=tmp_path
         )
+
+
+def test_gasless_deployment_loads_registry_and_forwarder_as_one_identity(tmp_path):
+    deployment_dir = tmp_path / "gasless-v2"
+    artifact_dir = deployment_dir / "artifacts"
+    artifact_dir.mkdir(parents=True)
+    registry_address = "0x1111111111111111111111111111111111111111"
+    forwarder_address = "0x2222222222222222222222222222222222222222"
+    (deployment_dir / "deployed_addresses.json").write_text(
+        json.dumps(
+            {
+                CLAIMS_REGISTRY_MODULE_ID: registry_address,
+                CLAIMS_FORWARDER_MODULE_ID: forwarder_address,
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry_abi = [
+        *({"type": "function", "name": name} for name in REQUIRED_FUNCTIONS),
+        *(
+            {"type": "function", "name": name}
+            for name in GASLESS_REGISTRY_FUNCTIONS
+        ),
+        *({"type": "event", "name": name} for name in REQUIRED_EVENTS),
+    ]
+    forwarder_abi = [
+        {"type": "function", "name": name}
+        for name in FORWARDER_REQUIRED_FUNCTIONS
+    ]
+    (artifact_dir / f"{CLAIMS_REGISTRY_MODULE_ID}.json").write_text(
+        json.dumps({"abi": registry_abi}),
+        encoding="utf-8",
+    )
+    (artifact_dir / f"{CLAIMS_FORWARDER_MODULE_ID}.json").write_text(
+        json.dumps({"abi": forwarder_abi}),
+        encoding="utf-8",
+    )
+
+    deployment = load_claims_deployment(
+        {"CLAIMS_DEPLOYMENT_ID": "gasless-v2"}, deployments_root=tmp_path
+    )
+
+    assert deployment.supports_gasless is True
+    assert deployment.address == registry_address
+    assert deployment.forwarder_address == forwarder_address
 
 
 class FakeCall:

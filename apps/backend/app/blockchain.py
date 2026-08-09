@@ -134,8 +134,9 @@ class SepoliaClaimsRegistry:
         """Fail before work starts when the client violates its requested role.
 
         Read access enforces absence of a private key. Write access checks the
-        hardened contract's role mappings through RPC, including the assessor's
-        active insurer scope, rather than trusting environment variable naming.
+        hardened contract's role mappings through RPC rather than trusting
+        environment variable naming. Per-insurer assessor scope is enforced by
+        the contract for each claim because one assessor may have many scopes.
         """
 
         if access == "read":
@@ -162,14 +163,9 @@ class SepoliaClaimsRegistry:
                 return
 
             authorized = self.contract.functions.isAssessor(self.account.address).call()
-            insurer = self.contract.functions.assessorInsurer(
-                self.account.address
-            ).call()
-            insurer_is_submitter = self.contract.functions.isSubmitter(insurer).call()
-            if not authorized or not insurer_is_submitter:
+            if not authorized:
                 raise BlockchainSubmissionError(
-                    f"{self.account.address} is not an authorized assessor with "
-                    f"an active submitter scope for deployment "
+                    f"{self.account.address} is not an authorized assessor for deployment "
                     f"{self.deployment.deployment_id!r}"
                 )
         except BlockchainSubmissionError:

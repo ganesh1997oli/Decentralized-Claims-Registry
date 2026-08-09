@@ -61,7 +61,7 @@ class InMemoryRegistry:
         state = self.states.setdefault(claim_id, RegistryState())
         return ChainClaim(
             claim_id=claim_id,
-            claimant="0x2222222222222222222222222222222222222222",
+            claimant="0x1111111111111111111111111111111111111111",
             claim_hash="0xhash",
             data_pointer=f"ipfs://claim-{claim_id}",
             status=state.status,
@@ -106,6 +106,7 @@ def claim_payload(insurer_id: str) -> bytes:
     principal = InsurerPrincipal(
         insurer_id=insurer_id,
         credential_id=f"{insurer_id}-integration-v1",
+        signer_address="0x1111111111111111111111111111111111111111",
         permitted_operations=frozenset({"submit_claim"}),
         daily_quota=25,
     )
@@ -119,7 +120,7 @@ def submitted_event(claim_id: int, payload: bytes) -> ClaimSubmittedEvent:
         chain_id=11_155_111,
         contract_address="0x1111111111111111111111111111111111111111",
         claim_id=claim_id,
-        claimant="0x2222222222222222222222222222222222222222",
+        claimant="0x1111111111111111111111111111111111111111",
         claim_hash=Web3.keccak(payload).hex(),
         data_pointer=f"ipfs://claim-{claim_id}",
         block_number=100 + claim_id,

@@ -1,0 +1,232 @@
+# Production gasless claim transactions
+
+This design uses OpenZeppelin's `ERC2771Forwarder`, EIP-712 signatures, and a
+separate sponsoring relayer. The insurer wallet remains the on-chain claimant;
+FastAPI never holds a submitter key and the relayer never receives a registry
+role.
+
+> This makes the transaction path suitable for production hardening. It does
+> not make the complete current application production-ready for real insurance
+> data: it still uses Sepolia and public, unencrypted IPFS, and the custom
+> contract needs an independent audit before mainnet use.
+
+## Trust and process boundaries
+
+```mermaid
+sequenceDiagram
+    participant W as Insurer wallet
+    participant A as Keyless FastAPI
+    participant P as PostgreSQL outbox
+    participant R as Isolated relayer
+    participant F as ERC2771Forwarder
+    participant C as ClaimsRegistry
+
+    W->>A: API credential + signer address + Idempotency-Key
+    A->>A: Bind credential to wallet and enforce quotas
+    A->>A: Canonical schema-v5 claim + HMAC authorization
+    A->>A: Pin and verify exact IPFS bytes
+    A->>F: Read wallet nonce and chain time
+    A->>P: Persist exact call, nonce, gas, deadline
+    A-->>W: EIP-712 ForwardRequest
+    W->>W: Review and sign exact domain/message
+    W->>A: 65-byte signature
+    A->>F: verify(request, signature)
+    A->>P: Durable authorized outbox state
+    R->>P: Reserve EOA nonce and persist signed raw transaction
+    R->>F: execute(request)
+    F->>C: submitClaim(hash, pointer, original signer context)
+    C-->>R: ClaimSubmitted(claimant = insurer wallet)
+    R->>P: Confirm exact event after safe depth
+    A-->>W: Durable receipt while browser polls
+```
+
+The interfaces are intentionally asymmetric:
+
+- The browser has the insurer wallet and a revocable API credential, but no gas.
+- FastAPI can prepare, verify, and enqueue only; it has no Ethereum private key.
+- The relayer has a capped gas wallet, but no admin, submitter, or assessor role.
+- PostgreSQL contains signed authorizations and raw relay transactions. EIP-712
+  domain, deadline, signer nonce, exact target, and exact calldata make them
+  single-use and deployment-specific.
+- `ClaimsRegistry` trusts one immutable forwarder. Rotating the forwarder
+  requires a new registry deployment and index migration.
+
+## Enforced invariants
+
+The implementation fails closed on these conditions:
+
+1. The selected deployment must contain both reviewed artifacts, live bytecode,
+   the required ABIs, and a registry `trustedForwarder()` equal to the deployed
+   forwarder address.
+2. Every credential has one unique, non-zero `signerAddress`. The connected
+   wallet header, EIP-712 `from`, stored signer, `SUBMITTER_ROLE`, emitted
+   `claimant`, and schema-v5 IPFS authorization must all agree.
+3. The signed domain fixes name `ClaimsRegistryForwarder`, version `1`, chain ID,
+   and verifying contract. The request fixes registry target, zero value, capped
+   forward gas, nonce, deadline, and `submitClaim` calldata.
+4. The API does not accept caller-selected target, function, gas, nonce, fees,
+   or forwarder. `POST /claims` is permanently disabled with HTTP 410.
+5. Idempotency keys are stored as HMACs and bound to an HMAC of the validated
+   claim. Reusing a key with different content returns a conflict.
+6. Valid sponsorship limits are enforced transactionally in PostgreSQL across
+   API replicas. A ten-minute preparation lease releases crashed preparations;
+   unsigned expired requests release the signer nonce.
+7. One active request per forwarder signer prevents two tabs from signing the
+   same on-chain nonce. This deliberately serializes each insurer wallet. Use
+   multiple separately governed submitter wallets if higher throughput is
+   required; do not weaken the nonce invariant casually.
+8. The relayer reserves EOA nonces under a database advisory lock, then persists
+   signed bytes before broadcast. HTTP retries never allocate EOA nonces.
+9. Stuck transactions are replaced at the same nonce with at least a 12.5% fee
+   increase, bounded by configured gas and fee caps. Every original and
+   replacement hash is retained because either can win the race into a block.
+10. A receipt is accepted only after the configured confirmation depth and one
+    exact `ClaimSubmitted` event matching signer, hash, pointer, and deployment.
+    The scoring worker repeats the signer-to-on-chain-claimant binding before it
+    uses any IPFS content.
+
+## Durable state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> preparing
+    preparing --> prepared: IPFS round-trip + forward request saved
+    preparing --> failed: error or lease expiry
+    prepared --> authorized: wallet signature verified on-chain
+    prepared --> expired: deadline reached
+    authorized --> signed: relayer nonce and raw tx persisted
+    authorized --> expired: deadline reached before signing
+    signed --> broadcast: exact raw bytes accepted/already known
+    broadcast --> signed: fee-bumped replacement persisted
+    broadcast --> confirmed: exact event at safe depth
+    authorized --> failed: invalid authorization
+    signed --> failed: terminal construction/revert mismatch
+    broadcast --> failed: terminal receipt mismatch or revert
+```
+
+`gasless_claim_submissions` is the user-facing state and outbox.
+`gasless_relayer_nonces` is the durable next-nonce allocator.
+`gasless_relay_attempts` retains every same-nonce transaction. Do not edit these
+tables manually during an incident; pause the relayer and follow reconciliation
+steps first.
+
+## Deployment procedure
+
+Deploying contracts is an external, funded action and is intentionally not
+performed by this branch.
+
+1. Obtain an independent review of `ClaimsRegistry.sol`,
+   `ClaimsForwarder.sol`, tests, compiler settings, and the exact OpenZeppelin
+   version in the lockfile. Build with the production compiler profile.
+2. Create distinct accounts for default admin, each insurer signer, assessor,
+   and relayer. The relayer must have a deliberately capped balance and no
+   registry role. Keep the admin offline or behind multisig governance.
+3. Deploy `ClaimsRegistryModule`. Record chain ID, both addresses, deployment
+   transaction/block, compiler metadata, source verification links, and artifact
+   checksums under a new immutable `CLAIMS_DEPLOYMENT_ID` directory. Never point
+   gasless writers at `sepolia-security-audit-v1`; it has no trusted forwarder.
+4. From the admin account, call `setSubmitter(address, true)` for every
+   `signerAddress` in `INSURER_CREDENTIALS_JSON`. Call
+   `setAssessor(assessor, insurerSigner, true)` for every insurer scope. Verify
+   `isSubmitter`, `isAssessorFor`, role separation, `defaultAdmin`, and
+   `trustedForwarder` through an independent RPC and block explorer.
+5. Apply migration `005` before API or relayer rollout. Back up PostgreSQL and
+   test restoration. A changed contract address is a new projection scope; set
+   `LISTENER_START_BLOCK` to its exact deployment block and use new Kafka topic
+   and consumer-group names so legacy events cannot be confused with v2 events.
+6. Deploy the keyless API first with the relayer stopped. Verify readiness and
+   `GET /claims/gasless/config`. Confirm the API environment contains no
+   deployer, insurer-wallet, assessor, or relayer key.
+7. Deploy the relayer separately. For a production environment,
+   `DEPLOYMENT_ENVIRONMENT=production` requires
+   `SEPOLIA_RELAYER_PRIVATE_KEY_FILE`; mount it from a secret manager. Restrict
+   process identity, filesystem, egress, and RPC credentials. A managed/HSM
+   transaction signer is preferred when the platform supports Ethereum
+   secp256k1 transaction signing.
+8. Submit a low-value canary with a dedicated insurer wallet. Verify the browser
+   signature, every database transition, the forwarder call, emitted claimant,
+   confirmation depth, listener projection, and worker authorization binding.
+9. Enable traffic gradually. Keep the legacy direct POST disabled. Do not run
+   both custodial and wallet-signed writers against the same operational path.
+
+The checked-in `infrastructure/gcp/compose.yml` remains a single-VM research
+topology. It demonstrates process-level key separation, but its single
+PostgreSQL node, Kafka broker, RPC endpoint, and host are not a production HA
+deployment. Production should use replicated managed data services, multi-zone
+compute, TLS/service identity, secret-manager mounts, controlled migrations,
+and at least two independent RPC paths.
+
+## Configuration policy
+
+API-only settings include `INSURER_CREDENTIALS_JSON`,
+`GASLESS_REQUEST_FINGERPRINT_KEY`, `CLAIM_AUTHORIZATION_KEY`, `PINATA_JWT`, and
+the forward gas/TTL caps. Relayer-only settings include its private-key file,
+transaction gas cap, fee caps, stuck threshold, and poll interval. Both receive
+only read RPC configuration, deployment ID, and PostgreSQL access appropriate
+to their process.
+
+Recommended starting caps are intentionally conservative and must be load- and
+fee-tested for the target network:
+
+- forward request gas: 250,000; hard application maximum: 500,000;
+- relay transaction gas: 500,000;
+- signature TTL: 600 seconds; hard application maximum: 3,600 seconds;
+- stuck threshold: 120 seconds;
+- confirmations: 12;
+- max fee: 100 gwei and max priority fee: 3 gwei on Sepolia examples.
+
+A fee-cap breach is retryable and visible as `fee_cap_exceeded`; it is not a
+reason to spend without bound. Changing caps is an operational change requiring
+approval and budget review.
+
+## Abuse and compromise consequences
+
+| Compromise or failure | Consequence and containment |
+| --- | --- |
+| API credential stolen | Attacker still needs the bound insurer wallet; authentication attempts and durable sponsor quotas apply. Revoke the credential. |
+| Insurer wallet stolen | Attacker can authorize claims for that insurer. Revoke both API credential and `SUBMITTER_ROLE`; preserve events for investigation. |
+| FastAPI compromised | Can pin data and deny service, but cannot forge an insurer signature or spend relayer funds directly. Rotate API/HMAC/Pinata secrets and inspect outbox rows. |
+| PostgreSQL compromised | Stored exact authorizations can be relayed once before deadline, but cannot be changed or replayed across nonce/domain. Treat claim contents and identifiers as exposed. |
+| Relayer key stolen | Attacker can drain only the funded relayer EOA; it has no registry role. Pause funding, stop relayers, rotate to a new dedicated account, and reconcile EOA nonces. |
+| RPC lies or is partitioned | Readiness fails or transactions pause. Receipt event checks prevent a wrong claim from becoming confirmed locally. Compare with an independent RPC before repair. |
+| Unknown EOA nonce use | `relayer_nonce_conflict` is retained as retryable and blocks silent skipping. Pause, inspect all attempts and chain transactions, then rotate/reconcile rather than editing the nonce table. |
+| Fee spike | Signing/replacement pauses at the configured cap. Alert operators; do not auto-raise the budget. |
+| Browser closes | The authorization and transaction continue from PostgreSQL. The submission UUID plus the same API credential can read status. |
+| Forwarder vulnerability | Stop API and relayer immediately. Because trust is immutable, deploy a new registry/forwarder pair and migrate projection scope. |
+
+Invalid credentials and malformed requests are still best rejected at a WAF or
+API gateway. Process-local invalid-attempt controls are not a substitute for a
+distributed edge limiter. Valid sponsorship accounting is durable in
+PostgreSQL.
+
+## Monitoring and incident thresholds
+
+Alert on:
+
+- any `failed` or `relayer_nonce_conflict` row;
+- `authorized` older than one poll interval plus RPC tolerance;
+- `signed` older than 30 seconds;
+- `broadcast` without a receipt past `GASLESS_STUCK_TRANSACTION_SECONDS`;
+- replacement count growth, fee-cap pauses, relayer balance runway, RPC error
+  rate, database migration drift, and confirmation lag;
+- registry role changes, default-admin transfer events, and any transaction sent
+  directly from the relayer to a target other than the forwarder.
+
+Dashboard status is not proof of finality. Use the stored block/hash and an
+independent RPC during incident response. PostgreSQL backups must include all
+three gasless tables consistently.
+
+## Rollback and recovery
+
+Stopping the relayer is the safe emergency brake; it prevents further spending
+without invalidating already signed requests. Stop the prepare endpoint as well
+when contract integrity or credential binding is in doubt. Confirmed blockchain
+transactions cannot be rolled back. Prepared/authorized requests expire by
+deadline; signed/broadcast requests must be reconciled against every stored hash
+before any nonce repair.
+
+Application rollback must preserve migration `005` and understand all states.
+Never deploy an older API that falls back to the former backend submitter key.
+For a contract rollback, treat the previous deployment as read-only history and
+deploy a new version with a new deployment ID, listener start block, topic, and
+projection scope.

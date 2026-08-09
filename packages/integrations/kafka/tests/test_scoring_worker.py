@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -30,6 +31,7 @@ AUTHORIZATION = ClaimAuthorizationSigner(
 PRINCIPAL = InsurerPrincipal(
     insurer_id="northstar-mutual",
     credential_id="northstar-test-v1",
+    signer_address="0x1111111111111111111111111111111111111111",
     permitted_operations=frozenset({"submit_claim"}),
     daily_quota=25,
 )
@@ -64,7 +66,7 @@ def claim_event(payload: bytes | None = None) -> ClaimSubmittedEvent:
         chain_id=11_155_111,
         contract_address="0x1111111111111111111111111111111111111111",
         claim_id=7,
-        claimant="0x2222222222222222222222222222222222222222",
+        claimant=PRINCIPAL.signer_address,
         claim_hash=Web3.keccak(value).hex(),
         data_pointer="ipfs://bafy-test",
         block_number=100,
@@ -91,7 +93,7 @@ class FakeScorer:
         self.calls = 0
 
     def score(self, claim):
-        assert claim.schema_version == 4
+        assert claim.schema_version == 5
         assert claim.vehicle_age == 6
         self.calls += 1
         return FraudScore(
@@ -173,7 +175,7 @@ class FakeRegistry:
     def get_claim(self, claim_id):
         return ChainClaim(
             claim_id=claim_id,
-            claimant="0x2222222222222222222222222222222222222222",
+            claimant=PRINCIPAL.signer_address,
             claim_hash="0xhash",
             data_pointer="ipfs://bafy-test",
             status=self.status,
@@ -352,6 +354,31 @@ def test_worker_rejects_claim_not_attested_by_authenticated_gateway():
 
     with pytest.raises(ClaimAuthorizationVerificationError, match="not authorized"):
         handler(claim_event(payload))
+
+    assert scorer.calls == 0
+    assert repository.record is None
+
+
+def test_worker_rejects_attested_claim_submitted_by_a_different_wallet():
+    payload = claim_payload()
+    event = replace(
+        claim_event(payload),
+        claimant="0x2222222222222222222222222222222222222222",
+    )
+    scorer = FakeScorer()
+    repository = FakeRepository()
+    handler = ClaimScoringHandler(
+        ipfs=FakeIPFS(payload),
+        scorer=scorer,
+        duplicate_detector=FakeDuplicateDetector(),
+        feature_processor=FakeFeatureProcessor(),
+        repository=repository,
+        registry=FakeRegistry(),
+        authorization=AUTHORIZATION,
+    )
+
+    with pytest.raises(ValueError, match="on-chain claimant"):
+        handler(event)
 
     assert scorer.calls == 0
     assert repository.record is None

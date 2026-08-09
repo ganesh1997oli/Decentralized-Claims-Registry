@@ -54,6 +54,27 @@ erDiagram
         text fingerprint_version
         text incident_fingerprint
     }
+    GASLESS_CLAIM_SUBMISSIONS {
+        uuid submission_id PK
+        text credential_id
+        text signer_address
+        text state
+        numeric forwarder_nonce
+        numeric relayer_nonce
+        text transaction_hash
+    }
+    GASLESS_RELAYER_NONCES {
+        bigint chain_id PK
+        text relayer_address PK
+        numeric next_nonce
+    }
+    GASLESS_RELAY_ATTEMPTS {
+        uuid submission_id PK
+        int attempt_number PK
+        text transaction_hash
+        numeric relayer_nonce
+    }
+    GASLESS_CLAIM_SUBMISSIONS ||--o{ GASLESS_RELAY_ATTEMPTS : retains
 ```
 
 Every lookup is scoped by chain ID, contract address, and claim ID. A claim
@@ -65,6 +86,7 @@ number reused by a new deployment cannot expose the old contract's result.
 | --- | --- |
 | `database.py` | Connection configuration and one-transaction cursor lifetime |
 | `claim_index_repository.py` | Idempotent event projection, indexed pages, and database checkpoint |
+| `gasless_submission_repository.py` | Idempotency, durable quotas, outbox transitions, EOA nonce reservation and relay attempts |
 | `assessment_repository.py` | Score, SHAP, processing state and chain receipt |
 | `duplicate_repository.py` | Private incident fingerprint and current matches |
 | `feature_processor.py` | Validation, direct features and policy HMAC |
@@ -74,6 +96,36 @@ number reused by a new deployment cannot expose the old contract's result.
 
 Runtime callers receive focused repositories, not a general SQL cursor or
 permission to create schema.
+
+## Gasless submission outbox
+
+The gasless workflow must survive browser retries, API restarts, relayer
+restarts, and the uncertain period between broadcasting a transaction and
+receiving its receipt. PostgreSQL is therefore part of the transaction protocol,
+not merely an analytics store.
+
+`gasless_claim_submissions` is both the insurer-visible state machine and the
+relayer outbox. It stores HMAC fingerprints rather than raw idempotency keys or
+client addresses. Reusing an idempotency key with identical claim content
+returns the original record; using it with different content is a conflict.
+
+Preparation takes transaction-scoped advisory locks for the credential and
+forwarder signer. This makes minute/daily sponsorship counts and the “one active
+forwarder nonce per insurer signer” rule consistent across multiple API
+processes. A ten-minute preparation lease releases a process that died during
+IPFS work. Unsigned prepared requests expire at their EIP-712 deadline.
+
+The relayer separately locks `(chain_id, relayer_address)`, chooses the greater
+of PostgreSQL's next nonce and the RPC pending nonce, signs the EOA transaction,
+and commits its raw bytes and hash before broadcasting. If the process dies
+after the commit, the next run sends the same bytes instead of allocating a new
+nonce.
+
+`gasless_relay_attempts` retains the original and every same-nonce fee-bumped
+replacement. Confirmation checks every stored hash because either transaction
+can win the race into a block. `gasless_relayer_nonces` is an allocator, not an
+independent claim of chain truth; unknown external use produces an operational
+nonce conflict that must be reconciled rather than silently skipped.
 
 ## Blockchain claims index
 
@@ -96,7 +148,8 @@ Migration `004_claim_index_event_search.sql` adds the focused type, state, and
 transaction indexes used by those operator queries.
 
 This projection stores only public contract-event values. It does not download
-claim bodies into PostgreSQL. Use `python -m apps.listener.reconcile_claim_index`
+claim bodies into PostgreSQL. Use
+`apps/backend/.venv/bin/python -m apps.listener.reconcile_claim_index`
 while the caught-up listener is stopped to compare it with contract state. The
 command never mutates indexed claim rows; it appends its compact result to
 `claim_index_reconciliations` for the authenticated operations dashboard.
@@ -165,13 +218,15 @@ second transaction. A completed score is never silently replaced.
 ```bash
 docker compose -f packages/integrations/kafka/compose.yml up -d postgres
 
-cp .env.example .env.local
+test -f .env.local || cp .env.example .env.local
 set -a
 source .env.local
 set +a
 
-python -m packages.integrations.postgres.migrations upgrade
-python -m packages.integrations.postgres.migrations check
+apps/backend/.venv/bin/python \
+  -m packages.integrations.postgres.migrations upgrade
+apps/backend/.venv/bin/python \
+  -m packages.integrations.postgres.migrations check
 ```
 
 `upgrade` takes a PostgreSQL advisory lock and applies each pending file in a
@@ -184,15 +239,16 @@ migration.
 Isolated repository tests:
 
 ```bash
-source apps/backend/.venv/bin/activate
-python -m pytest packages/integrations/postgres/tests -m "not integration" -q
+apps/backend/.venv/bin/python -m pytest \
+  packages/integrations/postgres/tests -m "not integration" -q
 ```
 
 Disposable-schema integration tests:
 
 ```bash
 TEST_DATABASE_URL=postgresql://claims:claims-local@127.0.0.1:5432/claims_registry \
-  python -m pytest packages/integrations/postgres/tests -m integration -q
+  apps/backend/.venv/bin/python -m pytest \
+    packages/integrations/postgres/tests -m integration -q
 ```
 
 Inspect recent feature snapshots locally:
@@ -210,4 +266,4 @@ ORDER BY created_at DESC;
 ```
 
 See the [Kafka guide](../kafka/README.md) for replay order and the
-[root data map](../../../README.md#what-is-stored-where).
+[local development guide](../../../docs/local-development.md) for startup order.

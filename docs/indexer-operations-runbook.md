@@ -24,7 +24,8 @@ query so a slow RPC cannot slow the public claims dashboard.
 Generate a dedicated high-entropy credential:
 
 ```bash
-python apps/backend/scripts/generate_operations_credential.py
+apps/backend/.venv/bin/python \
+  apps/backend/scripts/generate_operations_credential.py
 ```
 
 The command prints the raw key once and its SHA-256 digest. Give the raw key to
@@ -50,7 +51,8 @@ HTTP 401 and return to the unlock screen.
 1. Back up PostgreSQL according to the environment's normal policy.
 2. Apply all current migrations, including `003_claim_index_operations.sql` and
    `004_claim_index_event_search.sql`.
-3. Confirm `python -m packages.integrations.postgres.migrations check` succeeds.
+3. Confirm the migration check succeeds using the command from the local
+   development guide.
 4. Configure the operations digest, stale threshold, and the same
    `CONFIRMATION_BLOCKS` value used by the listener.
 5. Deploy or restart FastAPI and the frontend.
@@ -101,7 +103,7 @@ than ordinary Sepolia block and listener polling intervals.
 Use the CLI while the listener is caught up and temporarily stopped:
 
 ```bash
-python -m apps.listener.reconcile_claim_index
+apps/backend/.venv/bin/python -m apps.listener.reconcile_claim_index
 ```
 
 Both successful and unsuccessful comparisons are appended to
@@ -150,3 +152,6 @@ production environment still needs replicated PostgreSQL, redundant indexer
 instances with coordinated ownership, managed secrets, HTTPS/enterprise
 identity, alert routing, backups, and an explicit deep-reorganization recovery
 procedure.
+
+For the exact local terminal order, environment-loading commands, and readiness
+checks, see the [local development guide](local-development.md).

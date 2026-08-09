@@ -4,12 +4,14 @@ pragma solidity ^0.8.28;
 import {
     AccessControlDefaultAdminRules
 } from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 
 /// @title ClaimsRegistry
 /// @notice Anchors synthetic insurance claims while keeping their payloads
 ///         off-chain. The pointer and hash are public; they must never reference
 ///         personal, confidential, or unencrypted real-claim data.
-contract ClaimsRegistry is AccessControlDefaultAdminRules {
+contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     bytes32 public constant SUBMITTER_ROLE = keccak256("SUBMITTER_ROLE");
     bytes32 public constant ASSESSOR_ROLE = keccak256("ASSESSOR_ROLE");
     uint256 public constant MAX_DATA_POINTER_LENGTH = 128;
@@ -35,7 +37,9 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
 
     uint256 public claimCount;
     mapping(uint256 claimId => Claim claim) private _claims;
-    mapping(address assessor => address insurer) private _assessorInsurer;
+    mapping(address assessor => mapping(address insurer => bool authorized))
+        private _assessorScopes;
+    mapping(address assessor => uint256 scopeCount) private _assessorScopeCount;
 
     event ClaimSubmitted(
         uint256 indexed claimId,
@@ -67,6 +71,7 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
     error InvalidStatusTransition(Status currentStatus, Status requestedStatus);
     error FraudScoreCannotChange(uint16 currentScore, uint16 suppliedScore);
     error AssessorScopeMismatch(address assessor, address claimSubmitter);
+    error AssessorScopeNotConfigured(address assessor, address insurer);
     error InsurerNotAuthorized(address insurer);
     error RoleSeparationRequired(address account);
     error UseRoleConfigurationFunction(bytes32 role);
@@ -75,15 +80,25 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
     ///        delayed, two-step admin transfers.
     /// @param initialSubmitter Insurer service account permitted to submit.
     /// @param initialAssessor Scoring account scoped to initialSubmitter.
+    /// @param trustedForwarder Immutable ERC-2771 forwarder that verifies
+    ///        insurer signatures before restoring their execution context.
     /// @param adminTransferDelay Delay in seconds before an admin transfer can
     ///        be accepted. Production deployments should use a non-zero delay.
     constructor(
         address initialAdmin,
         address initialSubmitter,
         address initialAssessor,
+        address trustedForwarder,
         uint48 adminTransferDelay
-    ) AccessControlDefaultAdminRules(adminTransferDelay, initialAdmin) {
-        if (initialSubmitter == address(0) || initialAssessor == address(0)) {
+    )
+        AccessControlDefaultAdminRules(adminTransferDelay, initialAdmin)
+        ERC2771Context(trustedForwarder)
+    {
+        if (
+            initialSubmitter == address(0) ||
+            initialAssessor == address(0) ||
+            trustedForwarder == address(0)
+        ) {
             revert ZeroAddress();
         }
         if (
@@ -98,7 +113,8 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
 
         _grantRole(SUBMITTER_ROLE, initialSubmitter);
         _grantRole(ASSESSOR_ROLE, initialAssessor);
-        _assessorInsurer[initialAssessor] = initialSubmitter;
+        _assessorScopes[initialAssessor][initialSubmitter] = true;
+        _assessorScopeCount[initialAssessor] = 1;
 
         emit SubmitterUpdated(initialSubmitter, true);
         emit AssessorUpdated(initialAssessor, initialSubmitter, true);
@@ -111,10 +127,11 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
     ) external onlyRole(SUBMITTER_ROLE) returns (uint256 claimId) {
         if (claimHash == bytes32(0)) revert EmptyClaimHash();
         _validateDataPointer(dataPointer);
+        address submitter = _msgSender();
 
         claimId = claimCount;
         _claims[claimId] = Claim({
-            claimant: msg.sender,
+            claimant: submitter,
             claimHash: claimHash,
             dataPointer: dataPointer,
             status: Status.Submitted,
@@ -130,7 +147,7 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
 
         emit ClaimSubmitted(
             claimId,
-            msg.sender,
+            submitter,
             claimHash,
             dataPointer,
             block.timestamp
@@ -146,9 +163,10 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         uint16 fraudScore
     ) external onlyRole(ASSESSOR_ROLE) {
         Claim storage claim = _claims[claimId];
+        address assessor = _msgSender();
         if (!claim.exists) revert UnknownClaim(claimId);
-        if (_assessorInsurer[msg.sender] != claim.claimant) {
-            revert AssessorScopeMismatch(msg.sender, claim.claimant);
+        if (!_assessorScopes[assessor][claim.claimant]) {
+            revert AssessorScopeMismatch(assessor, claim.claimant);
         }
         if (fraudScore > 10000) revert InvalidFraudScore(fraudScore);
         if (!_isAllowedTransition(claim.status, newStatus)) {
@@ -168,7 +186,7 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         emit ClaimAssessed(
             claimId,
             newStatus,
-            msg.sender,
+            assessor,
             fraudScore,
             block.timestamp
         );
@@ -223,14 +241,14 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         return hasRole(ASSESSOR_ROLE, account);
     }
 
-    /// @notice Return the submitter whose claims this assessor may update.
-    function assessorInsurer(
-        address assessor
-    ) external view returns (address insurer) {
-        if (hasRole(ASSESSOR_ROLE, assessor)) {
-            return _assessorInsurer[assessor];
-        }
-        return address(0);
+    /// @notice Report whether an assessor may update one insurer's claims.
+    function isAssessorFor(
+        address assessor,
+        address insurer
+    ) external view returns (bool) {
+        return
+            hasRole(ASSESSOR_ROLE, assessor) &&
+            _assessorScopes[assessor][insurer];
     }
 
     /// @notice Grant or revoke claim-submission permission.
@@ -259,12 +277,11 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
         address insurer,
         bool authorized
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (assessor == address(0)) revert ZeroAddress();
+        if (assessor == address(0) || insurer == address(0)) {
+            revert ZeroAddress();
+        }
         if (authorized) {
-            if (
-                insurer == address(0) ||
-                !hasRole(SUBMITTER_ROLE, insurer)
-            ) {
+            if (!hasRole(SUBMITTER_ROLE, insurer)) {
                 revert InsurerNotAuthorized(insurer);
             }
             if (
@@ -273,12 +290,23 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
             ) {
                 revert RoleSeparationRequired(assessor);
             }
-            _assessorInsurer[assessor] = insurer;
-            _grantRole(ASSESSOR_ROLE, assessor);
+            if (!_assessorScopes[assessor][insurer]) {
+                _assessorScopes[assessor][insurer] = true;
+                unchecked {
+                    ++_assessorScopeCount[assessor];
+                }
+                _grantRole(ASSESSOR_ROLE, assessor);
+            }
         } else {
-            insurer = _assessorInsurer[assessor];
-            _revokeRole(ASSESSOR_ROLE, assessor);
-            delete _assessorInsurer[assessor];
+            if (!_assessorScopes[assessor][insurer]) {
+                revert AssessorScopeNotConfigured(assessor, insurer);
+            }
+            delete _assessorScopes[assessor][insurer];
+            uint256 remainingScopes = _assessorScopeCount[assessor] - 1;
+            _assessorScopeCount[assessor] = remainingScopes;
+            if (remainingScopes == 0) {
+                _revokeRole(ASSESSOR_ROLE, assessor);
+            }
         }
         emit AssessorUpdated(assessor, insurer, authorized);
     }
@@ -301,13 +329,46 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules {
 
     /// @notice Accept admin control after the configured delay has elapsed.
     function acceptDefaultAdminTransfer() public override {
+        address sender = _msgSender();
         if (
-            hasRole(SUBMITTER_ROLE, msg.sender) ||
-            hasRole(ASSESSOR_ROLE, msg.sender)
+            hasRole(SUBMITTER_ROLE, sender) ||
+            hasRole(ASSESSOR_ROLE, sender)
         ) {
-            revert RoleSeparationRequired(msg.sender);
+            revert RoleSeparationRequired(sender);
         }
         super.acceptDefaultAdminTransfer();
+    }
+
+    /// @dev Resolve the multiple Context inheritance in favour of ERC-2771.
+    ///      Direct calls still return the EVM sender, while forwarded calls
+    ///      return the EIP-712 signer appended by the immutable forwarder.
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /// @dev Strip the ERC-2771 signer suffix for forwarded calls.
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /// @dev ERC-2771 appends exactly one 20-byte signer address.
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 
     /// @dev Scoped roles must be configured through setSubmitter/setAssessor so
