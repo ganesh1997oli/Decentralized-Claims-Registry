@@ -177,6 +177,20 @@ Give its raw key only to trusted operators and place the printed digest in
 for an internet-accessible deployment, protect it with HTTPS and preferably an
 identity-aware proxy in addition to the application key.
 
+Keep the non-secret Kafka identity scoped to the selected contract deployment.
+The checked-in gasless deployment uses:
+
+```dotenv
+KAFKA_CLAIM_SUBMITTED_TOPIC="claims.submitted.sepolia-gasless-v1"
+KAFKA_CONSUMER_GROUP_ID="claims-registry-scorer-sepolia-gasless-v1"
+```
+
+When deploying a replacement contract, use `claims.submitted.<deployment-id>`
+and `claims-registry-scorer-<deployment-id>`. The deployment script rejects a
+topic or consumer group that does not match `CLAIMS_DEPLOYMENT_ID`. Compose then
+passes the same values to topic initialization, listener, worker, and Kafka
+exporter so events, offsets, and lag metrics cannot cross deployments.
+
 ### Secret ownership
 
 ```mermaid

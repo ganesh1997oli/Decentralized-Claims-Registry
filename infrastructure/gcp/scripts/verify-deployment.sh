@@ -58,11 +58,17 @@ curl --fail --silent --show-error http://127.0.0.1:9102/metrics \
 
 echo
 echo "Kafka topic"
+# Read the resolved value from the running listener instead of duplicating a
+# topic name here. This verifies the topic the application is actually using.
+kafka_topic="$(
+  "${compose[@]}" exec --no-TTY listener python -c \
+    'import os; print(os.environ["KAFKA_CLAIM_SUBMITTED_TOPIC"])'
+)"
 "${compose[@]}" exec --no-TTY kafka \
   /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server kafka:9092 \
   --describe \
-  --topic claims.submitted.v1
+  --topic "${kafka_topic}"
 
 echo
 echo "All read-only deployment checks completed."
