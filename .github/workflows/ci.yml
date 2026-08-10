@@ -55,7 +55,9 @@ jobs:
           cache-dependency-path: requirements-dev.lock
       - run: python -m pip install --require-hashes -r requirements-dev.lock
       - name: Run Python lint
-        run: ruff check apps packages --exclude packages/model/notebooks
+        run: >-
+          ruff check apps packages infrastructure/gcp/tests
+          --exclude packages/model/notebooks
       - name: Run isolated tests with branch coverage
         run: >-
           python -m pytest -m "not integration"
@@ -151,9 +153,20 @@ jobs:
   cloud-deployment:
     name: Google Cloud deployment configuration
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
+
+      - name: Build and smoke-test the shared application image
+        run: |
+          docker build \
+            --file infrastructure/gcp/Dockerfile.app \
+            --tag decentralized-claims-app:ci \
+            .
+          docker run --rm \
+            --entrypoint python \
+            decentralized-claims-app:ci \
+            -c "import apps.relayer.gasless_relayer; from packages.integrations.ethereum.deployment import load_claims_deployment; deployment = load_claims_deployment({'CLAIMS_DEPLOYMENT_ID': 'sepolia-gasless-v1'}); deployment.require_gasless()"
 
       # Compose needs the referenced file to exist while resolving services.
       # Placeholder values are safe here because no containers are started.
