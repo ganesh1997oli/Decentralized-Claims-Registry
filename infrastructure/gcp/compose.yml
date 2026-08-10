@@ -140,6 +140,18 @@ services:
       - claims-listener-state:/state
     logging: *json-logging
 
+  # The application image and scoring worker run as uid 10001 with a read-only
+  # root filesystem. This one-off container grants that uid access only to the
+  # dedicated dead-letter volume; it does not grant write access to the model.
+  scoring-state-init:
+    image: alpine:3.22
+    restart: "no"
+    network_mode: none
+    command: ["sh", "-c", "chown -R 10001:10001 /state"]
+    volumes:
+      - claims-scoring-state:/state
+    logging: *json-logging
+
   # Training is an explicit profile because it should happen only when a person
   # intends to create a reviewed artifact, not during every normal deployment.
   model-artifact-init:
@@ -307,16 +319,24 @@ services:
       DATABASE_URL: "postgresql://claims:${POSTGRES_PASSWORD}@postgres:5432/claims_registry"
       XGBOOST_MODEL_DIR: ${XGBOOST_MODEL_DIR:-/opt/claims-model}
       XGBOOST_MODEL_SHA256: ${XGBOOST_MODEL_SHA256:-}
+      # A permanent input rejection is fsync'd here before Kafka commits past
+      # it. The named volume keeps that audit evidence across container rebuilds.
+      SCORING_STATE_DIR: ${SCORING_STATE_DIR:-/var/lib/claims-scoring}
       METRICS_PORT: "9102"
     depends_on:
       kafka-init:
         condition: service_completed_successfully
       database-migrate:
         condition: service_completed_successfully
+      scoring-state-init:
+        condition: service_completed_successfully
     volumes:
       # The model directory is never writable from inside the worker. This keeps
       # a reviewed artifact unchanged throughout an experimental run.
       - "${XGBOOST_MODEL_HOST_DIR:?Set XGBOOST_MODEL_HOST_DIR in .env.gcp}:/opt/claims-model:ro"
+      # Keep dead-letter writes out of the read-only image and preserve them
+      # independently from Kafka retention and container replacement.
+      - claims-scoring-state:/var/lib/claims-scoring
     ports:
       - "127.0.0.1:9102:9102"
     stop_grace_period: 240s
@@ -361,3 +381,4 @@ volumes:
   claims-postgres-data:
   claims-kafka-data:
   claims-listener-state:
+  claims-scoring-state:

@@ -309,6 +309,12 @@ Expected result: the worker subscribes to the configured topic and waits. It
 needs the assessor key, model artifact, PostgreSQL, Kafka, the IPFS gateway, and
 the two worker-side HMAC secrets.
 
+If the worker encounters an immutable malformed or unauthorized claim, it logs
+`claim.quarantined`, records sanitized public provenance under
+`packages/integrations/kafka/.state/<deployment-id>-dead-letter.jsonl`, commits
+that Kafka event, and continues. Temporary dependency failures are not
+quarantined and remain uncommitted for retry.
+
 ## 7. Verify the system before submitting
 
 Run these from another terminal:

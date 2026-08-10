@@ -15,6 +15,7 @@ flowchart TB
         Listener["Sepolia listener"] --> Kafka[("Single Kafka broker")]
         Kafka --> Worker["Scoring worker"]
         Worker --> DB[("PostgreSQL")]
+        Worker --> Quarantine[("Persistent scoring dead letters")]
         Migrate["One-shot migrations"] --> API
         Migrate --> Worker
         Metrics["Private metrics endpoints"] --> Agent["Google Ops Agent"]
@@ -38,6 +39,7 @@ PostgreSQL, Kafka, and metrics bind to Docker networking or VM loopback.
 | One VM and one failure domain | High availability or automatic failover |
 | One Kafka broker, replication factor one | A production event cluster |
 | One PostgreSQL container and persistent volume | Managed backups or regional durability |
+| Persistent sanitized scoring dead letters | Centralized incident/replay management |
 | HTTP for a short-lived fictional-data demo | Production TLS and a managed domain |
 | Browser insurer wallets plus separate relayer and assessor | Managed/HSM transaction signing |
 | Structured logs and a focused metrics dashboard | Full production incident response |
@@ -286,9 +288,28 @@ gcloud monitoring dashboards create \
 Use model inference—not full processing time—for the 500 ms research target;
 full processing includes public network calls and Ethereum confirmation.
 
+The scoring outcome is `completed`, `failed`, or `quarantined`. A quarantined
+event is a permanent immutable-input rejection whose public provenance was
+fsync'd before Kafka advanced. A failed event remains eligible for retry.
+
 Suggested alerts for an experiment are sustained listener lag, sustained Kafka
-lag, any failed scoring event, slow p95 model inference, and a missing scrape
-target.
+lag, any failed or quarantined scoring event, slow p95 model inference, and a
+missing scrape target.
+
+Inspect scoring quarantine records without copying the claim payload:
+
+```bash
+docker compose \
+  --env-file infrastructure/gcp/.env.gcp \
+  -f infrastructure/gcp/compose.yml \
+  exec scoring-worker sh -c \
+  'find "$SCORING_STATE_DIR" -maxdepth 1 -name "*-dead-letter.jsonl" -print'
+```
+
+The `claims-scoring-state` named volume survives container replacement and is
+writable only by the one-off ownership initializer and the non-root scoring
+worker. If that volume is unavailable, the worker deliberately leaves the Kafka
+offset uncommitted rather than losing the rejection evidence.
 
 ## Evidence and shutdown
 
@@ -322,6 +343,7 @@ Confirm in the console that the VM and boot disk are gone.
 | Symptom | First check |
 | --- | --- |
 | Worker restarts | Model files/checksum, database URL, assessor role, RPC availability |
+| Kafka lag stops at one claim | Worker errors and scoring dead-letter volume permissions |
 | Listener misses history | PostgreSQL checkpoint and deployment `LISTENER_START_BLOCK` |
 | Operations page rejects access | `INDEXER_OPERATIONS_API_KEY_SHA256` and the raw operator key |
 | Metrics stay local | Ports `9101`, `9102`, `9308`, then Ops Agent status/logs |
