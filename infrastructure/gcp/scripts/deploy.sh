@@ -24,15 +24,44 @@ if grep -Eq '^[A-Za-z_][A-Za-z0-9_]*=.*CHANGE_ME' "${env_file}"; then
   exit 1
 fi
 
-# Read only the model path instead of sourcing the environment file as shell
-# code. This avoids executing an accidental command from a configuration file.
-model_host_dir="$(
-  sed -n 's/^XGBOOST_MODEL_HOST_DIR=//p' "${env_file}" | tail -n 1
-)"
-model_host_dir="${model_host_dir%\"}"
-model_host_dir="${model_host_dir#\"}"
-model_host_dir="${model_host_dir%\'}"
-model_host_dir="${model_host_dir#\'}"
+# Return one unquoted value without sourcing the environment file as shell code.
+# Treating configuration as data prevents an accidental shell command in the
+# file from running during validation.
+read_env_value() {
+  local variable_name="$1"
+  local value
+  value="$(
+    sed -n "s/^${variable_name}=//p" "${env_file}" | tail -n 1
+  )"
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+  printf '%s' "${value}"
+}
+
+deployment_id="$(read_env_value CLAIMS_DEPLOYMENT_ID)"
+kafka_topic="$(read_env_value KAFKA_CLAIM_SUBMITTED_TOPIC)"
+kafka_consumer_group="$(read_env_value KAFKA_CONSUMER_GROUP_ID)"
+expected_kafka_topic="claims.submitted.${deployment_id}"
+expected_kafka_consumer_group="claims-registry-scorer-${deployment_id}"
+
+# A topic contains claim events, while a consumer group stores progress through
+# those events. Requiring both names to include the deployment ID prevents a new
+# contract deployment from sharing either data stream or offsets with an old one.
+if [[ "${kafka_topic}" != "${expected_kafka_topic}" ]]; then
+  echo "KAFKA_CLAIM_SUBMITTED_TOPIC must be scoped to CLAIMS_DEPLOYMENT_ID." >&2
+  echo "Expected: ${expected_kafka_topic}" >&2
+  exit 1
+fi
+
+if [[ "${kafka_consumer_group}" != "${expected_kafka_consumer_group}" ]]; then
+  echo "KAFKA_CONSUMER_GROUP_ID must be scoped to CLAIMS_DEPLOYMENT_ID." >&2
+  echo "Expected: ${expected_kafka_consumer_group}" >&2
+  exit 1
+fi
+
+model_host_dir="$(read_env_value XGBOOST_MODEL_HOST_DIR)"
 if [[ "${model_host_dir}" != /* ]]; then
   model_host_dir="${gcp_dir}/${model_host_dir}"
 fi

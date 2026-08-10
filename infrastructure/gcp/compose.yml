@@ -20,12 +20,15 @@ x-chain-read-environment: &chain-read-environment
   CLAIMS_DEPLOYMENT_ID: ${CLAIMS_DEPLOYMENT_ID:?Set CLAIMS_DEPLOYMENT_ID in .env.gcp}
   RECEIPT_TIMEOUT: ${RECEIPT_TIMEOUT:-180}
 
+# The listener and scoring worker both inherit this map. Keeping one shared
+# topic/group identity ensures the producer, consumer, and monitoring exporter
+# all refer to the same contract deployment.
 x-kafka-environment: &kafka-environment
   KAFKA_ENABLED: ${KAFKA_ENABLED:-true}
   KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
-  KAFKA_CLAIM_SUBMITTED_TOPIC: ${KAFKA_CLAIM_SUBMITTED_TOPIC:-claims.submitted.v1}
+  KAFKA_CLAIM_SUBMITTED_TOPIC: ${KAFKA_CLAIM_SUBMITTED_TOPIC:-claims.submitted.sepolia-gasless-v1}
   KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-claims-registry-cloud}
-  KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID:-claims-registry-scorer-v1}
+  KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID:-claims-registry-scorer-sepolia-gasless-v1}
   KAFKA_DELIVERY_TIMEOUT_MS: ${KAFKA_DELIVERY_TIMEOUT_MS:-30000}
   KAFKA_CONSUMER_POLL_SECONDS: ${KAFKA_CONSUMER_POLL_SECONDS:-1}
   KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
@@ -113,11 +116,13 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
+        # Auto-creation is disabled on the broker, so create the exact topic
+        # selected for this deployment before either application process starts.
         /opt/kafka/bin/kafka-topics.sh \
           --bootstrap-server kafka:9092 \
           --create \
           --if-not-exists \
-          --topic claims.submitted.v1 \
+          --topic "${KAFKA_CLAIM_SUBMITTED_TOPIC:-claims.submitted.sepolia-gasless-v1}" \
           --partitions 3 \
           --replication-factor 1 \
           --config cleanup.policy=delete \
@@ -317,14 +322,16 @@ services:
     stop_grace_period: 240s
 
   # kafka-exporter translates broker offsets and consumer-group lag into a small
-  # Prometheus endpoint. Only the VM's Ops Agent can reach the bound host port.
+  # Prometheus endpoint. Its filters reuse the application identity so the
+  # dashboard cannot mix lag from another deployment. Only the VM's Ops Agent
+  # can reach the bound host port.
   kafka-exporter:
     image: danielqsj/kafka-exporter:v1.9.0
     restart: unless-stopped
     command:
       - --kafka.server=kafka:9092
-      - --group.filter=claims-registry-scorer-v1
-      - --topic.filter=claims.submitted.v1
+      - --group.filter=${KAFKA_CONSUMER_GROUP_ID:-claims-registry-scorer-sepolia-gasless-v1}
+      - --topic.filter=${KAFKA_CLAIM_SUBMITTED_TOPIC:-claims.submitted.sepolia-gasless-v1}
     depends_on:
       kafka-init:
         condition: service_completed_successfully
