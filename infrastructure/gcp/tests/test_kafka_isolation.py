@@ -92,6 +92,46 @@ def test_custom_kafka_identity_reaches_init_apps_and_monitoring() -> None:
     )
 
 
+def test_scoring_dead_letter_has_an_owned_persistent_volume() -> None:
+    """A read-only worker must be able to persist quarantine before committing."""
+
+    model = _compose_model()
+    services = model["services"]
+    assert isinstance(services, dict)
+    worker = services["scoring-worker"]
+    state_init = services["scoring-state-init"]
+    assert isinstance(worker, dict)
+    assert isinstance(state_init, dict)
+
+    environment = worker["environment"]
+    assert isinstance(environment, dict)
+    assert environment["SCORING_STATE_DIR"] == "/var/lib/claims-scoring"
+
+    # The init container and worker must mount the same named volume. Otherwise
+    # uid 10001 cannot write, quarantine fails closed, and the poison claim once
+    # again remains the first uncommitted message in its partition.
+    worker_volumes = worker["volumes"]
+    init_volumes = state_init["volumes"]
+    assert isinstance(worker_volumes, list)
+    assert isinstance(init_volumes, list)
+    assert "chown -R 10001:10001 /state" in _command_text(state_init)
+    assert any(
+        volume.get("source") == "claims-scoring-state"
+        and volume.get("target") == "/var/lib/claims-scoring"
+        for volume in worker_volumes
+        if isinstance(volume, dict)
+    )
+    assert "test -w \"$SCORING_STATE_DIR\"" in VERIFY_SCRIPT.read_text(
+        encoding="utf-8"
+    )
+    assert any(
+        volume.get("source") == "claims-scoring-state"
+        and volume.get("target") == "/state"
+        for volume in init_volumes
+        if isinstance(volume, dict)
+    )
+
+
 def test_gcp_verification_and_dashboard_do_not_select_legacy_identity() -> None:
     legacy_topic = "claims.submitted.v1"
     legacy_group = "claims-registry-scorer-v1"

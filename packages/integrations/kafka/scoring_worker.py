@@ -8,10 +8,15 @@ committed only after this handler returns successfully.
 
 from __future__ import annotations
 
+import json
+import os
 import time
-from collections.abc import Callable
-from typing import Protocol
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Protocol
 
+from pydantic import ValidationError
 from web3 import Web3
 
 from apps.backend.app.blockchain import (
@@ -22,6 +27,7 @@ from apps.backend.app.blockchain import (
 from apps.backend.app.models import StoredClaimDocument
 from apps.backend.app.submission_auth import (
     ClaimAuthorizationSigner,
+    ClaimAuthorizationVerificationError,
     InsurerPrincipal,
 )
 from packages.duplicates import CrossInsurerDuplicateDetector, DuplicateCheck
@@ -44,6 +50,175 @@ from packages.observability import (
 from .events import ClaimSubmittedEvent, KafkaClaimEventConsumer, KafkaSettings
 
 logger = get_event_logger(__name__)
+
+
+class PermanentClaimProcessingError(RuntimeError):
+    """An immutable claim defect that will produce the same result on replay.
+
+    This marker is intentionally narrow. Only errors caused by bytes or public
+    identities that are already anchored on-chain belong here. Network, Kafka,
+    database, IPFS availability, model, and Sepolia errors must keep propagating
+    normally so Kafka leaves the offset uncommitted and retries them later.
+    """
+
+    def __init__(self, reason_code: str, message: str) -> None:
+        """Attach a stable machine code without retaining private input values."""
+
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
+class ClaimDeadLetterSink(Protocol):
+    """Durably retain public metadata for a permanently rejected claim event."""
+
+    def record(
+        self,
+        event: ClaimSubmittedEvent,
+        error: PermanentClaimProcessingError,
+    ) -> None:
+        """Return only after the rejection is safe for Kafka to commit past."""
+
+        ...
+
+
+def scoring_dead_letter_path(
+    settings: Mapping[str, str],
+    *,
+    deployment_id: str,
+) -> Path:
+    """Choose a deployment-scoped operational file for rejected claim events.
+
+    A worker can be repointed at another registry while keeping the same local
+    state volume. Including the validated deployment ID in the default filename
+    prevents those independent audit streams from being mixed accidentally.
+    Operators may still provide an explicit file path for managed mounts.
+    """
+
+    state_dir = Path(
+        settings.get(
+            "SCORING_STATE_DIR",
+            str(Path(__file__).with_name(".state")),
+        )
+    )
+    return Path(
+        settings.get(
+            "SCORING_DEAD_LETTER_FILE",
+            str(state_dir / f"{deployment_id}-dead-letter.jsonl"),
+        )
+    )
+
+
+class JsonlClaimDeadLetterSink:
+    """Append sanitized rejection records to a durable, operator-readable file.
+
+    JSON Lines keeps every rejection independently readable and works with the
+    single-VM deployment without adding a second Kafka producer or database
+    dependency to the failure path. The full IPFS claim is deliberately absent:
+    blockchain coordinates are sufficient to investigate or replay the event,
+    while copying claim contents would create another sensitive-data store.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def record(
+        self,
+        event: ClaimSubmittedEvent,
+        error: PermanentClaimProcessingError,
+    ) -> None:
+        """Flush one rejection to disk before the handler allows an offset commit.
+
+        If directory creation, writing, flushing, or ``fsync`` fails, the error
+        is allowed to escape. That fail-closed behavior is important: Kafka must
+        replay the event rather than silently skipping a claim whose rejection
+        was never durably recorded.
+
+        A crash after this fsync but before Kafka's commit can append the same
+        event again on restart. That is expected under at-least-once delivery;
+        the deterministic ``eventId`` lets operators identify such duplicates.
+        """
+
+        entry: dict[str, Any] = {
+            "recordedAt": datetime.now(UTC).isoformat(),
+            "reasonCode": error.reason_code,
+            "reason": str(error),
+            # Everything below already appears in the public blockchain event.
+            # No insurer API key, authorization signature, or IPFS bytes enter
+            # this operational file.
+            "eventId": event.event_id,
+            "chainId": event.chain_id,
+            "contractAddress": event.contract_address,
+            "claimId": event.claim_id,
+            "blockNumber": event.block_number,
+            "transactionHash": event.transaction_hash,
+            "logIndex": event.log_index,
+            "dataPointer": event.data_pointer,
+        }
+        serialized = json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        file_already_existed = self.path.exists()
+        with self.path.open("a", encoding="utf-8") as dead_letter_file:
+            dead_letter_file.write(serialized)
+            dead_letter_file.flush()
+            os.fsync(dead_letter_file.fileno())
+        if not file_already_existed:
+            # The first file fsync persists its contents, while fsyncing the
+            # parent directory persists the new filename itself. Without the
+            # directory sync, a sudden VM loss could theoretically leave a
+            # committed Kafka offset but no directory entry for the new file.
+            directory_fd = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+
+
+class QuarantiningClaimHandler:
+    """Turn a durably recorded permanent rejection into handler success.
+
+    ``KafkaClaimEventConsumer`` commits only when its handler returns normally.
+    Therefore this wrapper sits around the real scorer: it suppresses an error
+    only after the dead-letter sink succeeds. All unmarked exceptions continue
+    upward unchanged, preserving retries for temporary infrastructure failures.
+    """
+
+    def __init__(
+        self,
+        handler: ClaimEventHandler,
+        *,
+        dead_letter: ClaimDeadLetterSink,
+        metrics: ScoringMetrics | None = None,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> None:
+        self.handler = handler
+        self.dead_letter = dead_letter
+        self.metrics = metrics
+        self.clock = clock
+
+    def __call__(self, event: ClaimSubmittedEvent) -> None:
+        started_at = self.clock()
+        try:
+            self.handler(event)
+        except PermanentClaimProcessingError as exc:
+            # The ordering is the safety property: first persist, then return.
+            # Returning lets the existing consumer commit this exact message;
+            # writing after return could lose the only rejection record.
+            self.dead_letter.record(event, exc)
+            if self.metrics is not None:
+                # Count quarantine only after the fsync above succeeds. This
+                # makes the metric mean that durable evidence exists and the
+                # consumer can safely commit, not merely that validation failed.
+                self.metrics.observe_handled(
+                    outcome="quarantined",
+                    duration_seconds=self.clock() - started_at,
+                )
+            logger.warning(
+                "claim.quarantined",
+                event_id=event.event_id,
+                claim_id=event.claim_id,
+                transaction_hash=event.transaction_hash,
+                reason_code=exc.reason_code,
+            )
 
 
 class ClaimReader(Protocol):
@@ -77,7 +252,7 @@ class ClaimEventHandler(Protocol):
     """Callable boundary used by the Kafka consumer loop."""
 
     def __call__(self, event: ClaimSubmittedEvent) -> None:
-        """Handle one validated, versioned claim event."""
+        """Handle one decoded chain-reference event and validate its IPFS claim."""
 
         ...
 
@@ -159,7 +334,14 @@ class AssessmentRegistry(Protocol):
 
 
 def verify_claim_payload(event: ClaimSubmittedEvent, payload: bytes) -> None:
-    """Refuse to score bytes that do not match the public on-chain commitment."""
+    """Refuse to score bytes that do not match the public on-chain commitment.
+
+    Hash mismatch deliberately remains an unmarked, retryable error here. The
+    listener already verified the immutable pointer before publishing, so a
+    later mismatch can indicate a temporary gateway/cache response rather than
+    a malformed claim. Quarantining it immediately could skip data that a later
+    clean IPFS response would successfully verify.
+    """
 
     actual_hash = Web3.keccak(payload).hex().removeprefix("0x").lower()
     expected_hash = event.claim_hash.removeprefix("0x").lower()
@@ -197,7 +379,11 @@ class MonitoredScorer:
 
 
 class MonitoredClaimHandler:
-    """Count completed and failed Kafka handler calls in one reliable place."""
+    """Measure completed and retryable-failure handler calls.
+
+    Permanent rejection metrics belong to ``QuarantiningClaimHandler`` because
+    only that outer boundary knows whether durable quarantine actually succeeded.
+    """
 
     def __init__(
         self,
@@ -206,7 +392,7 @@ class MonitoredClaimHandler:
         *,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
-        """Wrap the full handler with success/failure and duration metrics."""
+        """Wrap scoring with completed/retryable-failure duration metrics."""
 
         self.handler = handler
         self.metrics = metrics
@@ -218,6 +404,11 @@ class MonitoredClaimHandler:
         started_at = self.clock()
         try:
             self.handler(event)
+        except PermanentClaimProcessingError:
+            # The outer QuarantiningClaimHandler records this outcome only after
+            # its durable dead-letter write succeeds. Counting it here would
+            # claim success even when that operations volume is unavailable.
+            raise
         except Exception:
             self.metrics.observe_handled(
                 outcome="failed",
@@ -282,13 +473,38 @@ class ClaimScoringHandler:
         verify_claim_payload(event, payload)
         # Parse only after the hash check. This prevents a different document at
         # the same external URL from ever reaching feature extraction.
-        claim = StoredClaimDocument.model_validate_json(payload)
-        principal = self.authorization.verify_claim(claim)
+        try:
+            claim = StoredClaimDocument.model_validate_json(payload)
+        except ValidationError as exc:
+            # The bytes and their hash are already permanent on Sepolia. A
+            # missing field, invalid type, unsupported schema version, or broken
+            # JSON document will therefore fail identically on every replay.
+            # Do not include Pydantic's full error here because it can echo input
+            # values into logs and the dead-letter operations file.
+            raise PermanentClaimProcessingError(
+                "invalid_claim_schema",
+                "Claim document does not match the supported stored-claim schema",
+            ) from exc
+
+        try:
+            principal = self.authorization.verify_claim(claim)
+        except ClaimAuthorizationVerificationError as exc:
+            # Gateway authorization is embedded in the immutable IPFS bytes. A
+            # missing or invalid signature cannot be repaired by waiting for an
+            # external service, so it is safe to quarantine rather than retry.
+            raise PermanentClaimProcessingError(
+                "invalid_claim_authorization",
+                "Claim document does not contain valid gateway authorization",
+            ) from exc
         if principal.insurer_id != claim.insurer_id:
-            raise ValueError("Authorized insurer identity does not match the claim")
+            raise PermanentClaimProcessingError(
+                "insurer_identity_mismatch",
+                "Authorized insurer identity does not match the claim",
+            )
         if principal.signer_address.lower() != event.claimant.lower():
-            raise ValueError(
-                "Authorized insurer signer does not match the on-chain claimant"
+            raise PermanentClaimProcessingError(
+                "claimant_identity_mismatch",
+                "Authorized insurer signer does not match the on-chain claimant",
             )
         duplicate_check = self.duplicate_detector.check(event, claim)
         feature_snapshot = self.feature_processor.process(
@@ -386,6 +602,12 @@ def main() -> None:
     # confirmation can take seconds, so combining both would make a 500 ms
     # inference target impossible to interpret fairly.
     scorer = MonitoredScorer(XGBoostFraudScorer.from_env(), metrics)
+    # Construct the registry once so its validated deployment identity can also
+    # scope the dead-letter filename. The worker must never write rejections for
+    # two independent contracts into one ambiguous operations file.
+    registry = SepoliaClaimsRegistry.from_env(
+        private_key_env="SEPOLIA_ASSESSOR_PRIVATE_KEY"
+    )
     handler = ClaimScoringHandler(
         ipfs=IPFSClient.from_env(),
         scorer=scorer,
@@ -394,22 +616,33 @@ def main() -> None:
         ),
         feature_processor=ClaimFeatureProcessor.from_env(repositories.features),
         repository=repositories.assessments,
-        registry=SepoliaClaimsRegistry.from_env(
-            private_key_env="SEPOLIA_ASSESSOR_PRIVATE_KEY"
-        ),
+        registry=registry,
         authorization=ClaimAuthorizationSigner.from_env(),
     )
     monitored_handler = MonitoredClaimHandler(handler, metrics)
+    dead_letter_file = scoring_dead_letter_path(
+        os.environ,
+        deployment_id=registry.deployment.deployment_id,
+    )
+    # The outer wrapper returns normally only for a permanent error that has
+    # already been fsync'd to the operations file. The unchanged consumer then
+    # commits that message and can read the next claim in the partition.
+    partition_safe_handler = QuarantiningClaimHandler(
+        monitored_handler,
+        dead_letter=JsonlClaimDeadLetterSink(dead_letter_file),
+        metrics=metrics,
+    )
     consumer = KafkaClaimEventConsumer(settings)
     logger.info(
         "scoring_worker.started",
         topic=settings.topic,
         bootstrap_servers=settings.bootstrap_servers,
         consumer_group_id=settings.consumer_group_id,
+        dead_letter_file=str(dead_letter_file),
     )
     try:
         while not shutdown.is_set():
-            consumer.process_next(monitored_handler)
+            consumer.process_next(partition_safe_handler)
     except KeyboardInterrupt:
         # This remains as a defensive fallback for platforms that deliver a
         # KeyboardInterrupt before our SIGINT handler has been installed.

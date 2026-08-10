@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -11,15 +12,22 @@ from apps.backend.app.blockchain import ChainAssessment, ChainClaim
 from apps.backend.app.models import ClaimSubmission, StoredClaimDocument
 from apps.backend.app.submission_auth import (
     ClaimAuthorizationSigner,
-    ClaimAuthorizationVerificationError,
     InsurerPrincipal,
 )
 from packages.duplicates import DuplicateCheck
-from packages.integrations.kafka import ClaimSubmittedEvent
+from packages.integrations.kafka import (
+    ClaimSubmittedEvent,
+    KafkaClaimEventConsumer,
+    KafkaSettings,
+)
 from packages.integrations.kafka.scoring_worker import (
     ClaimScoringHandler,
+    JsonlClaimDeadLetterSink,
     MonitoredClaimHandler,
     MonitoredScorer,
+    PermanentClaimProcessingError,
+    QuarantiningClaimHandler,
+    scoring_dead_letter_path,
 )
 from packages.integrations.postgres import AssessmentRecord
 from packages.model.contracts import FraudReason, FraudScore
@@ -86,6 +94,59 @@ class FakeIPFS:
         assert pointer == "ipfs://bafy-test"
         self.downloads += 1
         return self.payload
+
+
+class PointerIPFS:
+    """Return different immutable IPFS bytes for consecutive claim events."""
+
+    def __init__(self, payloads: dict[str, bytes]):
+        self.payloads = payloads
+
+    def download_pointer(self, pointer, *, attempts=3):
+        return self.payloads[pointer]
+
+
+class FakeDeadLetter:
+    """Capture quarantined metadata without writing a real operations file."""
+
+    def __init__(self):
+        self.entries = []
+
+    def record(self, event, error):
+        self.entries.append((event, error))
+
+
+class FakeKafkaMessage:
+    """Small Confluent-Kafka message substitute used by the offset regression."""
+
+    def __init__(self, value: bytes):
+        self._value = value
+
+    def value(self):
+        return self._value
+
+    def error(self):
+        return None
+
+
+class QueueKafkaConsumer:
+    """Deliver messages in one fixed order, representing a single partition."""
+
+    def __init__(self, messages: list[FakeKafkaMessage]):
+        self.messages = iter(messages)
+        self.commits = []
+
+    def subscribe(self, _topics):
+        return None
+
+    def poll(self, _timeout):
+        return next(self.messages, None)
+
+    def commit(self, *, message, asynchronous):
+        self.commits.append((message, asynchronous))
+
+    def close(self):
+        return None
 
 
 class FakeScorer:
@@ -352,9 +413,10 @@ def test_worker_rejects_claim_not_attested_by_authenticated_gateway():
         authorization=AUTHORIZATION,
     )
 
-    with pytest.raises(ClaimAuthorizationVerificationError, match="not authorized"):
+    with pytest.raises(PermanentClaimProcessingError) as raised:
         handler(claim_event(payload))
 
+    assert raised.value.reason_code == "invalid_claim_authorization"
     assert scorer.calls == 0
     assert repository.record is None
 
@@ -377,11 +439,162 @@ def test_worker_rejects_attested_claim_submitted_by_a_different_wallet():
         authorization=AUTHORIZATION,
     )
 
-    with pytest.raises(ValueError, match="on-chain claimant"):
+    with pytest.raises(PermanentClaimProcessingError) as raised:
         handler(event)
 
+    assert raised.value.reason_code == "claimant_identity_mismatch"
     assert scorer.calls == 0
     assert repository.record is None
+
+
+def test_malformed_claim_is_quarantined_before_the_next_claim_is_processed():
+    """A permanent poison claim must not hold the partition offset forever."""
+
+    malformed_payload = b'{"schemaVersion":5,"claimReference":"incomplete"}'
+    valid_payload = claim_payload()
+    malformed_event = replace(
+        claim_event(malformed_payload),
+        event_id=ClaimSubmittedEvent.make_event_id(
+            11_155_111,
+            "0xmalformed",
+            2,
+        ),
+        data_pointer="ipfs://malformed-claim",
+        transaction_hash="0xmalformed",
+    )
+    valid_event = replace(
+        claim_event(valid_payload),
+        event_id=ClaimSubmittedEvent.make_event_id(11_155_111, "0xvalid", 3),
+        claim_id=8,
+        data_pointer="ipfs://valid-claim",
+        transaction_hash="0xvalid",
+        log_index=3,
+    )
+    repository = FakeRepository()
+    scorer = FakeScorer()
+    dead_letter = FakeDeadLetter()
+    handler = ClaimScoringHandler(
+        ipfs=PointerIPFS(
+            {
+                malformed_event.data_pointer: malformed_payload,
+                valid_event.data_pointer: valid_payload,
+            }
+        ),
+        scorer=scorer,
+        duplicate_detector=FakeDuplicateDetector(),
+        feature_processor=FakeFeatureProcessor(),
+        repository=repository,
+        registry=FakeRegistry(),
+        authorization=AUTHORIZATION,
+    )
+    partition_safe_handler = QuarantiningClaimHandler(
+        handler,
+        dead_letter=dead_letter,
+    )
+    messages = [
+        FakeKafkaMessage(malformed_event.to_json_bytes()),
+        FakeKafkaMessage(valid_event.to_json_bytes()),
+    ]
+    fake_kafka = QueueKafkaConsumer(messages)
+    consumer = KafkaClaimEventConsumer(KafkaSettings(), consumer=fake_kafka)
+
+    # Both events represent the order in one Kafka partition. The first call
+    # must return normally after durable quarantine; that return is what lets
+    # Kafka commit its offset and deliver the second event.
+    assert consumer.process_next(partition_safe_handler)
+    assert consumer.process_next(partition_safe_handler)
+
+    assert len(dead_letter.entries) == 1
+    rejected_event, error = dead_letter.entries[0]
+    assert rejected_event == malformed_event
+    assert isinstance(error, PermanentClaimProcessingError)
+    assert error.reason_code == "invalid_claim_schema"
+    assert scorer.calls == 1
+    assert repository.completed == (valid_event.event_id, "0xassessment", 101)
+    assert fake_kafka.commits == [
+        (messages[0], False),
+        (messages[1], False),
+    ]
+
+
+def test_quarantine_wrapper_never_skips_a_transient_failure():
+    """Only immutable input defects are safe to commit past."""
+
+    dead_letter = FakeDeadLetter()
+
+    def unavailable_dependency(_event):
+        raise RuntimeError("IPFS gateway temporarily unavailable")
+
+    partition_safe_handler = QuarantiningClaimHandler(
+        unavailable_dependency,
+        dead_letter=dead_letter,
+    )
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        partition_safe_handler(claim_event())
+
+    assert dead_letter.entries == []
+
+
+def test_quarantine_wrapper_fails_closed_when_dead_letter_storage_fails():
+    """A failed audit write must leave Kafka free to replay the claim."""
+
+    class UnwritableDeadLetter:
+        def record(self, _event, _error):
+            raise OSError("dead-letter volume is unavailable")
+
+    def permanently_invalid(_event):
+        raise PermanentClaimProcessingError(
+            "invalid_claim_schema",
+            "Claim document does not match the supported stored-claim schema",
+        )
+
+    partition_safe_handler = QuarantiningClaimHandler(
+        permanently_invalid,
+        dead_letter=UnwritableDeadLetter(),
+    )
+    message = FakeKafkaMessage(claim_event().to_json_bytes())
+    fake_kafka = QueueKafkaConsumer([message])
+    consumer = KafkaClaimEventConsumer(KafkaSettings(), consumer=fake_kafka)
+
+    with pytest.raises(OSError, match="dead-letter volume"):
+        consumer.process_next(partition_safe_handler)
+
+    # The commit call occurs after the handler. Propagating the storage failure
+    # therefore guarantees that Kafka will redeliver instead of losing the only
+    # evidence that this immutable claim was rejected.
+    assert fake_kafka.commits == []
+
+
+def test_jsonl_dead_letter_contains_public_provenance_not_claim_bytes(tmp_path):
+    """Operators need replay coordinates, not a second copy of claim data."""
+
+    path = tmp_path / "worker-state" / "dead-letter.jsonl"
+    event = claim_event()
+    error = PermanentClaimProcessingError(
+        "invalid_claim_schema",
+        "Claim document does not match the supported stored-claim schema",
+    )
+
+    JsonlClaimDeadLetterSink(path).record(event, error)
+
+    entry = json.loads(path.read_text(encoding="utf-8"))
+    assert entry["reasonCode"] == "invalid_claim_schema"
+    assert entry["eventId"] == event.event_id
+    assert entry["claimId"] == event.claim_id
+    assert entry["transactionHash"] == event.transaction_hash
+    assert entry["dataPointer"] == event.data_pointer
+    assert "submissionAuthorization" not in entry
+    assert "description" not in entry
+
+
+def test_default_dead_letter_path_is_scoped_to_the_deployment(tmp_path):
+    path = scoring_dead_letter_path(
+        {"SCORING_STATE_DIR": str(tmp_path)},
+        deployment_id="sepolia-gasless-v2",
+    )
+
+    assert path == tmp_path / "sepolia-gasless-v2-dead-letter.jsonl"
 
 
 def test_monitored_scorer_records_only_model_work(monkeypatch):
@@ -434,7 +647,24 @@ def test_monitored_handler_records_success_and_failure(monkeypatch):
     with pytest.raises(RuntimeError, match="temporary dependency"):
         failing_handler(event)
 
+    quarantined_clock = iter((40.0, 40.2))
+
+    def reject_permanently(_event):
+        raise PermanentClaimProcessingError(
+            "invalid_claim_schema",
+            "Claim document does not match the supported stored-claim schema",
+        )
+
+    quarantined_handler = QuarantiningClaimHandler(
+        reject_permanently,
+        dead_letter=FakeDeadLetter(),
+        metrics=metrics,
+        clock=lambda: next(quarantined_clock),
+    )
+    quarantined_handler(event)
+
     output = generate_latest(metrics.registry).decode("utf-8")
     assert seen == [event.event_id]
     assert 'claims_scoring_events_total{outcome="completed"} 1.0' in output
     assert 'claims_scoring_events_total{outcome="failed"} 1.0' in output
+    assert 'claims_scoring_events_total{outcome="quarantined"} 1.0' in output

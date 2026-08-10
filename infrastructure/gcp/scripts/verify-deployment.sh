@@ -57,6 +57,14 @@ curl --fail --silent --show-error http://127.0.0.1:9102/metrics \
   | grep -E "^claims_scoring_(events_total|processing_seconds_count)"
 
 echo
+echo "Scoring quarantine storage"
+# This check does not create a test file. It confirms that the non-root worker
+# can write its dedicated persistent mount; without that permission the worker
+# must fail closed and a poison message would remain uncommitted.
+"${compose[@]}" exec --no-TTY scoring-worker sh -c \
+  'test -d "$SCORING_STATE_DIR" && test -w "$SCORING_STATE_DIR" && printf "writable: %s\n" "$SCORING_STATE_DIR"'
+
+echo
 echo "Kafka topic"
 # Read the resolved value from the running listener instead of duplicating a
 # topic name here. This verifies the topic the application is actually using.

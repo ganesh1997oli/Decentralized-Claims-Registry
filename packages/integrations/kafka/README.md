@@ -11,7 +11,10 @@ flowchart LR
     Listener --> Topic[("deployment-specific claims topic")]
     Topic --> Worker["Scoring worker"]
     Worker --> Verify["Reverify hash + signed insurer authorization"]
-    Verify --> Duplicate["Cross-insurer duplicate check"]
+    Verify --> Valid{"Immutable input valid?"}
+    Valid -->|Yes| Duplicate["Cross-insurer duplicate check"]
+    Valid -->|No| DeadLetter[("Durable dead-letter file")]
+    DeadLetter --> RejectedCommit["Commit rejected event offset"]
     Duplicate --> Features["Versioned feature snapshot"]
     Features --> Model["XGBoost + local SHAP"]
     Model --> DB[("PostgreSQL")]
@@ -27,7 +30,9 @@ flowchart TD
     ID --> Publish{"Kafka acknowledged?"}
     Publish -->|No| SameBlock["Checkpoint stays; publish again"]
     Publish -->|Yes| Handle{"Worker completed?"}
-    Handle -->|No| SameOffset["Offset stays; handle again"]
+    Handle -->|Temporary failure| SameOffset["Offset stays; handle again"]
+    Handle -->|Permanent input defect| Quarantine["fsync public rejection metadata"]
+    Quarantine --> Done
     Handle -->|Yes| Done["Commit offset"]
     SameOffset --> Existing{"Existing database / chain state?"}
     Existing -->|Completed| Done
@@ -38,6 +43,37 @@ This is at-least-once delivery with application-level idempotency. PostgreSQL
 uses the deterministic event ID and chain/contract/claim identity as uniqueness
 boundaries. A replay after the chain write checks the existing status before
 submitting another transaction.
+
+## Permanent claim quarantine
+
+The worker deliberately treats failures in two different ways:
+
+- Temporary infrastructure failures—such as an unavailable IPFS gateway,
+  PostgreSQL, RPC endpoint, or Kafka broker—escape the handler. Kafka does not
+  commit that offset, so the same event is retried later.
+- Permanent defects in the immutable claim—an unsupported/malformed stored
+  schema, invalid gateway authorization, or mismatch between the authorized
+  insurer wallet and the on-chain claimant—are written to an append-only JSONL
+  dead-letter file. The file is flushed and `fsync` is called before the handler
+  returns, allowing Kafka to commit the rejected event and process the next
+  claim in that partition.
+
+The record contains only public replay coordinates: chain, contract, claim,
+block, transaction, log index, IPFS pointer, and a sanitized reason code. It
+does not copy IPFS claim bytes, insurer API credentials, authorization
+signatures, descriptions, or evidence.
+
+For local runs, the default file is:
+
+```text
+packages/integrations/kafka/.state/<deployment-id>-dead-letter.jsonl
+```
+
+Set `SCORING_STATE_DIR` to choose another directory or
+`SCORING_DEAD_LETTER_FILE` to choose the complete filename. If the file cannot
+be written durably, the worker fails closed: the error remains uncommitted and
+Kafka retries it. Never delete or edit a dead-letter record merely to reduce
+lag; investigate the public event and document any intentional replay first.
 
 ## Files
 
@@ -145,8 +181,8 @@ Add `--volumes` only when you intentionally want to remove local Kafka and
 PostgreSQL data.
 
 The local single broker uses plaintext inside the development boundary. A
-production design needs managed or replicated brokers, TLS/SASL, monitoring,
-retry policy, and a dead-letter workflow.
+production design still needs managed or replicated brokers, TLS/SASL,
+centralized dead-letter retention, alerting, and an approved replay workflow.
 
 See the [listener guide](../../../apps/listener/README.md) and the
 [PostgreSQL guide](../postgres/README.md).

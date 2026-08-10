@@ -49,13 +49,15 @@ def test_scoring_metrics_keep_model_and_total_latency_separate(monkeypatch):
     )
     metrics.observe_handled(outcome="completed", duration_seconds=8.5)
     metrics.observe_handled(outcome="failed", duration_seconds=1.2)
+    metrics.observe_handled(outcome="quarantined", duration_seconds=0.3)
 
     output = rendered_metrics(metrics)
 
     assert "claims_scoring_model_inference_seconds_sum 0.24" in output
-    assert "claims_scoring_processing_seconds_sum 9.7" in output
+    assert "claims_scoring_processing_seconds_sum 10.0" in output
     assert 'claims_scoring_events_total{outcome="completed"} 1.0' in output
     assert 'claims_scoring_events_total{outcome="failed"} 1.0' in output
+    assert 'claims_scoring_events_total{outcome="quarantined"} 1.0' in output
     assert "claims_scoring_last_probability 0.71" in output
     assert "claims_scoring_last_fraud_score 7100.0" in output
 

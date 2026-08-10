@@ -179,7 +179,10 @@ class ScoringMetrics:
             registry=registry,
             handled_events=Counter(
                 "claims_scoring_events_total",
-                "Kafka events handled by outcome.",
+                (
+                    "Kafka handlers by completed, quarantined, or transiently "
+                    "failed outcome."
+                ),
                 labelnames=("outcome",),
                 registry=registry,
             ),
