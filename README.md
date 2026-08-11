@@ -37,13 +37,13 @@ screening work without holding the submission request open.
 
 ## What is stored where
 
-| Place | Stored | Deliberately not stored |
-| --- | --- | --- |
-| Browser | Form state in memory; latest public receipt in local storage | Wallet keys, Pinata JWT, HMAC keys, saved insurer credential |
-| IPFS | Authorized schema-v5 synthetic claim JSON | Encryption or access control |
-| Sepolia | Claim ID, submitter, hash, CID, status, score, timestamps | Full claim, SHAP reasons, private fingerprints |
-| Kafka | Versioned blockchain and IPFS references | Full claim payload |
-| PostgreSQL | Gasless idempotency/outbox/transaction attempts; confirmed public index and event history; versioned features, keyed fingerprints, score, SHAP reasons | HMAC keys, raw policy reference, description, evidence |
+| Place      | Stored                                                                                                                                                 | Deliberately not stored                                      |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| Browser    | Form state in memory; latest public receipt in local storage                                                                                           | Wallet keys, Pinata JWT, HMAC keys, saved insurer credential |
+| IPFS       | Authorized schema-v5 synthetic claim JSON                                                                                                              | Encryption or access control                                 |
+| Sepolia    | Claim ID, submitter, hash, CID, status, score, timestamps                                                                                              | Full claim, SHAP reasons, private fingerprints               |
+| Kafka      | Versioned blockchain and IPFS references                                                                                                               | Full claim payload                                           |
+| PostgreSQL | Gasless idempotency/outbox/transaction attempts; confirmed public index and event history; versioned features, keyed fingerprints, score, SHAP reasons | HMAC keys, raw policy reference, description, evidence       |
 
 ## Trust and replay boundaries
 
@@ -119,7 +119,7 @@ Sepolia RPC URL, Pinata JWT, and fictional Sepolia role wallets. Never use a
 wallet that holds real assets.
 
 ```bash
-cd /Users/ganesh/Documents/Codex/Decentralized-Claims-Registry
+cd <folder_directory>Decentralized-Claims-Registry
 
 python3 -m venv apps/backend/.venv
 apps/backend/.venv/bin/python -m pip install --require-hashes \
@@ -183,7 +183,7 @@ Open five terminal tabs. In every tab, change to the repository root and load
 the local configuration:
 
 ```bash
-cd /Users/ganesh/Documents/Codex/Decentralized-Claims-Registry
+cd <folder_directory>Decentralized-Claims-Registry
 set -a; source .env.local; set +a
 ```
 
@@ -263,10 +263,10 @@ The worker can create only `UnderReview` or `Flagged`. It never infers
 
 ## Sepolia deployments
 
-| Purpose | Deployment ID | Registry | Forwarder | Start block |
-| --- | --- | --- | --- | --- |
-| Current gasless research flow | `sepolia-gasless-v1` | [`0x5A7A...A300`](https://sepolia.etherscan.io/address/0x5A7A3e22843397f998823D0d58aBd2E1f4b2A300) | [`0x0e68...5F0`](https://sepolia.etherscan.io/address/0x0e68Ac27a344f454373604Eec3144c427661E5F0) | `11426492` |
-| Read-only legacy history | `sepolia-security-audit-v1` | [`0x2AbA...B78cB`](https://sepolia.etherscan.io/address/0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB) | None | `11377814` |
+| Purpose                       | Deployment ID               | Registry                                                                                            | Forwarder                                                                                         | Start block |
+| ----------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------- |
+| Current gasless research flow | `sepolia-gasless-v1`        | [`0x5A7A...A300`](https://sepolia.etherscan.io/address/0x5A7A3e22843397f998823D0d58aBd2E1f4b2A300)  | [`0x0e68...5F0`](https://sepolia.etherscan.io/address/0x0e68Ac27a344f454373604Eec3144c427661E5F0) | `11426492`  |
+| Read-only legacy history      | `sepolia-security-audit-v1` | [`0x2AbA...B78cB`](https://sepolia.etherscan.io/address/0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB) | None                                                                                              | `11377814`  |
 
 Both use Sepolia chain ID `11155111`. Runtime selection is explicit through
 `CLAIMS_DEPLOYMENT_ID`; the listener checkpoint and projection are additionally
@@ -323,23 +323,23 @@ retention rules, and a validated and monitored model.
 
 ## Focused guides
 
-| Area | Guide |
-| --- | --- |
-| Complete local startup | [Local development](docs/local-development.md) |
-| FastAPI and insurer credentials | [Backend](apps/backend/README.md) |
-| Gasless relayer | [Relayer](apps/relayer/README.md) |
-| Gasless security and operations | [Production gasless runbook](docs/production-gasless-transactions.md) |
-| Indexer monitoring and recovery | [Indexer operations runbook](docs/indexer-operations-runbook.md) |
+| Area                                    | Guide                                                                  |
+| --------------------------------------- | ---------------------------------------------------------------------- |
+| Complete local startup                  | [Local development](docs/local-development.md)                         |
+| FastAPI and insurer credentials         | [Backend](apps/backend/README.md)                                      |
+| Gasless relayer                         | [Relayer](apps/relayer/README.md)                                      |
+| Gasless security and operations         | [Production gasless runbook](docs/production-gasless-transactions.md)  |
+| Indexer monitoring and recovery         | [Indexer operations runbook](docs/indexer-operations-runbook.md)       |
 | Claim limits and controlled test bypass | [Rate-limit runbook](docs/rate-limiting-and-authorised-test-bypass.md) |
-| Browser behaviour | [Frontend](apps/frontend/README.md) |
-| Block polling and recovery | [Listener](apps/listener/README.md) |
-| Roles and lifecycle rules | [Smart contract](apps/contracts/README.md) |
-| Training and SHAP | [Model](packages/model/README.md) |
-| Notebook workflow | [Notebooks](packages/model/notebooks/README.md) |
-| Public file storage | [IPFS](packages/integrations/ipfs/README.md) |
-| Event delivery and replay | [Kafka](packages/integrations/kafka/README.md) |
-| Feature and assessment storage | [PostgreSQL](packages/integrations/postgres/README.md) |
-| Single-VM deployment | [Google Cloud](infrastructure/gcp/README.md) |
+| Browser behaviour                       | [Frontend](apps/frontend/README.md)                                    |
+| Block polling and recovery              | [Listener](apps/listener/README.md)                                    |
+| Roles and lifecycle rules               | [Smart contract](apps/contracts/README.md)                             |
+| Training and SHAP                       | [Model](packages/model/README.md)                                      |
+| Notebook workflow                       | [Notebooks](packages/model/notebooks/README.md)                        |
+| Public file storage                     | [IPFS](packages/integrations/ipfs/README.md)                           |
+| Event delivery and replay               | [Kafka](packages/integrations/kafka/README.md)                         |
+| Feature and assessment storage          | [PostgreSQL](packages/integrations/postgres/README.md)                 |
+| Single-VM deployment                    | [Google Cloud](infrastructure/gcp/README.md)                           |
 
 Stop local infrastructure without deleting its volumes:
 

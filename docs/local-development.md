@@ -13,15 +13,15 @@ IPFS through Pinata.
 The application is not one server. It is a small event-driven system made of
 independent processes:
 
-| Process | Why it exists | Keep it running? |
-| --- | --- | --- |
-| PostgreSQL | Durable gasless outbox, index, assessments and checkpoints | Yes |
-| Kafka | Carries verified claim references to the scoring worker | Yes |
-| FastAPI | Authenticates insurers, prepares EIP-712 data and serves reads | Yes |
-| React/Vite | Browser UI and insurer-wallet signature flow | Yes |
-| Gasless relayer | Pays Sepolia gas for authorized requests | Yes |
-| Blockchain listener | Converts confirmed contract logs into the local index | Yes |
-| Scoring worker | Verifies, enriches and scores claims, then writes assessment | Yes |
+| Process             | Why it exists                                                  | Keep it running? |
+| ------------------- | -------------------------------------------------------------- | ---------------- |
+| PostgreSQL          | Durable gasless outbox, index, assessments and checkpoints     | Yes              |
+| Kafka               | Carries verified claim references to the scoring worker        | Yes              |
+| FastAPI             | Authenticates insurers, prepares EIP-712 data and serves reads | Yes              |
+| React/Vite          | Browser UI and insurer-wallet signature flow                   | Yes              |
+| Gasless relayer     | Pays Sepolia gas for authorized requests                       | Yes              |
+| Blockchain listener | Converts confirmed contract logs into the local index          | Yes              |
+| Scoring worker      | Verifies, enriches and scores claims, then writes assessment   | Yes              |
 
 The order matters. Infrastructure and migrations must exist before the API,
 relayer, listener, or worker tries to use them.
@@ -73,7 +73,7 @@ brew install libomp
 All remaining commands assume this repository root:
 
 ```bash
-cd /Users/ganesh/Documents/Codex/Decentralized-Claims-Registry
+cd <folder_directory>Decentralized-Claims-Registry
 ```
 
 ## 2. Install Python and Node dependencies
@@ -109,29 +109,29 @@ test -f .env.local || cp .env.example .env.local
 
 The checked-in gasless Sepolia artifact currently identifies:
 
-| Item | Value |
-| --- | --- |
-| Deployment ID | `sepolia-gasless-v1` |
-| Registry | `0x5A7A3e22843397f998823D0d58aBd2E1f4b2A300` |
-| Forwarder | `0x0e68Ac27a344f454373604Eec3144c427661E5F0` |
-| Registry deployment block | `11426492` |
-| Chain ID | `11155111` (Sepolia) |
+| Item                      | Value                                        |
+| ------------------------- | -------------------------------------------- |
+| Deployment ID             | `sepolia-gasless-v1`                         |
+| Registry                  | `0x5A7A3e22843397f998823D0d58aBd2E1f4b2A300` |
+| Forwarder                 | `0x0e68Ac27a344f454373604Eec3144c427661E5F0` |
+| Registry deployment block | `11426492`                                   |
+| Chain ID                  | `11155111` (Sepolia)                         |
 
 At minimum, review these settings in `.env.local`:
 
-| Setting | What to provide |
-| --- | --- |
-| `SEPOLIA_RPC_URL` | A working Sepolia HTTP RPC endpoint |
-| `CLAIMS_DEPLOYMENT_ID` | `sepolia-gasless-v1` for the artifact above |
-| `LISTENER_START_BLOCK` | `11426492` for the artifact above |
-| `PINATA_JWT` | Pinata upload token used only by FastAPI |
-| `INSURER_CREDENTIALS_JSON` | Digest-only API credentials bound to on-chain submitter wallets |
-| `SEPOLIA_ASSESSOR_PRIVATE_KEY` | Assessor wallet scoped to the chosen insurer |
-| `SEPOLIA_RELAYER_PRIVATE_KEY` or `_FILE` | Dedicated funded wallet with no registry role |
-| `CLAIM_AUTHORIZATION_KEY` | Random shared API/worker HMAC secret |
-| `DUPLICATE_FINGERPRINT_KEY` | Separate random worker HMAC secret |
-| `GASLESS_REQUEST_FINGERPRINT_KEY` | Separate random API idempotency HMAC secret |
-| `INDEXER_OPERATIONS_API_KEY_SHA256` | Digest of the read-only dashboard key |
+| Setting                                  | What to provide                                                 |
+| ---------------------------------------- | --------------------------------------------------------------- |
+| `SEPOLIA_RPC_URL`                        | A working Sepolia HTTP RPC endpoint                             |
+| `CLAIMS_DEPLOYMENT_ID`                   | `sepolia-gasless-v1` for the artifact above                     |
+| `LISTENER_START_BLOCK`                   | `11426492` for the artifact above                               |
+| `PINATA_JWT`                             | Pinata upload token used only by FastAPI                        |
+| `INSURER_CREDENTIALS_JSON`               | Digest-only API credentials bound to on-chain submitter wallets |
+| `SEPOLIA_ASSESSOR_PRIVATE_KEY`           | Assessor wallet scoped to the chosen insurer                    |
+| `SEPOLIA_RELAYER_PRIVATE_KEY` or `_FILE` | Dedicated funded wallet with no registry role                   |
+| `CLAIM_AUTHORIZATION_KEY`                | Random shared API/worker HMAC secret                            |
+| `DUPLICATE_FINGERPRINT_KEY`              | Separate random worker HMAC secret                              |
+| `GASLESS_REQUEST_FINGERPRINT_KEY`        | Separate random API idempotency HMAC secret                     |
+| `INDEXER_OPERATIONS_API_KEY_SHA256`      | Digest of the read-only dashboard key                           |
 
 ### Insurer credential and wallet binding
 
@@ -237,7 +237,7 @@ the repository root, and load `.env.local` before the command.
 ### Terminal A — FastAPI
 
 ```bash
-cd /Users/ganesh/Documents/Codex/Decentralized-Claims-Registry
+cd <folder_directory>Decentralized-Claims-Registry
 set -a; source .env.local; set +a
 
 # FastAPI must remain keyless. Remove wallet keys inherited from the shared
@@ -260,7 +260,7 @@ need an Ethereum transaction key; it prepares data that the insurer wallet signs
 ### Terminal B — React frontend
 
 ```bash
-cd /Users/ganesh/Documents/Codex/Decentralized-Claims-Registry
+cd <folder_directory>Decentralized-Claims-Registry
 set -a; source .env.local; set +a
 npm --prefix apps/frontend run dev -- --host 127.0.0.1
 ```
@@ -271,7 +271,7 @@ Open <http://127.0.0.1:5173>. Vite exposes only variables beginning with
 ### Terminal C — gasless relayer
 
 ```bash
-cd /Users/ganesh/Documents/Codex/Decentralized-Claims-Registry
+cd <folder_directory>Decentralized-Claims-Registry
 set -a; source .env.local; set +a
 apps/backend/.venv/bin/python -m apps.relayer.gasless_relayer
 ```
@@ -283,7 +283,7 @@ an admin, submitter, or assessor.
 ### Terminal D — confirmed-block listener/indexer
 
 ```bash
-cd /Users/ganesh/Documents/Codex/Decentralized-Claims-Registry
+cd <folder_directory>Decentralized-Claims-Registry
 set -a; source .env.local; set +a
 unset SEPOLIA_DEPLOYER_PRIVATE_KEY SEPOLIA_ASSESSOR_PRIVATE_KEY
 unset SEPOLIA_RELAYER_PRIVATE_KEY SEPOLIA_RELAYER_PRIVATE_KEY_FILE
@@ -297,7 +297,7 @@ block is included rather than silently beginning at the latest head.
 ### Terminal E — Kafka scoring worker
 
 ```bash
-cd /Users/ganesh/Documents/Codex/Decentralized-Claims-Registry
+cd <folder_directory>Decentralized-Claims-Registry
 set -a; source .env.local; set +a
 unset SEPOLIA_DEPLOYER_PRIVATE_KEY
 unset SEPOLIA_RELAYER_PRIVATE_KEY SEPOLIA_RELAYER_PRIVATE_KEY_FILE
@@ -391,20 +391,20 @@ database checkpoint and records the result; it does not rewrite projection rows.
 
 ## Troubleshooting
 
-| Symptom | Likely cause | What to do |
-| --- | --- | --- |
-| `No module named pytest`, `uvicorn`, or `prometheus_client` | Wrong Python environment | Use `apps/backend/.venv/bin/python -m ...` exactly |
-| `LISTENER_START_BLOCK is required` | Missing or unloaded environment | Set `11426492`, source `.env.local`, restart listener |
-| Readiness: insurer authentication unavailable | Invalid JSON/digest/duplicate signer | Validate `INSURER_CREDENTIALS_JSON`; keep signer addresses unique |
-| Readiness: gasless deployment unavailable | Wrong RPC, artifact, trusted forwarder, or submitter role | Check `CLAIMS_DEPLOYMENT_ID`, RPC chain, bytecode, and every configured signer role |
-| Readiness: PostgreSQL unavailable | Container stopped or migration pending | Check Compose, then run migration `upgrade` and `check` |
-| Submission says wallet does not match | Connected wallet differs from credential signer | Switch the browser wallet account or correct the credential record |
-| Listener repeatedly logs Kafka publication failure | Deployment-specific topic is missing | Run the topic-creation command in step 5 |
-| Worker cannot load model | Training artifact missing/checksum mismatch | Run step 4 again and keep `XGBOOST_MODEL_DIR` unchanged |
-| Operations API key is invalid | Digest entered in UI, old API process, or wrong raw key | Enter the raw key and restart FastAPI after digest changes |
-| Relayer reports fee-cap exceeded | Sepolia fee quote is above policy | Wait or make a reviewed cap change; do not remove the cap casually |
-| Claim stays authorized | Relayer stopped, unfunded, or cannot reach PostgreSQL/RPC | Inspect relayer terminal and its wallet balance |
-| Claim is confirmed but absent from dashboard | Listener still behind confirmations | Watch `/operations` block lag and listener logs |
+| Symptom                                                     | Likely cause                                              | What to do                                                                          |
+| ----------------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `No module named pytest`, `uvicorn`, or `prometheus_client` | Wrong Python environment                                  | Use `apps/backend/.venv/bin/python -m ...` exactly                                  |
+| `LISTENER_START_BLOCK is required`                          | Missing or unloaded environment                           | Set `11426492`, source `.env.local`, restart listener                               |
+| Readiness: insurer authentication unavailable               | Invalid JSON/digest/duplicate signer                      | Validate `INSURER_CREDENTIALS_JSON`; keep signer addresses unique                   |
+| Readiness: gasless deployment unavailable                   | Wrong RPC, artifact, trusted forwarder, or submitter role | Check `CLAIMS_DEPLOYMENT_ID`, RPC chain, bytecode, and every configured signer role |
+| Readiness: PostgreSQL unavailable                           | Container stopped or migration pending                    | Check Compose, then run migration `upgrade` and `check`                             |
+| Submission says wallet does not match                       | Connected wallet differs from credential signer           | Switch the browser wallet account or correct the credential record                  |
+| Listener repeatedly logs Kafka publication failure          | Deployment-specific topic is missing                      | Run the topic-creation command in step 5                                            |
+| Worker cannot load model                                    | Training artifact missing/checksum mismatch               | Run step 4 again and keep `XGBOOST_MODEL_DIR` unchanged                             |
+| Operations API key is invalid                               | Digest entered in UI, old API process, or wrong raw key   | Enter the raw key and restart FastAPI after digest changes                          |
+| Relayer reports fee-cap exceeded                            | Sepolia fee quote is above policy                         | Wait or make a reviewed cap change; do not remove the cap casually                  |
+| Claim stays authorized                                      | Relayer stopped, unfunded, or cannot reach PostgreSQL/RPC | Inspect relayer terminal and its wallet balance                                     |
+| Claim is confirmed but absent from dashboard                | Listener still behind confirmations                       | Watch `/operations` block lag and listener logs                                     |
 
 ## Stop without deleting local data
 
