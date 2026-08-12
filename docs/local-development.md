@@ -132,6 +132,7 @@ At minimum, review these settings in `.env.local`:
 | `DUPLICATE_FINGERPRINT_KEY`              | Separate random worker HMAC secret                              |
 | `GASLESS_REQUEST_FINGERPRINT_KEY`        | Separate random API idempotency HMAC secret                     |
 | `INDEXER_OPERATIONS_API_KEY_SHA256`      | Digest of the read-only dashboard key                           |
+| `ASSESSOR_OUTCOME_CREDENTIALS_JSON`      | Human reviewer references and digest-only API credentials       |
 
 ### Insurer credential and wallet binding
 
@@ -177,6 +178,29 @@ apps/backend/.venv/bin/python \
 Enter the raw key in the `/operations` page. Put only the printed digest in
 `INDEXER_OPERATIONS_API_KEY_SHA256`. Restart FastAPI after changing the digest.
 The raw key and digest are not interchangeable.
+
+### Human assessor outcome credential
+
+The human outcome step has a separate credential and browser route. For the
+checked-in local example, open `/assessor` and enter:
+
+```text
+local-assessor-outcome-key-change-before-hosting
+```
+
+FastAPI stores only its digest in `ASSESSOR_OUTCOME_CREDENTIALS_JSON`. Generate
+a private replacement before any hosted research demonstration:
+
+```bash
+apps/backend/.venv/bin/python \
+  apps/backend/scripts/generate_assessor_outcome_credential.py \
+  research-assessor-1
+```
+
+Give the raw key only to the human reviewer and place the printed JSON record in
+the API environment. Restart FastAPI after changing this setting. The reviewer
+can record `ConfirmedFraud`, `Legitimate`, or `Inconclusive` only after model
+screening exists; the result stays off-chain and does not trigger retraining.
 
 ## 4. Build the reviewed model artifact
 

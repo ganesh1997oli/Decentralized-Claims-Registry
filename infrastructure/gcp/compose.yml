@@ -239,6 +239,9 @@ services:
       GASLESS_SIGNATURE_TTL_SECONDS: ${GASLESS_SIGNATURE_TTL_SECONDS:-600}
       INDEXER_OPERATIONS_API_KEY_SHA256: ${INDEXER_OPERATIONS_API_KEY_SHA256:?Set INDEXER_OPERATIONS_API_KEY_SHA256 in .env.gcp}
       INDEXER_STALE_AFTER_SECONDS: ${INDEXER_STALE_AFTER_SECONDS:-120}
+      # Human reviewers use a separate digest-only identity. This value grants no
+      # insurer submission, indexer operations, or Ethereum signing authority.
+      ASSESSOR_OUTCOME_CREDENTIALS_JSON: ${ASSESSOR_OUTCOME_CREDENTIALS_JSON:?Set ASSESSOR_OUTCOME_CREDENTIALS_JSON in .env.gcp}
       CONFIRMATION_BLOCKS: ${CONFIRMATION_BLOCKS:-12}
       DATABASE_URL: "postgresql://claims:${POSTGRES_PASSWORD}@postgres:5432/claims_registry"
     depends_on:

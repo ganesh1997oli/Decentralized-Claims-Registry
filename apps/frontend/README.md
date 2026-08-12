@@ -22,6 +22,10 @@ flowchart LR
 The page never treats a model result as a decision. `UnderReview` and `Flagged`
 both mean a person would need to review the claim.
 
+The separate `/assessor` surface authenticates a human reviewer, presents the
+claim pointer and model context, and records an off-chain fraud outcome. It does
+not update claim approval/rejection state or initiate model retraining.
+
 ## Source map
 
 | File | Owns |
@@ -32,11 +36,13 @@ both mean a person would need to review the claim.
 | `src/components/ReceiptCard.tsx` | Anchor, duplicate, score and SHAP presentation |
 | `src/components/ClaimsDashboard.tsx` | Newest-first indexed list, checkpoint and selection |
 | `src/components/IndexerOperationsDashboard.tsx` | Authenticated lag, counts, reconciliation and recent-event telemetry |
+| `src/components/AssessorOutcomeDashboard.tsx` | Separate human-review queue and append-only fraud-outcome form |
 | `src/api.ts` | Gasless fetch calls plus runtime response-shape validation |
 | `src/wallet.ts` | Narrow EIP-1193 connect, chain switch, and EIP-712 boundary |
 | `src/gasless-submission.ts` | Idempotent prepare, sign, authorize, recovery, and polling workflow |
 | `src/display-receipt.ts` | Safe merge of a browser receipt and current chain state |
 | `src/receipt-storage.ts` | Latest public submission receipt only |
+| `test/` | App-level feature tests kept outside production source, matching `apps/contracts/test` |
 
 ## Browser data boundary
 
@@ -46,6 +52,7 @@ flowchart TD
     Storage["localStorage"] --> B["Latest public receipt only"]
     Bundle["Vite bundle"] --> C["VITE_API_BASE_URL + VITE_IPFS_GATEWAY"]
     Never["Never in browser"] --> D["Relayer key, Pinata JWT, HMAC keys, database credentials"]
+    Session["assessor tab sessionStorage"] --> E["Raw human-assessor key only"]
 ```
 
 The insurer credential is cleared when the form resets and is not written to

@@ -37,6 +37,17 @@ erDiagram
         jsonb reasons
         text processing_status
     }
+    CLAIM_ASSESSOR_OUTCOMES {
+        uuid outcome_id PK
+        bigint chain_id
+        text contract_address
+        bigint claim_id
+        int revision
+        text outcome
+        text assessor_reference
+        text notes
+        timestamptz assessed_at
+    }
     CLAIM_FEATURE_SNAPSHOTS {
         text event_id PK
         bigint chain_id
@@ -88,6 +99,7 @@ number reused by a new deployment cannot expose the old contract's result.
 | `claim_index_repository.py` | Idempotent event projection, indexed pages, and database checkpoint |
 | `gasless_submission_repository.py` | Idempotency, durable quotas, outbox transitions, EOA nonce reservation and relay attempts |
 | `assessment_repository.py` | Score, SHAP, processing state and chain receipt |
+| `assessor_outcome_repository.py` | Append-only human fraud conclusions and correction revisions |
 | `duplicate_repository.py` | Private incident fingerprint and current matches |
 | `feature_processor.py` | Validation, direct features and policy HMAC |
 | `feature_repository.py` | Historical enrichment and immutable feature snapshots |
@@ -96,6 +108,20 @@ number reused by a new deployment cannot expose the old contract's result.
 
 Runtime callers receive focused repositories, not a general SQL cursor or
 permission to create schema.
+
+## Human assessor outcomes
+
+`claim_assessor_outcomes` is intentionally independent from
+`claim_assessments`. The latter is immutable model evidence; the former is an
+attributable human conclusion selected from `ConfirmedFraud`, `Legitimate`, and
+`Inconclusive`. An advisory lock allocates monotonic revisions per
+chain/contract/claim, preserving corrections without silently replacing prior
+review evidence.
+
+The table stores neither `Approved` nor `Rejected`, because those contract states
+are business dispositions rather than fraud labels. It also contains no model
+version, probability, retraining flag, or deployment action. `Inconclusive`
+records remain useful audit evidence but are not eligible for a binary label.
 
 ## Gasless submission outbox
 

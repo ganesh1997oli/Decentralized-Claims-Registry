@@ -5,6 +5,7 @@ from packages.duplicates import DuplicateCheck, DuplicateMatch
 from .assessment_repository import (
     PostgresAssessmentRepository,
 )
+from .assessor_outcome_repository import PostgresAssessorOutcomeRepository
 from .claim_index_repository import (
     PostgresClaimIndexCheckpoint,
     PostgresClaimIndexRepository,
@@ -37,6 +38,7 @@ from .gasless_submission_repository import (
 from .migrations import MigrationStatus, PostgresMigrator
 from .records import (
     AssessmentRecord,
+    AssessorOutcomeRecord,
     ClaimIndexEventPage,
     ClaimIndexEventRecord,
     ClaimIndexOperationsSnapshot,
@@ -44,6 +46,7 @@ from .records import (
     ClaimIndexStatus,
     GaslessSubmissionRecord,
     GaslessSubmissionState,
+    HumanFraudOutcome,
     IndexedClaim,
 )
 from .repositories import PostgresRepositories
@@ -52,6 +55,7 @@ __all__ = [
     "FEATURE_VERSION",
     "POLICY_FINGERPRINT_VERSION",
     "AssessmentRecord",
+    "AssessorOutcomeRecord",
     "ClaimFeatureConfigurationError",
     "ClaimFeatureInput",
     "ClaimFeatureProcessingError",
@@ -70,9 +74,11 @@ __all__ = [
     "GaslessSubmissionNotFoundError",
     "GaslessSubmissionRecord",
     "GaslessSubmissionState",
+    "HumanFraudOutcome",
     "IndexedClaim",
     "MigrationStatus",
     "PostgresAssessmentRepository",
+    "PostgresAssessorOutcomeRepository",
     "PostgresClaimIndexCheckpoint",
     "PostgresClaimIndexRepository",
     "PostgresConfigurationError",

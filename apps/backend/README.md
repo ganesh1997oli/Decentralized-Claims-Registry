@@ -45,6 +45,7 @@ feature persistence, XGBoost/SHAP, and assessment write-back.
 | `app/main.py` | Routes, dependencies, CORS, liveness and error translation |
 | `app/models.py` | Strict request, IPFS document and response shapes |
 | `app/submission_auth.py` | Digest-based credentials, quotas, request size and HMAC attestation |
+| `app/assessor_outcomes.py` | Independent digest-only human-review authentication |
 | `app/gasless_service.py` | Idempotent IPFS, EIP-712, sponsorship and status workflow |
 | `app/gasless_blockchain.py` | Keyless preparation plus least-privilege relay adapter |
 | `apps/relayer/gasless_relayer.py` | Separate durable sign/broadcast/confirm worker |
@@ -62,6 +63,9 @@ dashboard does not construct a Web3 client, wallet, or Pinata upload client.
 | `GET` | `/health/ready` | Checks auth config, migrations, IPFS signing config and Sepolia access |
 | `GET` | `/claims?page=1&page_size=10` | Confirmed indexed state, newest first; maximum page size 50 |
 | `GET` | `/claims/{claim_id}/assessment` | Stored model and duplicate result, or `404` while pending |
+| `GET` | `/assessor/session` | Validate a human-review key and return its bound assessor reference |
+| `GET` | `/assessor/claims/{claim_id}/outcome` | Latest private human outcome revision, or `404` before review |
+| `POST` | `/assessor/claims/{claim_id}/outcome` | Append `ConfirmedFraud`, `Legitimate`, or `Inconclusive` after screening |
 | `GET` | `/claims/gasless/config` | Public server-authoritative wallet network preflight |
 | `POST` | `/claims/gasless/prepare` | Authenticate, upload, and return exact EIP-712 typed data |
 | `POST` | `/claims/gasless/{id}/authorize` | Verify wallet signature and enqueue sponsorship |
@@ -144,6 +148,7 @@ Useful URLs:
 | `ALLOW_RATE_LIMIT_BYPASS` | API | Master switch for explicitly exempt performance-test credentials; default `false` |
 | `INDEXER_OPERATIONS_API_KEY_SHA256` | API | SHA-256 digest of the separate read-only operations credential |
 | `INDEXER_STALE_AFTER_SECONDS` | API | Marks a lagging checkpoint stalled after this age; default 120 seconds |
+| `ASSESSOR_OUTCOME_CREDENTIALS_JSON` | API | Human assessor references and SHA-256 API-key digests for the private outcome console |
 | `CONFIRMATION_BLOCKS` | API + listener | Keeps the displayed safe head consistent with listener confirmation depth |
 
 The deployer, relayer, assessor, and insurer wallet keys do not belong in the API
@@ -169,6 +174,29 @@ Give the raw value to trusted operators and store only the printed
 the raw key in `sessionStorage`, which clears when that browser tab is closed;
 it is never bundled into frontend JavaScript or sent in a URL. Put the route
 behind an enterprise identity-aware proxy when one is available.
+
+### Human assessor outcome authentication
+
+The `/assessor` browser surface uses `X-Assessor-API-Key`. It does not accept an
+insurer key, operations key, Ethereum wallet, or the scoring worker's private
+key. Generate each reviewer credential independently:
+
+```bash
+apps/backend/.venv/bin/python \
+  apps/backend/scripts/generate_assessor_outcome_credential.py \
+  research-assessor-1
+```
+
+Give the raw key only to that reviewer and append only the printed digest-bearing
+JSON record to `ASSESSOR_OUTCOME_CREDENTIALS_JSON`. The assessor reference comes
+from this server-side binding, never from a request body. The browser retains the
+raw key only in its tab's `sessionStorage`.
+
+Recording a human outcome creates an append-only PostgreSQL revision. It neither
+updates Sepolia nor maps claim `Approved`/`Rejected` status to fraud. A later
+governed dataset process may consider `ConfirmedFraud` and `Legitimate` records;
+`Inconclusive` is explicitly ineligible for a binary label. No endpoint in this
+module trains, approves, or deploys a model.
 
 ### Local insurer credentials
 

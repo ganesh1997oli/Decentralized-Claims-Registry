@@ -1,6 +1,7 @@
 // Page composition stays here; request coordination and domain-specific UI live
 // in the workspace hook and focused components below this boundary.
 import { ClaimForm } from './components/ClaimForm.tsx'
+import { AssessorOutcomeDashboard } from './components/AssessorOutcomeDashboard.tsx'
 import { ClaimsDashboard } from './components/ClaimsDashboard.tsx'
 import { IndexerOperationsDashboard } from './components/IndexerOperationsDashboard.tsx'
 import { ReceiptCard } from './components/ReceiptCard.tsx'
@@ -88,6 +89,12 @@ function RegistryApp() {
             </span>
           </a>
           <div className="flex items-center gap-3">
+            <a
+              href="/assessor"
+              className="hidden rounded-full px-3 py-2 text-xs font-semibold text-white/70 transition hover:bg-white/5 hover:text-white md:inline-flex"
+            >
+              Human assessor
+            </a>
             <a
               href="/operations"
               className="hidden rounded-full px-3 py-2 text-xs font-semibold text-white/70 transition hover:bg-white/5 hover:text-white md:inline-flex"
@@ -198,6 +205,38 @@ function RegistryApp() {
   )
 }
 
+function AssessorApp() {
+  // Human outcomes use a separate shell and credential so simply visiting the
+  // public claims application never mounts private review state or endpoints.
+  return (
+    <div className="min-h-screen">
+      <header className="border-b border-white/10 bg-ink text-white">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4 sm:px-8 lg:px-12">
+          <a href="/assessor" className="flex items-center gap-3 rounded-md">
+            <span className="grid size-10 place-items-center rounded-xl bg-coral font-black text-ink">CR</span>
+            <span>
+              <span className="block text-sm font-bold">Claims Registry</span>
+              <span className="block text-xs text-white/55">Human assessor outcomes</span>
+            </span>
+          </a>
+          <a href="/" className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-bold text-white/75 hover:bg-white/10 hover:text-white">
+            ← Claims application
+          </a>
+        </div>
+      </header>
+      <main className="mx-auto max-w-7xl px-5 py-10 sm:px-8 lg:px-12 lg:py-12">
+        <AssessorOutcomeDashboard />
+      </main>
+      <footer className="border-t border-ink/8 bg-white/60">
+        <div className="mx-auto flex max-w-7xl flex-col gap-2 px-5 py-6 text-xs text-slate sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-12">
+          <span>Authenticated human review · Off-chain outcomes</span>
+          <span>No automatic claim decision or model retraining</span>
+        </div>
+      </footer>
+    </div>
+  )
+}
+
 function OperationsApp() {
   // The operations route has a separate shell so its authenticated telemetry is
   // not mounted, polled, or given a credential while a user visits the claims UI.
@@ -241,13 +280,15 @@ function OperationsApp() {
 }
 
 function App() {
-  // This small deployment has two entry surfaces and needs no client-side router.
-  // Normalize only the trailing slash; every non-operations path falls back to the
-  // claims application so static hosting refreshes remain predictable.
+  // These small, credential-separated surfaces need no client-side router.
+  // Normalize only the trailing slash; unknown paths remain the public claims app.
   const pathname =
     typeof window === 'undefined' ? '/' : (window.location?.pathname ?? '/')
-  return pathname.replace(/\/$/, '') === '/operations' ? (
+  const route = pathname.replace(/\/$/, '')
+  return route === '/operations' ? (
     <OperationsApp />
+  ) : route === '/assessor' ? (
+    <AssessorApp />
   ) : (
     <RegistryApp />
   )

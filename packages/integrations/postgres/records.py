@@ -270,6 +270,59 @@ class AssessmentRecord:
         )
 
 
+# These values describe a human investigative conclusion, not the model's
+# UnderReview/Flagged screening status or the claim's Approved/Rejected business
+# disposition. ``Inconclusive`` intentionally has no binary training-label value.
+HumanFraudOutcome = Literal["ConfirmedFraud", "Legitimate", "Inconclusive"]
+
+
+@dataclass(frozen=True)
+class AssessorOutcomeRecord:
+    """One immutable revision of an authorised human fraud conclusion.
+
+    Revisions are append-only. ``assessor_reference`` comes from server-side
+    authentication rather than the request body, making the record attributable
+    without storing an API key or asserting that the reference is a public legal
+    identity. The detailed outcome remains off-chain by design.
+    """
+
+    outcome_id: UUID
+    chain_id: int
+    contract_address: str
+    claim_id: int
+    revision: int
+    outcome: HumanFraudOutcome
+    assessor_reference: str
+    notes: str | None
+    assessed_at: datetime
+
+
+def assessor_outcome_from_row(
+    row: dict[str, Any] | None,
+) -> AssessorOutcomeRecord | None:
+    """Translate a trusted PostgreSQL row into the human-outcome record."""
+
+    if row is None:
+        return None
+    assessed_at = row["assessed_at"]
+    if not isinstance(assessed_at, datetime):
+        raise TypeError("PostgreSQL returned an invalid assessor outcome timestamp")
+    outcome = str(row["outcome"])
+    if outcome not in {"ConfirmedFraud", "Legitimate", "Inconclusive"}:
+        raise ValueError("PostgreSQL returned an invalid human fraud outcome")
+    return AssessorOutcomeRecord(
+        outcome_id=UUID(str(row["outcome_id"])),
+        chain_id=int(row["chain_id"]),
+        contract_address=str(row["contract_address"]),
+        claim_id=int(row["claim_id"]),
+        revision=int(row["revision"]),
+        outcome=outcome,  # type: ignore[arg-type]
+        assessor_reference=str(row["assessor_reference"]),
+        notes=(str(row["notes"]) if row.get("notes") is not None else None),
+        assessed_at=assessed_at,
+    )
+
+
 def assessment_from_row(row: dict[str, Any] | None) -> AssessmentRecord | None:
     """Translate an internal database row into the stable domain record."""
 

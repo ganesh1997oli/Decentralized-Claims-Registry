@@ -23,6 +23,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
+from apps.backend.app.assessor_outcomes import (
+    AssessorOutcomeAuthenticationError,
+    AssessorOutcomeBoundary,
+    AssessorOutcomeConfigurationError,
+    AssessorPrincipal,
+)
 from apps.backend.app.gasless_service import (
     GaslessClaimSubmissionService,
     GaslessSubmissionAccessError,
@@ -41,6 +47,9 @@ from apps.backend.app.indexer_operations import (
 )
 from apps.backend.app.models import (
     AssessmentReasonResponse,
+    AssessorOutcomeRequest,
+    AssessorOutcomeResponse,
+    AssessorSessionResponse,
     ClaimAssessmentResponse,
     ClaimIndexEventPageResponse,
     ClaimPageResponse,
@@ -86,6 +95,10 @@ insurer_api_key_header = APIKeyHeader(
 )
 indexer_operations_api_key_header = APIKeyHeader(
     name="X-Operations-API-Key",
+    auto_error=False,
+)
+assessor_outcome_api_key_header = APIKeyHeader(
+    name="X-Assessor-API-Key",
     auto_error=False,
 )
 
@@ -228,6 +241,58 @@ AuthenticatedInsurerPrincipalDependency = Annotated[
 ]
 
 
+@lru_cache
+def load_assessor_outcome_boundary() -> AssessorOutcomeBoundary:
+    """Load the independent human-review credential set once per API process."""
+
+    return AssessorOutcomeBoundary.from_env()
+
+
+def get_assessor_outcome_boundary() -> AssessorOutcomeBoundary:
+    """Expose human-review authentication without affecting public API startup.
+
+    Deployments that do not enable the optional assessor step may continue to
+    serve claim submission and screening. Only the dedicated assessor endpoints
+    return 503 when their digest-only credentials have not been configured.
+    """
+
+    try:
+        return load_assessor_outcome_boundary()
+    except AssessorOutcomeConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Assessor outcome authentication is unavailable: {exc}",
+        ) from exc
+
+
+AssessorOutcomeBoundaryDependency = Annotated[
+    AssessorOutcomeBoundary,
+    Depends(get_assessor_outcome_boundary),
+]
+
+
+def get_assessor_principal(
+    boundary: AssessorOutcomeBoundaryDependency,
+    api_key: Annotated[str | None, Security(assessor_outcome_api_key_header)],
+) -> AssessorPrincipal:
+    """Authenticate a human reviewer before reading or writing private outcomes."""
+
+    try:
+        return boundary.authenticate(api_key)
+    except AssessorOutcomeAuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "ApiKey"},
+        ) from exc
+
+
+AssessorPrincipalDependency = Annotated[
+    AssessorPrincipal,
+    Depends(get_assessor_principal),
+]
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Validate critical local configuration before the API accepts traffic.
@@ -311,6 +376,7 @@ app.add_middleware(
         "X-Insurer-API-Key",
         "X-Insurer-Signer-Address",
         "X-Operations-API-Key",
+        "X-Assessor-API-Key",
     ],
 )
 
@@ -696,6 +762,148 @@ def get_claim_assessment(
             else None
         ),
     )
+
+
+def _assessor_outcome_response(record) -> AssessorOutcomeResponse:
+    """Map the private persistence record without exposing deployment columns.
+
+    A future governed dataset builder can use the same outcome vocabulary, but
+    this request path performs no export, label-quality decision, or retraining.
+    Keeping those decisions out of the response prevents an assessor submission
+    from being mistaken for a model-ready training example.
+    """
+
+    return AssessorOutcomeResponse(
+        outcome_id=record.outcome_id,
+        claim_id=record.claim_id,
+        revision=record.revision,
+        outcome=record.outcome,
+        assessor_reference=record.assessor_reference,
+        notes=record.notes,
+        assessed_at=record.assessed_at,
+    )
+
+
+@app.get(
+    "/assessor/session",
+    response_model=AssessorSessionResponse,
+    tags=["assessor"],
+    responses={401: {"description": "Missing or invalid human-assessor API key"}},
+)
+def get_assessor_session(
+    principal: AssessorPrincipalDependency,
+) -> AssessorSessionResponse:
+    """Validate a browser-held key without disclosing claim or outcome data."""
+
+    return AssessorSessionResponse(
+        assessor_reference=principal.assessor_reference,
+    )
+
+
+@app.get(
+    "/assessor/claims/{claim_id}/outcome",
+    response_model=AssessorOutcomeResponse,
+    tags=["assessor"],
+    responses={
+        401: {"description": "Missing or invalid human-assessor API key"},
+        404: {"description": "Claim or human outcome not found"},
+    },
+)
+def get_assessor_outcome(
+    claim_id: Annotated[int, Path(ge=0)],
+    _principal: AssessorPrincipalDependency,
+    repositories: PostgresRepositoriesDependency,
+    deployment: ActiveDeploymentDependency,
+) -> AssessorOutcomeResponse:
+    """Return the latest private human conclusion for one indexed claim.
+
+    Authentication protects both presence and contents of the conclusion. A 404
+    is used for an unreviewed claim so the assessor browser can represent that as
+    normal pending work without weakening storage or authentication failures.
+    """
+
+    query = {
+        "chain_id": deployment.chain_id,
+        "contract_address": deployment.address,
+        "claim_id": claim_id,
+    }
+    try:
+        claim = repositories.claims.get_claim(**query)
+        record = repositories.assessor_outcomes.get_latest_for_claim(**query)
+    except PostgresStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    if claim is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Claim is not available in the confirmed index",
+        )
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No human assessor outcome has been recorded",
+        )
+    return _assessor_outcome_response(record)
+
+
+@app.post(
+    "/assessor/claims/{claim_id}/outcome",
+    response_model=AssessorOutcomeResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["assessor"],
+    responses={
+        401: {"description": "Missing or invalid human-assessor API key"},
+        404: {"description": "Claim not found"},
+        409: {"description": "Model screening has not completed"},
+    },
+)
+def record_assessor_outcome(
+    claim_id: Annotated[int, Path(ge=0)],
+    request: AssessorOutcomeRequest,
+    principal: AssessorPrincipalDependency,
+    repositories: PostgresRepositoriesDependency,
+    deployment: ActiveDeploymentDependency,
+) -> AssessorOutcomeResponse:
+    """Append an attributable, off-chain human fraud-outcome revision.
+
+    A model screening record is required so this route cannot become an unrelated
+    adjudication database. The outcome is never mapped to Approved/Rejected and
+    this function deliberately performs no contract transaction. Submitting a
+    correction creates a new revision rather than mutating prior audit evidence.
+    """
+
+    query = {
+        "chain_id": deployment.chain_id,
+        "contract_address": deployment.address,
+        "claim_id": claim_id,
+    }
+    try:
+        claim = repositories.claims.get_claim(**query)
+        screening = repositories.assessments.get_latest_for_claim(**query)
+        if claim is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Claim is not available in the confirmed index",
+            )
+        if screening is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Model screening must complete before human review",
+            )
+        record = repositories.assessor_outcomes.record(
+            **query,
+            outcome=request.outcome,
+            assessor_reference=principal.assessor_reference,
+            notes=request.notes,
+        )
+    except PostgresStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return _assessor_outcome_response(record)
 
 
 @app.post("/claims", status_code=status.HTTP_410_GONE, tags=["claims"])

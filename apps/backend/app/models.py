@@ -253,6 +253,42 @@ class ClaimAssessmentResponse(BaseModel):
     duplicate_detection: DuplicateDetectionResponse | None = None
 
 
+HumanFraudOutcome = Literal["ConfirmedFraud", "Legitimate", "Inconclusive"]
+
+
+class AssessorOutcomeRequest(BaseModel):
+    """A human conclusion supplied after reviewing one screened claim.
+
+    The assessor identity is intentionally absent. FastAPI derives it from the
+    authenticated credential so a caller cannot write another reviewer's name.
+    Approval and rejection are also absent because claim disposition is a
+    separate business decision and must never be converted into a fraud label.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: HumanFraudOutcome
+    notes: str | None = Field(default=None, max_length=2_000)
+
+
+class AssessorOutcomeResponse(BaseModel):
+    """One immutable revision of the private human-review audit trail."""
+
+    outcome_id: UUID
+    claim_id: int = Field(ge=0)
+    revision: int = Field(gt=0)
+    outcome: HumanFraudOutcome
+    assessor_reference: str
+    notes: str | None = None
+    assessed_at: datetime
+
+
+class AssessorSessionResponse(BaseModel):
+    """Minimal identity proof returned after assessor-key authentication."""
+
+    assessor_reference: str
+
+
 class ClaimListItemResponse(BaseModel):
     """Current on-chain state for one claim in the claims dashboard."""
 
