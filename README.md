@@ -26,7 +26,9 @@ flowchart LR
     IPFS -->|"same bytes"| Worker
     Worker -->|"features, duplicate check, score, SHAP"| Postgres
     Worker -->|"status + score"| Chain
+    Assessor["Human assessor console"] -->|"private fraud outcome revision"| Postgres
     Postgres -->|"assessment details"| API
+    Postgres -->|"authenticated human outcome"| API
     Postgres -->|"confirmed indexed claims"| API
     API --> Browser
 ```
@@ -43,7 +45,7 @@ screening work without holding the submission request open.
 | IPFS       | Authorized schema-v5 synthetic claim JSON                                                                                                              | Encryption or access control                                 |
 | Sepolia    | Claim ID, submitter, hash, CID, status, score, timestamps                                                                                              | Full claim, SHAP reasons, private fingerprints               |
 | Kafka      | Versioned blockchain and IPFS references                                                                                                               | Full claim payload                                           |
-| PostgreSQL | Gasless idempotency/outbox/transaction attempts; confirmed public index and event history; versioned features, keyed fingerprints, score, SHAP reasons | HMAC keys, raw policy reference, description, evidence       |
+| PostgreSQL | Gasless idempotency/outbox/transaction attempts; confirmed public index and event history; versioned features, keyed fingerprints, score, SHAP reasons; private human-outcome revisions | HMAC keys, raw policy reference, description, evidence |
 
 ## Trust and replay boundaries
 
@@ -260,6 +262,14 @@ stateDiagram-v2
 The worker can create only `UnderReview` or `Flagged`. It never infers
 `Approved` or `Rejected`. The on-chain score is the probability multiplied by
 10,000: `0.2466` becomes `2,466`, displayed as `24.66%`.
+
+The separate `/assessor` console records one of `ConfirmedFraud`, `Legitimate`,
+or `Inconclusive` in PostgreSQL after model screening. Corrections append a new
+revision instead of overwriting history. These human outcomes do not change the
+contract status: `Approved`/`Rejected` remain business lifecycle decisions and
+are never converted automatically into fraud labels. `Inconclusive` is excluded
+from binary-label eligibility, and this prototype performs no automatic
+retraining.
 
 ## Sepolia deployments
 

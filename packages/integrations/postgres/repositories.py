@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from packages.integrations.postgres.assessment_repository import (
     PostgresAssessmentRepository,
 )
+from packages.integrations.postgres.assessor_outcome_repository import (
+    PostgresAssessorOutcomeRepository,
+)
 from packages.integrations.postgres.claim_index_repository import (
     PostgresClaimIndexRepository,
 )
@@ -30,6 +33,7 @@ class PostgresRepositories:
 
     claims: PostgresClaimIndexRepository
     assessments: PostgresAssessmentRepository
+    assessor_outcomes: PostgresAssessorOutcomeRepository
     duplicates: PostgresDuplicateRepository
     features: PostgresFeatureRepository
     gasless_submissions: PostgresGaslessSubmissionRepository
@@ -47,6 +51,7 @@ class PostgresRepositories:
         return cls(
             claims=PostgresClaimIndexRepository(database),
             assessments=PostgresAssessmentRepository(database),
+            assessor_outcomes=PostgresAssessorOutcomeRepository(database),
             duplicates=PostgresDuplicateRepository(database),
             features=PostgresFeatureRepository(database),
             gasless_submissions=PostgresGaslessSubmissionRepository(database),

@@ -51,6 +51,32 @@ export type ClaimAssessment = {
   duplicate_detection?: DuplicateDetection | null
 }
 
+// Human investigative conclusions remain separate from both the model's
+// UnderReview/Flagged result and the contract's Approved/Rejected lifecycle.
+export type HumanFraudOutcome =
+  | 'ConfirmedFraud'
+  | 'Legitimate'
+  | 'Inconclusive'
+
+export type AssessorSession = {
+  assessor_reference: string
+}
+
+export type AssessorOutcome = {
+  outcome_id: string
+  claim_id: number
+  revision: number
+  outcome: HumanFraudOutcome
+  assessor_reference: string
+  notes: string | null
+  assessed_at: string
+}
+
+export type AssessorOutcomeInput = {
+  outcome: HumanFraudOutcome
+  notes: string | null
+}
+
 export type ClaimStatus =
   | 'Submitted'
   | 'UnderReview'
@@ -402,6 +428,35 @@ function isClaimAssessment(value: unknown): value is ClaimAssessment {
     (value.duplicate_detection === undefined ||
       value.duplicate_detection === null ||
       isDuplicateDetection(value.duplicate_detection))
+  )
+}
+
+function isHumanFraudOutcome(value: unknown): value is HumanFraudOutcome {
+  // Keep the browser vocabulary exactly aligned with the database constraint.
+  // Approved/Rejected must never become accepted aliases at this trust boundary.
+  return (
+    value === 'ConfirmedFraud' ||
+    value === 'Legitimate' ||
+    value === 'Inconclusive'
+  )
+}
+
+function isAssessorSession(value: unknown): value is AssessorSession {
+  return isRecord(value) && typeof value.assessor_reference === 'string'
+}
+
+function isAssessorOutcome(value: unknown): value is AssessorOutcome {
+  // This authenticated response can later inform research-label governance, so
+  // reject any partial or contradictory shape instead of rendering defaults.
+  if (!isRecord(value)) return false
+  return (
+    typeof value.outcome_id === 'string' &&
+    typeof value.claim_id === 'number' &&
+    typeof value.revision === 'number' &&
+    isHumanFraudOutcome(value.outcome) &&
+    typeof value.assessor_reference === 'string' &&
+    (value.notes === null || typeof value.notes === 'string') &&
+    typeof value.assessed_at === 'string'
   )
 }
 
@@ -770,6 +825,84 @@ export async function getClaimAssessment(
   if (!response.ok) throw new Error(errorMessage(body, response.status))
   if (!isClaimAssessment(body)) {
     throw new Error('The claims API returned an unexpected assessment shape')
+  }
+  return body
+}
+
+/** Authenticates the dedicated human-review console without loading claim data. */
+export async function getAssessorSession(
+  assessorApiKey: string,
+  signal?: AbortSignal,
+): Promise<AssessorSession> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/assessor/session`, {
+      headers: { 'X-Assessor-API-Key': assessorApiKey },
+      signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error('Could not reach the human-assessor service.')
+  }
+  const body: unknown = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isAssessorSession(body)) {
+    throw new Error('The claims API returned an unexpected assessor session')
+  }
+  return body
+}
+
+/** Returns the latest private human outcome, or null before a review exists. */
+export async function getAssessorOutcome(
+  claimId: number,
+  assessorApiKey: string,
+  signal?: AbortSignal,
+): Promise<AssessorOutcome | null> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/assessor/claims/${claimId}/outcome`, {
+      headers: { 'X-Assessor-API-Key': assessorApiKey },
+      signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error('Could not load the human assessor outcome.')
+  }
+  if (response.status === 404) return null
+  const body: unknown = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isAssessorOutcome(body)) {
+    throw new Error('The claims API returned an unexpected assessor outcome')
+  }
+  return body
+}
+
+/** Appends a new human-outcome revision; it never changes the on-chain status. */
+export async function recordAssessorOutcome(
+  claimId: number,
+  input: AssessorOutcomeInput,
+  assessorApiKey: string,
+  signal?: AbortSignal,
+): Promise<AssessorOutcome> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/assessor/claims/${claimId}/outcome`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Assessor-API-Key': assessorApiKey,
+      },
+      body: JSON.stringify(input),
+      signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error('Could not record the human assessor outcome.')
+  }
+  const body: unknown = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isAssessorOutcome(body)) {
+    throw new Error('The claims API returned an unexpected assessor outcome')
   }
   return body
 }

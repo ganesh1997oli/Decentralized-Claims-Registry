@@ -86,6 +86,7 @@ def test_checked_in_migrations_own_processing_and_index_tables():
         "003",
         "004",
         "005",
+        "006",
     ]
     assert "CREATE TABLE IF NOT EXISTS claim_assessments" in migrations[0].sql
     assert "CREATE TABLE IF NOT EXISTS claim_incident_fingerprints" in migrations[0].sql
@@ -101,6 +102,11 @@ def test_checked_in_migrations_own_processing_and_index_tables():
     assert "CREATE TABLE gasless_relayer_nonces" in migrations[4].sql
     assert "CREATE TABLE gasless_relay_attempts" in migrations[4].sql
     assert "gasless_claim_submissions_active_signer_idx" in migrations[4].sql
+    assert "CREATE TABLE claim_assessor_outcomes" in migrations[5].sql
+    assert (
+        "outcome IN ('ConfirmedFraud', 'Legitimate', 'Inconclusive')"
+        in migrations[5].sql
+    )
 
 
 def test_upgrade_locks_applies_and_records_each_pending_migration():
