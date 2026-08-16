@@ -143,5 +143,5 @@ maintaining a second training implementation:
 - [Dataset exploration](notebooks/01_dataset_exploration.ipynb)
 - [XGBoost and SHAP](notebooks/02_xgboost_and_shap.ipynb)
 
-See the [notebook guide](notebooks/README.md) and the
-[Kafka guide](../integrations/kafka/README.md).
+See the [notebook guide](notebooks/NOTEBOOKS.md) and the
+[Kafka guide](../integrations/kafka/KAFKA.md).

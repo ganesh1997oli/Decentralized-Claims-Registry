@@ -9,7 +9,7 @@ The listener reads small confirmed block ranges, projects each public event into
 PostgreSQL, and saves a deployment-scoped database checkpoint. That makes public
 RPC failures, container replacement, and normal restarts recoverable without
 relying on an in-memory event filter. Configuration and run instructions live
-in ``apps/listener/README.md`` and the root project guide.
+in ``apps/listener/LISTENER.md`` and the root project guide.
 """
 
 import json

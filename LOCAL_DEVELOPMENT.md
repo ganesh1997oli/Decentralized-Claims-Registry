@@ -444,9 +444,9 @@ history. That deletion cannot be recovered unless you made a backup.
 
 ## Next references
 
-- [Backend and credentials](../apps/backend/README.md)
-- [Gasless security and operations](production-gasless-transactions.md)
-- [Listener/indexer](../apps/listener/README.md)
-- [Indexer operations](indexer-operations-runbook.md)
-- [Kafka worker](../packages/integrations/kafka/README.md)
-- [PostgreSQL state](../packages/integrations/postgres/README.md)
+- [Backend and credentials](apps/backend/BACKEND.md)
+- [Gasless security and operations](apps/relayer/PRODUCTION.md)
+- [Listener/indexer](apps/listener/LISTENER.md)
+- [Indexer operations](apps/listener/OPERATIONS.md)
+- [Kafka worker](packages/integrations/kafka/KAFKA.md)
+- [PostgreSQL state](packages/integrations/postgres/POSTGRESQL.md)

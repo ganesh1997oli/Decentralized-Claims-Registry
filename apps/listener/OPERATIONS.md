@@ -154,4 +154,4 @@ identity, alert routing, backups, and an explicit deep-reorganization recovery
 procedure.
 
 For the exact local terminal order, environment-loading commands, and readiness
-checks, see the [local development guide](local-development.md).
+checks, see the [local development guide](../../LOCAL_DEVELOPMENT.md).

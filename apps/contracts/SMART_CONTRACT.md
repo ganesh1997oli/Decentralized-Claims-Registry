@@ -170,5 +170,5 @@ need operational protection, and Sepolia provides testnet—not production—
 assurance.
 
 See [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for implemented findings and remaining
-risks, the [production gasless runbook](../../docs/production-gasless-transactions.md),
+risks, the [production gasless runbook](../relayer/PRODUCTION.md),
 and the [root runbook](../../README.md) for runtime artifact selection.

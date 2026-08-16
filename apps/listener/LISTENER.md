@@ -180,5 +180,5 @@ Tests inject chain, IPFS, Kafka, index, checkpoint, and dead-letter adapters.
 They cover event ordering, bounded catch-up, tamper rejection, replay, database
 checkpoint safety, and contract/index reconciliation without public services.
 
-See the [Kafka guide](../../packages/integrations/kafka/README.md) and the
-[local development guide](../../docs/local-development.md).
+See the [Kafka guide](../../packages/integrations/kafka/KAFKA.md) and the
+[local development guide](../../LOCAL_DEVELOPMENT.md).
