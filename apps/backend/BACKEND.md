@@ -79,7 +79,7 @@ Only a `confirmed` polling response contains the anchor receipt;
 ## Run locally
 
 The complete startup order is documented in the
-[local development guide](../../docs/local-development.md). For the backend
+[local development guide](../../LOCAL_DEVELOPMENT.md). For the backend
 alone, run from the repository root after PostgreSQL is healthy and migrations
 are current:
 
@@ -153,7 +153,7 @@ Useful URLs:
 
 The deployer, relayer, assessor, and insurer wallet keys do not belong in the API
 container. Never put any secret in a `VITE_` variable. See the
-[production gasless runbook](../../docs/production-gasless-transactions.md) for
+[production gasless runbook](../relayer/PRODUCTION.md) for
 deployment, limits, replacements, monitoring, compromise, and rollback.
 
 ### Indexer operations authentication
@@ -263,7 +263,7 @@ and mock IPFS for load tests because Sepolia transactions and public IPFS still
 consume shared resources.
 
 See the dedicated
-[rate-limiting and authorised test-bypass runbook](../../docs/rate-limiting-and-authorised-test-bypass.md)
+[rate-limiting and authorised test-bypass runbook](RATE_LIMITING.md)
 for the counter algorithm, activation matrix, operator procedure, audit fields,
 HTTP outcomes, verification commands, and cleanup steps.
 
@@ -323,4 +323,4 @@ Pinata, or require PostgreSQL.
   capped balance. It never belongs in the API process.
 
 See the [root runbook](../../README.md) and the
-[Kafka worker guide](../../packages/integrations/kafka/README.md).
+[Kafka worker guide](../../packages/integrations/kafka/KAFKA.md).

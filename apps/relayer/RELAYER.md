@@ -110,7 +110,6 @@ TEST_DATABASE_URL=postgresql://claims:claims-local@127.0.0.1:5432/claims_registr
   apps/backend/.venv/bin/python -m pytest -m integration -q
 ```
 
-See the [local development guide](../../docs/local-development.md) for complete
-startup order and the [production gasless runbook](../../docs/production-gasless-transactions.md)
+See the [local development guide](../../LOCAL_DEVELOPMENT.md) for complete
+startup order and the [production gasless runbook](PRODUCTION.md)
 for deployment, monitoring, compromise, and rollback procedures.
-

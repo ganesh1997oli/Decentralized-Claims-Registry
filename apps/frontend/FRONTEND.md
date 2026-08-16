@@ -62,7 +62,7 @@ a lost convenience, not as an application failure.
 ## Install and run
 
 Start PostgreSQL, Kafka, migrations, and FastAPI first. The complete order is in
-the [local development guide](../../docs/local-development.md). From the
+the [local development guide](../../LOCAL_DEVELOPMENT.md). From the
 repository root:
 
 ```bash
@@ -156,5 +156,5 @@ review-only duplicate experience without contacting Sepolia.
 - A duplicate match and XGBoost score are review signals only.
 - Use only fictional policy, claimant, and incident information.
 
-See the [backend guide](../backend/README.md) for local credentials and the
+See the [backend guide](../backend/BACKEND.md) for local credentials and the
 [root runbook](../../README.md) for the complete process order.

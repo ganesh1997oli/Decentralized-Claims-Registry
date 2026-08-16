@@ -8,7 +8,7 @@ professional third-party audit or a guarantee of security.
 
 > Gasless ERC-2771 changes were implemented later and are outside this dated
 > review. They require a new independent review and deployment; see
-> `docs/production-gasless-transactions.md`.
+> `apps/relayer/PRODUCTION.md`.
 
 ## Scope
 

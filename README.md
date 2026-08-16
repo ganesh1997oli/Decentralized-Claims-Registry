@@ -110,7 +110,7 @@ The application has five long-running processes in addition to PostgreSQL and
 Kafka. Start them in order; otherwise the first visible error is often only a
 downstream symptom of a missing migration, topic, or model artifact.
 
-The detailed [local development guide](docs/local-development.md) explains every
+The detailed [local development guide](LOCAL_DEVELOPMENT.md) explains every
 setting, wallet role, terminal, readiness check, failure state, and shutdown
 step. The concise sequence is below.
 
@@ -142,7 +142,7 @@ test -f .env.local || cp .env.example .env.local
 ```
 
 Review `.env.local`; do not merely source it unchanged. The required local
-values are explained in [the configuration checklist](docs/local-development.md#3-create-and-review-envlocal).
+values are explained in [the configuration checklist](LOCAL_DEVELOPMENT.md#3-create-and-review-envlocal).
 The selected `sepolia-gasless-v1` artifact uses registry block `11426492`.
 Every configured insurer `signerAddress` must have the submitter role and must
 match the account connected in the browser wallet.
@@ -211,7 +211,7 @@ apps/backend/.venv/bin/python \
 ```
 
 For better local key separation, unset unrelated wallet variables in each
-terminal as shown in the [full terminal instructions](docs/local-development.md#6-start-the-five-application-terminals).
+terminal as shown in the [full terminal instructions](LOCAL_DEVELOPMENT.md#6-start-the-five-application-terminals).
 
 ### 5. Verify before submitting
 
@@ -335,21 +335,22 @@ retention rules, and a validated and monitored model.
 
 | Area                                    | Guide                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------------- |
-| Complete local startup                  | [Local development](docs/local-development.md)                         |
-| FastAPI and insurer credentials         | [Backend](apps/backend/README.md)                                      |
-| Gasless relayer                         | [Relayer](apps/relayer/README.md)                                      |
-| Gasless security and operations         | [Production gasless runbook](docs/production-gasless-transactions.md)  |
-| Indexer monitoring and recovery         | [Indexer operations runbook](docs/indexer-operations-runbook.md)       |
-| Claim limits and controlled test bypass | [Rate-limit runbook](docs/rate-limiting-and-authorised-test-bypass.md) |
-| Browser behaviour                       | [Frontend](apps/frontend/README.md)                                    |
-| Block polling and recovery              | [Listener](apps/listener/README.md)                                    |
-| Roles and lifecycle rules               | [Smart contract](apps/contracts/README.md)                             |
-| Training and SHAP                       | [Model](packages/model/README.md)                                      |
-| Notebook workflow                       | [Notebooks](packages/model/notebooks/README.md)                        |
-| Public file storage                     | [IPFS](packages/integrations/ipfs/README.md)                           |
-| Event delivery and replay               | [Kafka](packages/integrations/kafka/README.md)                         |
-| Feature and assessment storage          | [PostgreSQL](packages/integrations/postgres/README.md)                 |
-| Single-VM deployment                    | [Google Cloud](infrastructure/gcp/README.md)                           |
+| Complete local startup                  | [Local development](LOCAL_DEVELOPMENT.md)                              |
+| FastAPI and insurer credentials         | [Backend](apps/backend/BACKEND.md)                                     |
+| Gasless relayer                         | [Relayer](apps/relayer/RELAYER.md)                                     |
+| Gasless security and operations         | [Production gasless runbook](apps/relayer/PRODUCTION.md)               |
+| Indexer monitoring and recovery         | [Indexer operations runbook](apps/listener/OPERATIONS.md)              |
+| Claim limits and controlled test bypass | [Rate-limit runbook](apps/backend/RATE_LIMITING.md)                    |
+| Cross-insurer duplicate screening       | [Duplicate screening](packages/duplicates/DUPLICATE_SCREENING.md)      |
+| Browser behaviour                       | [Frontend](apps/frontend/FRONTEND.md)                                  |
+| Block polling and recovery              | [Listener](apps/listener/LISTENER.md)                                  |
+| Roles and lifecycle rules               | [Smart contract](apps/contracts/SMART_CONTRACT.md)                     |
+| Training and SHAP                       | [Model](packages/model/MODEL.md)                                       |
+| Notebook workflow                       | [Notebooks](packages/model/notebooks/NOTEBOOKS.md)                     |
+| Public file storage                     | [IPFS](packages/integrations/ipfs/IPFS.md)                             |
+| Event delivery and replay               | [Kafka](packages/integrations/kafka/KAFKA.md)                          |
+| Feature and assessment storage          | [PostgreSQL](packages/integrations/postgres/POSTGRESQL.md)             |
+| Single-VM deployment                    | [Google Cloud](infrastructure/gcp/GCP_DEPLOYMENT.md)                   |
 
 Stop local infrastructure without deleting its volumes:
 

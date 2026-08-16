@@ -67,5 +67,5 @@ Anyone who learns the CID can request the unencrypted bytes while an IPFS node
 provides them. Real claim data would require encryption before upload, managed
 off-chain keys, access auditing, malware controls, and retention/deletion rules.
 
-See the [backend guide](../../../apps/backend/README.md) and the
+See the [backend guide](../../../apps/backend/BACKEND.md) and the
 [root data map](../../../README.md#what-is-stored-where).

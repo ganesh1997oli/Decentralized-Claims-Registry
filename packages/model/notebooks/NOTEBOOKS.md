@@ -33,5 +33,5 @@ The setup cells also support Google Colab. Review any clone and install command
 before running it in a hosted notebook.
 
 All figures describe synthetic research data only. See the
-[model guide](../README.md) for the serving boundary and [RESULTS.md](../RESULTS.md)
+[model guide](../MODEL.md) for the serving boundary and [RESULTS.md](../RESULTS.md)
 for the checked-in evaluation summary.
