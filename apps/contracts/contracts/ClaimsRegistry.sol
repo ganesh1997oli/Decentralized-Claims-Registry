@@ -15,7 +15,7 @@ import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 ///      authorization always uses `_msgSender()`. For a forwarded call that is
 ///      the insurer recovered from the signed request, not the gas-paying
 ///      relayer visible in Solidity's raw `msg.sender`.
-contract ClaimsRegistry is e, ERC2771Context {
+contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     bytes32 public constant SUBMITTER_ROLE = keccak256("SUBMITTER_ROLE");
     bytes32 public constant ASSESSOR_ROLE = keccak256("ASSESSOR_ROLE");
     uint256 public constant MAX_DATA_POINTER_LENGTH = 128;
