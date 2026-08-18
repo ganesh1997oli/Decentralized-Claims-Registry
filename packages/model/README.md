@@ -25,7 +25,7 @@ flowchart LR
 The threshold is selected on validation F1, never on the test period. The first
 complete run found that XGBoost did **not** outperform the simpler baseline on
 PR-AUC or fraud F1; that honest negative result is recorded in
-[RESULTS.md](RESULTS.md).
+[initial research result](#initial-xgboost-research-result).
 
 ## Model inputs
 
@@ -143,5 +143,41 @@ maintaining a second training implementation:
 - [Dataset exploration](notebooks/01_dataset_exploration.ipynb)
 - [XGBoost and SHAP](notebooks/02_xgboost_and_shap.ipynb)
 
-See the [notebook guide](notebooks/NOTEBOOKS.md) and the
-[Kafka guide](../integrations/kafka/KAFKA.md).
+See the [notebook guide](notebooks/README.md) and the
+[Kafka guide](../integrations/kafka/README.md).
+
+---
+
+## Initial XGBoost research result
+
+This is the first complete run of the research pipeline on the pinned African
+Motor Insurance Claims dataset.
+
+### Setup
+
+- Dataset rows: 99,982
+- Split: oldest 70% for training, next 15% for validation, newest 15% for testing
+- Test rows: 14,998
+- Test fraud rate: 11.17%
+- Threshold: chosen on validation F1, never on the test set
+- Leakage fields: settlement values, processing days, generated fraud probability,
+  loss ratio and scenario were excluded
+
+### Untouched test result
+
+| Model | PR-AUC | ROC-AUC | Precision | Recall | Fraud F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Logistic regression | 0.171 | 0.628 | 0.173 | 0.408 | 0.243 |
+| XGBoost | 0.165 | 0.615 | 0.148 | 0.616 | 0.238 |
+
+XGBoost found more fraudulent rows, but it also produced more false alarms. The
+logistic baseline had slightly stronger PR-AUC and F1. That is an important
+result rather than a failed experiment: a more complex model did not outperform
+the simpler baseline on this leakage-safe temporal split.
+
+The strongest global SHAP signals for XGBoost were market claim frequency,
+theft claims, policy premium, country, vehicle age, claim amount and total-loss
+status.
+
+These figures describe synthetic data only. They demonstrate the evaluation
+method and must not be used as evidence of real-world predictive performance.

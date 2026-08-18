@@ -215,7 +215,7 @@ FastAPI both enforce a 16 KiB request limit; change both settings together.
 
 This Compose file demonstrates the new process separation but remains a
 research topology. Follow the
-[production gasless runbook](../../apps/relayer/PRODUCTION.md) for
+[production gasless runbook](../../apps/relayer/README.md#production-gasless-claim-transactions) for
 contract migration, secret mounts, fee replacement, HA, monitoring, and
 incident response.
 
@@ -227,7 +227,7 @@ switch after testing and use a local chain instead of Sepolia for sustained
 load whenever possible.
 
 Follow the dedicated
-[rate-limiting and authorised test-bypass runbook](../../apps/backend/RATE_LIMITING.md)
+[rate-limiting and authorised test-bypass runbook](../../apps/backend/README.md#public-claim-intake-limits)
 for credential preparation, activation checks, audit events, and the shutdown
 procedure.
 

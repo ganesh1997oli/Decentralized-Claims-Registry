@@ -291,5 +291,5 @@ FROM claim_feature_snapshots
 ORDER BY created_at DESC;
 ```
 
-See the [Kafka guide](../kafka/KAFKA.md) for replay order and the
+See the [Kafka guide](../kafka/README.md) for replay order and the
 [local development guide](../../../LOCAL_DEVELOPMENT.md) for startup order.

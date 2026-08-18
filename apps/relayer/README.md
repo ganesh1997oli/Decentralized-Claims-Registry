@@ -1,4 +1,122 @@
-# Production gasless claim transactions
+# Gasless transaction relayer
+
+The relayer is the only application process allowed to hold the dedicated
+gas-paying wallet. It drains insurer-authorized EIP-712 requests from PostgreSQL,
+persists a signed EOA transaction before broadcasting it, and confirms the exact
+`ClaimSubmitted` event after the configured safe depth.
+
+It is intentionally not part of FastAPI. An HTTP retry must never allocate an
+Ethereum EOA nonce or gain access to the wallet that pays gas.
+
+## State transition owned by the relayer
+
+```mermaid
+flowchart LR
+    Authorized["authorized"] -->|"reserve nonce + persist raw tx"| Signed["signed"]
+    Signed -->|"broadcast exact bytes"| Broadcast["broadcast"]
+    Broadcast -->|"receipt below safe depth"| Broadcast
+    Broadcast -->|"stuck; same nonce + higher fee"| Signed
+    Broadcast -->|"matching event at safe depth"| Confirmed["confirmed"]
+    Authorized -->|"expired/invalid"| Failed["failed or expired"]
+    Signed -->|"terminal construction error"| Failed
+    Broadcast -->|"revert/event mismatch"| Failed
+```
+
+The relayer treats fee-cap and dependency failures as retryable. Signature,
+deployment, receipt-event, and revert mismatches are terminal because retrying
+the same authorization cannot make them valid.
+
+## Required configuration
+
+| Setting | Meaning |
+| --- | --- |
+| `DATABASE_URL` | Durable outbox, nonce allocator and transaction attempts |
+| `SEPOLIA_RPC_URL` | Sepolia reads, broadcast and receipts |
+| `CLAIMS_DEPLOYMENT_ID` | Registry/forwarder artifact selected by every process |
+| `SEPOLIA_RELAYER_PRIVATE_KEY` | Local-development key, or use the file setting |
+| `SEPOLIA_RELAYER_PRIVATE_KEY_FILE` | Preferred secret-manager-mounted key file |
+| `CONFIRMATION_BLOCKS` | Safe depth required before marking confirmed |
+| `GASLESS_MAX_TRANSACTION_GAS` | Hard transaction gas ceiling |
+| `GASLESS_MAX_FEE_GWEI` | Maximum total fee policy |
+| `GASLESS_MAX_PRIORITY_FEE_GWEI` | Maximum tip policy |
+| `GASLESS_STUCK_TRANSACTION_SECONDS` | Age before a reviewed same-nonce fee bump |
+| `GASLESS_RELAY_POLL_SECONDS` | Delay between durable queue polls |
+
+The account must:
+
+- have enough Sepolia ETH for sponsored transactions;
+- have no default-admin, submitter, or assessor role;
+- be dedicated to this relayer deployment; and
+- avoid unrelated manual transactions that consume its EOA nonce.
+
+`GaslessRelayChain` verifies the absence of registry roles during startup. A
+role-bearing relayer fails closed even though it could technically pay gas.
+
+## Run locally
+
+Start PostgreSQL and apply migration `005` before the relayer. From the
+repository root:
+
+```bash
+set -a
+source .env.local
+set +a
+
+apps/backend/.venv/bin/python -m apps.relayer.gasless_relayer
+```
+
+A healthy startup emits `gasless.relayer_started` with public addresses and
+chain ID. It does not log the private key, raw insurer signature, or RPC URL.
+When work arrives, expect:
+
+```text
+gasless.relay_broadcast
+gasless.relay_confirmed
+```
+
+`gasless.relay_failed` includes a stable safe error code and exception type,
+not provider response text that might include an authenticated RPC URL.
+
+## Crash and retry behaviour
+
+- Crash before signed bytes commit: no nonce is reserved; the next worker starts
+  the transition again.
+- Crash after signed bytes commit but before broadcast: the next worker broadcasts
+  the exact stored transaction.
+- RPC says “already known”: this is compatible with replaying the stored bytes;
+  receipt polling continues.
+- Broadcast has no receipt beyond the stuck threshold: a replacement uses the
+  same nonce with a strictly higher fee, within configured caps.
+- Crash after mining but before database confirmation: every stored attempt hash
+  is checked, so the mined original or replacement is recovered.
+
+Do not manually edit `gasless_relayer_nonces` or discard relay attempts. Pause
+the relayer, inspect all stored hashes and the account's independent RPC history,
+then follow the recovery procedure in the production runbook.
+
+## Test
+
+Unit tests use in-memory store/chain adapters and spend no test ETH:
+
+```bash
+apps/backend/.venv/bin/python -m pytest \
+  apps/relayer/test_gasless_relayer.py -q
+```
+
+The PostgreSQL integration suite exercises durable nonce and replay behavior:
+
+```bash
+TEST_DATABASE_URL=postgresql://claims:claims-local@127.0.0.1:5432/claims_registry \
+  apps/backend/.venv/bin/python -m pytest -m integration -q
+```
+
+See the [local development guide](../../LOCAL_DEVELOPMENT.md) for complete
+startup order and the [production gasless runbook](README.md#production-gasless-claim-transactions)
+for deployment, monitoring, compromise, and rollback procedures.
+
+---
+
+## Production gasless claim transactions
 
 This design uses OpenZeppelin's `ERC2771Forwarder`, EIP-712 signatures, an
 insurer-scoped claim permit, and a separate sponsoring relayer. The claimant or
@@ -11,7 +129,7 @@ relayer never receives a registry role.
 > data: it still uses Sepolia and public, unencrypted IPFS, and the custom
 > contract needs an independent audit before mainnet use.
 
-## Trust and process boundaries
+### Trust and process boundaries
 
 ```mermaid
 sequenceDiagram
@@ -59,7 +177,7 @@ The interfaces are intentionally asymmetric:
   permit issuer to an insurer. Rotating the forwarder requires a new registry
   deployment and index migration; rotating a permit issuer is an admin action.
 
-## Enforced invariants
+### Enforced invariants
 
 The implementation fails closed on these conditions:
 
@@ -98,7 +216,7 @@ The implementation fails closed on these conditions:
     stored permit, parties, hash, pointer, submitter, issuer, and deployment.
     The scoring worker repeats these authorization bindings before using IPFS.
 
-## Durable state machine
+### Durable state machine
 
 ```mermaid
 stateDiagram-v2
@@ -123,7 +241,7 @@ stateDiagram-v2
 tables manually during an incident; pause the relayer and follow reconciliation
 steps first.
 
-## Deployment procedure
+### Deployment procedure
 
 Deploying contracts is an external, funded action and is intentionally not
 performed by this branch.
@@ -174,7 +292,7 @@ deployment. Production should use replicated managed data services, multi-zone
 compute, TLS/service identity, secret-manager mounts, controlled migrations,
 and at least two independent RPC paths.
 
-## Configuration policy
+### Configuration policy
 
 API-only settings include claimant session/HMAC keys,
 `POLICY_ELIGIBILITY_RECORDS_JSON`, `POLICY_REFERENCE_LOOKUP_KEY`,
@@ -199,7 +317,7 @@ A fee-cap breach is retryable and visible as `fee_cap_exceeded`; it is not a
 reason to spend without bound. Changing caps is an operational change requiring
 approval and budget review.
 
-## Abuse and compromise consequences
+### Abuse and compromise consequences
 
 | Compromise or failure | Consequence and containment |
 | --- | --- |
@@ -220,7 +338,7 @@ WAF or API gateway. Application limits and sponsorship accounting are durable
 in PostgreSQL, but they are not a substitute for distributed denial-of-service
 controls at the edge.
 
-## Monitoring and incident thresholds
+### Monitoring and incident thresholds
 
 Alert on:
 
@@ -237,7 +355,7 @@ Dashboard status is not proof of finality. Use the stored block/hash and an
 independent RPC during incident response. PostgreSQL backups must include all
 three gasless tables consistently.
 
-## Rollback and recovery
+### Rollback and recovery
 
 Stopping the relayer is the safe emergency brake; it prevents further spending
 without invalidating already signed requests. Stop the prepare endpoint as well

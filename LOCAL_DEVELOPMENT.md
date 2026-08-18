@@ -163,7 +163,7 @@ until these bindings match the live registry.
 The legacy insurer-credential generator is not used by public routes. For
 deployment and configuration details, use:
 
-[Public claim intake](docs/PUBLIC_CLAIM_INTAKE.md)
+[Public claim intake](docs/README.md)
 
 Keep permit, relayer, assessor, HMAC, and operations secrets independent. Never
 put any of them in a `VITE_` setting or browser storage.
@@ -447,9 +447,9 @@ history. That deletion cannot be recovered unless you made a backup.
 
 ## Next references
 
-- [Backend and credentials](apps/backend/BACKEND.md)
-- [Gasless security and operations](apps/relayer/PRODUCTION.md)
-- [Listener/indexer](apps/listener/LISTENER.md)
-- [Indexer operations](apps/listener/OPERATIONS.md)
-- [Kafka worker](packages/integrations/kafka/KAFKA.md)
-- [PostgreSQL state](packages/integrations/postgres/POSTGRESQL.md)
+- [Backend and credentials](apps/backend/README.md)
+- [Gasless security and operations](apps/relayer/README.md#production-gasless-claim-transactions)
+- [Listener/indexer](apps/listener/README.md)
+- [Indexer operations](apps/listener/README.md#indexer-operations-runbook)
+- [Kafka worker](packages/integrations/kafka/README.md)
+- [PostgreSQL state](packages/integrations/postgres/README.md)
