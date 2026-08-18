@@ -1,6 +1,7 @@
 // EIP-1193 wallet boundary for the sponsored-claim flow. This module requests
-// only account access, chain selection, and an EIP-712 signature; it never asks
-// the wallet to send a transaction because the isolated relayer pays the gas.
+// account access, a readable sign-in proof, chain selection, and one EIP-712
+// authorization. It never asks the wallet to send a transaction because the
+// isolated relayer pays the gas.
 import type { EIP712TypedData } from './api.ts'
 
 type EthereumRequest = {
@@ -62,28 +63,56 @@ export function browserWallet(): EthereumProvider {
 }
 
 /**
- * Requests the account the insurer intends to use for this submission.
+ * Requests the account the claimant or their authorized representative uses.
  *
- * This only establishes browser-side intent. FastAPI independently verifies
- * that the authenticated insurer credential is bound to the returned address
- * and that the address still holds `SUBMITTER_ROLE` on the active deployment.
+ * FastAPI later recovers the same address from a one-time challenge signature,
+ * then independently resolves its relationship to the submitted policy.
  */
 export async function connectWallet(
   provider: EthereumProvider = browserWallet(),
 ): Promise<string> {
   // Request explicit user consent and accept only a full EVM address. The API
-  // later binds this account to the authenticated insurer credential.
+  // later recovers this account from the one-time claimant challenge.
   let accounts: unknown
   try {
     accounts = await provider.request({ method: 'eth_requestAccounts' })
   } catch (error) {
-    throw providerError(error, 'Could not connect the insurer wallet')
+    throw providerError(error, 'Could not connect the claimant wallet')
   }
   const address = Array.isArray(accounts) ? accounts[0] : undefined
   if (typeof address !== 'string' || !ADDRESS_PATTERN.test(address)) {
     throw new Error('The wallet did not return a valid Ethereum account.')
   }
   return address
+}
+
+/** Signs the readable one-time message used to establish a claimant session. */
+export async function signClaimantChallenge(
+  address: string,
+  message: string,
+  provider: EthereumProvider = browserWallet(),
+): Promise<string> {
+  if (!ADDRESS_PATTERN.test(address) || !message) {
+    throw new Error('Cannot verify an invalid claimant wallet challenge.')
+  }
+  // `personal_sign` expects UTF-8 bytes as hex. Encoding locally preserves the
+  // exact human-readable message that FastAPI stored and will recover later.
+  const encodedMessage = `0x${Array.from(new TextEncoder().encode(message), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('')}`
+  let signature: unknown
+  try {
+    signature = await provider.request({
+      method: 'personal_sign',
+      params: [encodedMessage, address],
+    })
+  } catch (error) {
+    throw providerError(error, 'Could not verify claimant wallet ownership')
+  }
+  if (typeof signature !== 'string' || !SIGNATURE_PATTERN.test(signature)) {
+    throw new Error('The wallet returned an invalid sign-in signature.')
+  }
+  return signature
 }
 
 /**

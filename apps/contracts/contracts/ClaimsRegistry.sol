@@ -4,6 +4,8 @@ pragma solidity ^0.8.28;
 import {
     AccessControlDefaultAdminRules
 } from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
 import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 
@@ -11,13 +13,24 @@ import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 /// @notice Anchors synthetic insurance claims while keeping their payloads
 ///         off-chain. The pointer and hash are public; they must never reference
 ///         personal, confidential, or unencrypted real-claim data.
-/// @dev Direct and ERC-2771-forwarded calls share the same role checks because
-///      authorization always uses `_msgSender()`. For a forwarded call that is
-///      the insurer recovered from the signed request, not the gas-paying
-///      relayer visible in Solidity's raw `msg.sender`.
-contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
+/// @dev Insurer-operated submissions remain available for controlled migration.
+///      Public submissions use two independent proofs: the submitter signs the
+///      ERC-2771 request and an insurer-scoped permit issuer signs the exact
+///      eligible claim. The relayer supplies only gas and receives no registry
+///      role or authority over claim contents.
+contract ClaimsRegistry is
+    AccessControlDefaultAdminRules,
+    ERC2771Context,
+    EIP712
+{
     bytes32 public constant SUBMITTER_ROLE = keccak256("SUBMITTER_ROLE");
     bytes32 public constant ASSESSOR_ROLE = keccak256("ASSESSOR_ROLE");
+    bytes32 public constant PERMIT_ISSUER_ROLE =
+        keccak256("PERMIT_ISSUER_ROLE");
+    bytes32 public constant CLAIM_PERMIT_TYPEHASH =
+        keccak256(
+            "ClaimPermit(address claimant,address submitter,address insurer,bytes32 claimantCommitment,bytes32 claimHash,bytes32 dataPointerHash,bytes32 permitId,uint48 deadline)"
+        );
     uint256 public constant MAX_DATA_POINTER_LENGTH = 128;
 
     /// @dev Stored lifecycle values. Approved and Rejected are terminal; Flagged
@@ -34,6 +47,9 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     ///      checked against `claimHash` with `verifyClaimData`.
     struct Claim {
         address claimant;
+        address insurer;
+        address submittedBy;
+        bytes32 claimantCommitment;
         bytes32 claimHash;
         string dataPointer;
         Status status;
@@ -43,11 +59,29 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
         bool exists;
     }
 
+    /// @notice One insurer-authorized public intake operation.
+    /// @dev Dynamic pointer text is represented by `dataPointerHash` so wallets
+    ///      and Solidity sign one unambiguous fixed-width EIP-712 structure.
+    struct ClaimPermit {
+        address claimant;
+        address submitter;
+        address insurer;
+        bytes32 claimantCommitment;
+        bytes32 claimHash;
+        bytes32 dataPointerHash;
+        bytes32 permitId;
+        uint48 deadline;
+    }
+
     uint256 public claimCount;
     mapping(uint256 claimId => Claim claim) private _claims;
     mapping(address assessor => mapping(address insurer => bool authorized))
         private _assessorScopes;
     mapping(address assessor => uint256 scopeCount) private _assessorScopeCount;
+    mapping(address issuer => mapping(address insurer => bool authorized))
+        private _permitIssuerScopes;
+    mapping(address issuer => uint256 scopeCount) private _permitIssuerScopeCount;
+    mapping(bytes32 permitId => bool used) private _usedClaimPermits;
 
     event ClaimSubmitted(
         uint256 indexed claimId,
@@ -55,6 +89,14 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
         bytes32 claimHash,
         string dataPointer,
         uint256 timestamp
+    );
+    event ClaimPartiesRecorded(
+        uint256 indexed claimId,
+        address indexed insurer,
+        address indexed submittedBy,
+        bytes32 claimantCommitment,
+        bytes32 permitId,
+        address permitIssuer
     );
     event ClaimAssessed(
         uint256 indexed claimId,
@@ -69,6 +111,11 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
         address indexed insurer,
         bool authorized
     );
+    event PermitIssuerUpdated(
+        address indexed permitIssuer,
+        address indexed insurer,
+        bool authorized
+    );
 
     error ZeroAddress();
     error EmptyClaimHash();
@@ -78,32 +125,47 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     error InvalidFraudScore(uint16 fraudScore);
     error InvalidStatusTransition(Status currentStatus, Status requestedStatus);
     error FraudScoreCannotChange(uint16 currentScore, uint16 suppliedScore);
-    error AssessorScopeMismatch(address assessor, address claimSubmitter);
+    error AssessorScopeMismatch(address assessor, address insurer);
     error AssessorScopeNotConfigured(address assessor, address insurer);
+    error PermitIssuerScopeNotConfigured(
+        address permitIssuer,
+        address insurer
+    );
     error InsurerNotAuthorized(address insurer);
+    error EmptyClaimantCommitment();
+    error EmptyClaimPermitId();
+    error ClaimPermitAlreadyUsed(bytes32 permitId);
+    error ClaimPermitExpired(uint48 deadline);
+    error ClaimPermitUnauthorized(address permitIssuer, address insurer);
+    error ClaimPermitSubmitterMismatch(address expected, address actual);
+    error ClaimPermitPointerMismatch();
     error RoleSeparationRequired(address account);
     error UseRoleConfigurationFunction(bytes32 role);
 
     /// @param initialAdmin Account that controls role assignment and starts
     ///        delayed, two-step admin transfers.
     /// @param initialSubmitter Insurer service account permitted to submit.
+    /// @param initialPermitIssuer Eligibility signer scoped to initialSubmitter.
     /// @param initialAssessor Scoring account scoped to initialSubmitter.
     /// @param trustedForwarder Immutable ERC-2771 forwarder that verifies
-    ///        insurer signatures before restoring their execution context.
+    ///        submitter signatures before restoring their execution context.
     /// @param adminTransferDelay Delay in seconds before an admin transfer can
     ///        be accepted. Production deployments should use a non-zero delay.
     constructor(
         address initialAdmin,
         address initialSubmitter,
+        address initialPermitIssuer,
         address initialAssessor,
         address trustedForwarder,
         uint48 adminTransferDelay
     )
         AccessControlDefaultAdminRules(adminTransferDelay, initialAdmin)
         ERC2771Context(trustedForwarder)
+        EIP712("ClaimsRegistry", "2")
     {
         if (
             initialSubmitter == address(0) ||
+            initialPermitIssuer == address(0) ||
             initialAssessor == address(0) ||
             trustedForwarder == address(0)
         ) {
@@ -111,27 +173,40 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
         }
         if (
             initialAdmin == initialSubmitter ||
+            initialAdmin == initialPermitIssuer ||
             initialAdmin == initialAssessor
         ) {
             revert RoleSeparationRequired(initialAdmin);
         }
-        if (initialSubmitter == initialAssessor) {
-            revert RoleSeparationRequired(initialSubmitter);
+        if (
+            initialSubmitter == initialPermitIssuer ||
+            initialSubmitter == initialAssessor ||
+            initialPermitIssuer == initialAssessor
+        ) {
+            revert RoleSeparationRequired(initialPermitIssuer);
         }
 
         _grantRole(SUBMITTER_ROLE, initialSubmitter);
+        _grantRole(PERMIT_ISSUER_ROLE, initialPermitIssuer);
         _grantRole(ASSESSOR_ROLE, initialAssessor);
+        _permitIssuerScopes[initialPermitIssuer][initialSubmitter] = true;
+        _permitIssuerScopeCount[initialPermitIssuer] = 1;
         _assessorScopes[initialAssessor][initialSubmitter] = true;
         _assessorScopeCount[initialAssessor] = 1;
 
         emit SubmitterUpdated(initialSubmitter, true);
+        emit PermitIssuerUpdated(
+            initialPermitIssuer,
+            initialSubmitter,
+            true
+        );
         emit AssessorUpdated(initialAssessor, initialSubmitter, true);
     }
 
-    /// @notice Record a synthetic claim and its public IPFS CID.
+    /// @notice Record an insurer-operated claim during the public-intake migration.
     /// @dev `_msgSender()` preserves the insurer identity for both direct and
-    ///      trusted-forwarder calls. The contract stores no claim payload and
-    ///      transfers no ETH or token value.
+    ///      trusted-forwarder calls. New claimant-facing integrations should use
+    ///      `submitClaimWithPermit`, which separates all claim parties.
     /// @param claimHash Keccak-256 hash of the canonical off-chain claim bytes.
     /// @param dataPointer Public `ipfs://<CID>` location of those exact bytes.
     /// @return claimId Monotonic identifier assigned to the new claim anchor.
@@ -139,32 +214,83 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
         bytes32 claimHash,
         string calldata dataPointer
     ) external onlyRole(SUBMITTER_ROLE) returns (uint256 claimId) {
-        if (claimHash == bytes32(0)) revert EmptyClaimHash();
-        _validateDataPointer(dataPointer);
         address submitter = _msgSender();
-
-        claimId = claimCount;
-        _claims[claimId] = Claim({
-            claimant: submitter,
-            claimHash: claimHash,
-            dataPointer: dataPointer,
-            status: Status.Submitted,
-            fraudScore: 0,
-            submittedAt: uint64(block.timestamp),
-            updatedAt: uint64(block.timestamp),
-            exists: true
-        });
-
-        unchecked {
-            claimCount = claimId + 1;
-        }
-
-        emit ClaimSubmitted(
-            claimId,
+        claimId = _recordClaim(
             submitter,
+            submitter,
+            submitter,
+            bytes32(0),
             claimHash,
             dataPointer,
-            block.timestamp
+            bytes32(0),
+            address(0)
+        );
+    }
+
+    /// @notice Record a policy-eligible claim signed by a public submitter.
+    /// @dev The forwarder signature proves who submitted. The permit signature
+    ///      independently proves that an issuer scoped to `permit.insurer`
+    ///      approved the exact claimant, content hash, pointer, and deadline.
+    ///      A global permit ID makes the insurer proof single-use even when the
+    ///      same document is accidentally prepared in two browser sessions.
+    /// @param permit Fixed-width claim authorization signed under this contract's
+    ///        EIP-712 domain.
+    /// @param dataPointer Bare `ipfs://CID` whose hash is bound by the permit.
+    /// @param permitSignature Signature produced by an insurer-scoped issuer.
+    /// @return claimId Monotonic identifier assigned to the new claim anchor.
+    function submitClaimWithPermit(
+        ClaimPermit calldata permit,
+        string calldata dataPointer,
+        bytes calldata permitSignature
+    ) external returns (uint256 claimId) {
+        address submitter = _msgSender();
+        if (
+            permit.claimant == address(0) ||
+            permit.submitter == address(0) ||
+            permit.insurer == address(0)
+        ) {
+            revert ZeroAddress();
+        }
+        if (permit.claimantCommitment == bytes32(0)) {
+            revert EmptyClaimantCommitment();
+        }
+        if (permit.claimHash == bytes32(0)) revert EmptyClaimHash();
+        if (permit.permitId == bytes32(0)) revert EmptyClaimPermitId();
+        if (permit.submitter != submitter) {
+            revert ClaimPermitSubmitterMismatch(permit.submitter, submitter);
+        }
+        if (block.timestamp > permit.deadline) {
+            revert ClaimPermitExpired(permit.deadline);
+        }
+        if (_usedClaimPermits[permit.permitId]) {
+            revert ClaimPermitAlreadyUsed(permit.permitId);
+        }
+        _validateDataPointer(dataPointer);
+        if (keccak256(bytes(dataPointer)) != permit.dataPointerHash) {
+            revert ClaimPermitPointerMismatch();
+        }
+
+        address permitIssuer = ECDSA.recover(
+            _hashTypedDataV4(_hashClaimPermit(permit)),
+            permitSignature
+        );
+        if (!isPermitIssuerFor(permitIssuer, permit.insurer)) {
+            revert ClaimPermitUnauthorized(permitIssuer, permit.insurer);
+        }
+
+        // Mark the authorization before recording the claim. A revert in the
+        // remaining call unwinds both changes; a successful reentrant call can
+        // never consume the same permit because the used flag is already set.
+        _usedClaimPermits[permit.permitId] = true;
+        claimId = _recordClaim(
+            permit.claimant,
+            permit.insurer,
+            submitter,
+            permit.claimantCommitment,
+            permit.claimHash,
+            dataPointer,
+            permit.permitId,
+            permitIssuer
         );
     }
 
@@ -182,8 +308,8 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
         Claim storage claim = _claims[claimId];
         address assessor = _msgSender();
         if (!claim.exists) revert UnknownClaim(claimId);
-        if (!_assessorScopes[assessor][claim.claimant]) {
-            revert AssessorScopeMismatch(assessor, claim.claimant);
+        if (!_assessorScopes[assessor][claim.insurer]) {
+            revert AssessorScopeMismatch(assessor, claim.insurer);
         }
         if (fraudScore > 10000) revert InvalidFraudScore(fraudScore);
         if (!_isAllowedTransition(claim.status, newStatus)) {
@@ -213,7 +339,8 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
     /// @dev Reverts for an unknown ID rather than returning an all-zero struct,
     ///      so indexers can distinguish missing data from a legitimate value.
     /// @param claimId Identifier assigned by `submitClaim`.
-    /// @return claimant Insurer address recovered from the submission context.
+    /// @return claimant Person represented by this claim. For legacy
+    ///         insurer-operated records this remains the insurer address.
     /// @return claimHash Permanent hash of the canonical off-chain bytes.
     /// @return dataPointer Public IPFS pointer supplied at submission.
     /// @return status Current lifecycle state.
@@ -246,6 +373,43 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
             claim.submittedAt,
             claim.updatedAt
         );
+    }
+
+    /// @notice Return the parties and privacy-preserving claimant reference.
+    /// @dev This accessor extends the stable compact `getClaim` interface so
+    ///      existing indexers can migrate independently from public intake.
+    function getClaimParties(
+        uint256 claimId
+    )
+        external
+        view
+        returns (
+            address insurer,
+            address submittedBy,
+            bytes32 claimantCommitment
+        )
+    {
+        Claim storage claim = _claims[claimId];
+        if (!claim.exists) revert UnknownClaim(claimId);
+        return (
+            claim.insurer,
+            claim.submittedBy,
+            claim.claimantCommitment
+        );
+    }
+
+    /// @notice Return the exact EIP-712 digest an issuer must sign.
+    /// @dev Exposing this calculation gives off-chain integrations a canonical
+    ///      preflight without weakening on-chain verification.
+    function claimPermitDigest(
+        ClaimPermit calldata permit
+    ) external view returns (bytes32) {
+        return _hashTypedDataV4(_hashClaimPermit(permit));
+    }
+
+    /// @notice Report whether a one-time claim permit has been consumed.
+    function isClaimPermitUsed(bytes32 permitId) external view returns (bool) {
+        return _usedClaimPermits[permitId];
     }
 
     /// @notice Compare supplied off-chain bytes with the permanent claim hash.
@@ -288,10 +452,24 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
             _assessorScopes[assessor][insurer];
     }
 
+    /// @notice Report whether an account may attest eligibility for one insurer.
+    /// @dev The global role and exact insurer scope are both required. Revoking
+    ///      the insurer's submitter authorization also disables new permits
+    ///      without erasing the historical issuer-scope audit trail.
+    function isPermitIssuerFor(
+        address permitIssuer,
+        address insurer
+    ) public view returns (bool) {
+        return
+            hasRole(SUBMITTER_ROLE, insurer) &&
+            hasRole(PERMIT_ISSUER_ROLE, permitIssuer) &&
+            _permitIssuerScopes[permitIssuer][insurer];
+    }
+
     /// @notice Grant or revoke claim-submission permission.
-    /// @dev Admin, submitter, and assessor duties are mutually exclusive. Use
-    ///      this function instead of generic `grantRole`/`revokeRole` so that
-    ///      invariant cannot be bypassed.
+    /// @dev Admin, submitter, permit-issuer, and assessor duties are mutually
+    ///      exclusive. Use this function instead of generic
+    ///      `grantRole`/`revokeRole` so that invariant cannot be bypassed.
     /// @param submitter Insurer service account to configure.
     /// @param authorized True to grant permission; false to revoke it.
     function setSubmitter(
@@ -302,7 +480,8 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
         if (authorized) {
             if (
                 submitter == defaultAdmin() ||
-                hasRole(ASSESSOR_ROLE, submitter)
+                hasRole(ASSESSOR_ROLE, submitter) ||
+                hasRole(PERMIT_ISSUER_ROLE, submitter)
             ) {
                 revert RoleSeparationRequired(submitter);
             }
@@ -311,6 +490,55 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
             _revokeRole(SUBMITTER_ROLE, submitter);
         }
         emit SubmitterUpdated(submitter, authorized);
+    }
+
+    /// @notice Grant or revoke an eligibility signer for one insurer.
+    /// @dev Issuers receive the global role only while at least one insurer
+    ///      scope exists. The issuer is deliberately separate from the insurer,
+    ///      assessor, and administrator so a compromised eligibility key cannot
+    ///      administer roles, assess claims, or submit legacy claims directly.
+    function setPermitIssuer(
+        address permitIssuer,
+        address insurer,
+        bool authorized
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (permitIssuer == address(0) || insurer == address(0)) {
+            revert ZeroAddress();
+        }
+        if (authorized) {
+            if (!hasRole(SUBMITTER_ROLE, insurer)) {
+                revert InsurerNotAuthorized(insurer);
+            }
+            if (
+                permitIssuer == defaultAdmin() ||
+                hasRole(SUBMITTER_ROLE, permitIssuer) ||
+                hasRole(ASSESSOR_ROLE, permitIssuer)
+            ) {
+                revert RoleSeparationRequired(permitIssuer);
+            }
+            if (!_permitIssuerScopes[permitIssuer][insurer]) {
+                _permitIssuerScopes[permitIssuer][insurer] = true;
+                unchecked {
+                    ++_permitIssuerScopeCount[permitIssuer];
+                }
+                _grantRole(PERMIT_ISSUER_ROLE, permitIssuer);
+            }
+        } else {
+            if (!_permitIssuerScopes[permitIssuer][insurer]) {
+                revert PermitIssuerScopeNotConfigured(
+                    permitIssuer,
+                    insurer
+                );
+            }
+            delete _permitIssuerScopes[permitIssuer][insurer];
+            uint256 remainingScopes =
+                _permitIssuerScopeCount[permitIssuer] - 1;
+            _permitIssuerScopeCount[permitIssuer] = remainingScopes;
+            if (remainingScopes == 0) {
+                _revokeRole(PERMIT_ISSUER_ROLE, permitIssuer);
+            }
+        }
+        emit PermitIssuerUpdated(permitIssuer, insurer, authorized);
     }
 
     /// @notice Grant a scoped assessor or revoke its existing scope.
@@ -334,7 +562,8 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
             }
             if (
                 assessor == defaultAdmin() ||
-                hasRole(SUBMITTER_ROLE, assessor)
+                hasRole(SUBMITTER_ROLE, assessor) ||
+                hasRole(PERMIT_ISSUER_ROLE, assessor)
             ) {
                 revert RoleSeparationRequired(assessor);
             }
@@ -371,7 +600,8 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
             newAdmin != address(0) &&
             (
                 hasRole(SUBMITTER_ROLE, newAdmin) ||
-                hasRole(ASSESSOR_ROLE, newAdmin)
+                hasRole(ASSESSOR_ROLE, newAdmin) ||
+                hasRole(PERMIT_ISSUER_ROLE, newAdmin)
             )
         ) {
             revert RoleSeparationRequired(newAdmin);
@@ -386,7 +616,8 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
         address sender = _msgSender();
         if (
             hasRole(SUBMITTER_ROLE, sender) ||
-            hasRole(ASSESSOR_ROLE, sender)
+            hasRole(ASSESSOR_ROLE, sender) ||
+            hasRole(PERMIT_ISSUER_ROLE, sender)
         ) {
             revert RoleSeparationRequired(sender);
         }
@@ -425,13 +656,17 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
         return ERC2771Context._contextSuffixLength();
     }
 
-    /// @dev Scoped roles must be configured through setSubmitter/setAssessor so
-    ///      their accompanying security invariants cannot be bypassed.
+    /// @dev Scoped roles must use their invariant-preserving configuration
+    ///      functions rather than generic role administration.
     function grantRole(
         bytes32 role,
         address account
     ) public override {
-        if (role == SUBMITTER_ROLE || role == ASSESSOR_ROLE) {
+        if (
+            role == SUBMITTER_ROLE ||
+            role == ASSESSOR_ROLE ||
+            role == PERMIT_ISSUER_ROLE
+        ) {
             revert UseRoleConfigurationFunction(role);
         }
         super.grantRole(role, account);
@@ -442,10 +677,88 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
         bytes32 role,
         address account
     ) public override {
-        if (role == SUBMITTER_ROLE || role == ASSESSOR_ROLE) {
+        if (
+            role == SUBMITTER_ROLE ||
+            role == ASSESSOR_ROLE ||
+            role == PERMIT_ISSUER_ROLE
+        ) {
             revert UseRoleConfigurationFunction(role);
         }
         super.revokeRole(role, account);
+    }
+
+    /// @dev Concentrate permanent storage and event ordering in one path so
+    ///      legacy insurer submissions and permit-backed public submissions
+    ///      cannot drift into subtly different claim records.
+    function _recordClaim(
+        address claimant,
+        address insurer,
+        address submittedBy,
+        bytes32 claimantCommitment,
+        bytes32 claimHash,
+        string calldata dataPointer,
+        bytes32 permitId,
+        address permitIssuer
+    ) private returns (uint256 claimId) {
+        if (claimHash == bytes32(0)) revert EmptyClaimHash();
+        _validateDataPointer(dataPointer);
+
+        claimId = claimCount;
+        _claims[claimId] = Claim({
+            claimant: claimant,
+            insurer: insurer,
+            submittedBy: submittedBy,
+            claimantCommitment: claimantCommitment,
+            claimHash: claimHash,
+            dataPointer: dataPointer,
+            status: Status.Submitted,
+            fraudScore: 0,
+            submittedAt: uint64(block.timestamp),
+            updatedAt: uint64(block.timestamp),
+            exists: true
+        });
+
+        unchecked {
+            claimCount = claimId + 1;
+        }
+
+        emit ClaimSubmitted(
+            claimId,
+            claimant,
+            claimHash,
+            dataPointer,
+            block.timestamp
+        );
+        emit ClaimPartiesRecorded(
+            claimId,
+            insurer,
+            submittedBy,
+            claimantCommitment,
+            permitId,
+            permitIssuer
+        );
+    }
+
+    /// @dev Keep the type-hash field ordering next to the Solidity struct. The
+    ///      corresponding backend model is tested against `claimPermitDigest`
+    ///      so a cross-language field-order change fails before deployment.
+    function _hashClaimPermit(
+        ClaimPermit calldata permit
+    ) private pure returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    CLAIM_PERMIT_TYPEHASH,
+                    permit.claimant,
+                    permit.submitter,
+                    permit.insurer,
+                    permit.claimantCommitment,
+                    permit.claimHash,
+                    permit.dataPointerHash,
+                    permit.permitId,
+                    permit.deadline
+                )
+            );
     }
 
     /// @dev Final states deliberately have no outgoing transitions.
@@ -472,7 +785,7 @@ contract ClaimsRegistry is AccessControlDefaultAdminRules, ERC2771Context {
         return false;
     }
 
-    /// @dev This prototype stores a bare IPFS CID only. Requiring an
+    /// @dev This deployment stores a bare IPFS CID only. Requiring an
     ///      alphanumeric target prevents malformed paths, query strings and
     ///      unsupported URL schemes from becoming permanent poison events.
     function _validateDataPointer(string calldata dataPointer) private pure {

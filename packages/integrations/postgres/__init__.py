@@ -11,6 +11,11 @@ from .claim_index_repository import (
     PostgresClaimIndexRepository,
     claim_index_event_id,
 )
+from .claimant_auth_repository import (
+    ClaimantAuthChallengeError,
+    ClaimantAuthChallengeRateLimitError,
+    PostgresClaimantAuthChallengeRepository,
+)
 from .database import (
     PostgresConfigurationError,
     PostgresDatabase,
@@ -39,6 +44,7 @@ from .migrations import MigrationStatus, PostgresMigrator
 from .records import (
     AssessmentRecord,
     AssessorOutcomeRecord,
+    ClaimantAuthChallengeRecord,
     ClaimIndexEventPage,
     ClaimIndexEventRecord,
     ClaimIndexOperationsSnapshot,
@@ -66,6 +72,9 @@ __all__ = [
     "ClaimIndexOperationsSnapshot",
     "ClaimIndexReconciliationRecord",
     "ClaimIndexStatus",
+    "ClaimantAuthChallengeError",
+    "ClaimantAuthChallengeRateLimitError",
+    "ClaimantAuthChallengeRecord",
     "DuplicateCheck",
     "DuplicateMatch",
     "GaslessSubmissionConflictError",
@@ -81,6 +90,7 @@ __all__ = [
     "PostgresAssessorOutcomeRepository",
     "PostgresClaimIndexCheckpoint",
     "PostgresClaimIndexRepository",
+    "PostgresClaimantAuthChallengeRepository",
     "PostgresConfigurationError",
     "PostgresDatabase",
     "PostgresDuplicateRepository",

@@ -12,12 +12,12 @@ import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+from apps.backend.app.claimant_auth import ClaimantSessionManager
 from apps.backend.app.gasless_blockchain import GaslessClaimsGateway
 from apps.backend.app.indexer_operations import IndexerOperationsBoundary
-from apps.backend.app.submission_auth import (
-    ClaimAuthorizationSigner,
-    SubmissionBoundary,
-)
+from apps.backend.app.policy_eligibility import ConfiguredPolicyEligibility
+from apps.backend.app.submission_auth import ClaimAuthorizationSigner
+from packages.integrations.ethereum import load_claims_deployment
 from packages.integrations.ipfs import IPFSClient
 from packages.integrations.postgres import PostgresMigrator, PostgresRepositories
 from packages.observability import get_event_logger
@@ -98,10 +98,15 @@ def build_readiness_probe() -> ReadinessProbe:
     successful connection cached during process startup.
     """
 
-    def check_insurer_authentication() -> None:
-        """Validate insurer API-key configuration without authenticating a request."""
+    def check_claimant_authentication() -> None:
+        """Validate wallet-session policy against the durable challenge store."""
 
-        SubmissionBoundary.from_env()
+        repositories = PostgresRepositories.from_env()
+        deployment = load_claims_deployment(os.environ)
+        ClaimantSessionManager.from_env(
+            repositories.claimant_auth_challenges,
+            chain_id=deployment.chain_id,
+        )
 
     def check_operations_authentication() -> None:
         """Validate that the digest-only operations boundary can be constructed."""
@@ -116,14 +121,19 @@ def build_readiness_probe() -> ReadinessProbe:
         PostgresMigrator(repositories.database).require_current()
 
     def check_sepolia_contract() -> None:
-        """Verify contracts, trust link, and every configured insurer role."""
+        """Verify contracts, trust link, and every public-intake role binding."""
 
-        # The FastAPI process is deliberately keyless. This check validates both
-        # contracts and all public submitter-role bindings without constructing
-        # the standalone relayer adapter.
+        # FastAPI is deliberately transaction-keyless. This check validates both
+        # contracts plus every insurer/permit-issuer pair without constructing
+        # the standalone gas-paying relayer adapter.
+        eligibility = ConfiguredPolicyEligibility.from_env()
         gateway = GaslessClaimsGateway.from_env()
-        for principal in SubmissionBoundary.from_env().configured_principals:
-            gateway.validate_signer(principal.signer_address)
+        gateway.deployment.require_public_intake()
+        for insurer_id, insurer_address in eligibility.configured_insurers:
+            gateway.validate_public_intake_configuration(
+                insurer_id,
+                insurer_address,
+            )
 
     def check_submission_dependencies() -> None:
         """Validate upload and signing configuration without performing a write."""
@@ -140,9 +150,9 @@ def build_readiness_probe() -> ReadinessProbe:
     return ReadinessProbe(
         (
             ReadinessCheck(
-                "insurer_authentication",
-                check_insurer_authentication,
-                "insurer authentication configuration is unavailable",
+                "claimant_authentication",
+                check_claimant_authentication,
+                "claimant wallet authentication is unavailable",
             ),
             ReadinessCheck(
                 "indexer_operations_authentication",

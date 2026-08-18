@@ -12,10 +12,11 @@ screens it off-chain, and leaves a compact result that anyone can verify.
 
 ```mermaid
 flowchart LR
-    Browser["React browser"] -->|"claim + API key + wallet"| API["Keyless FastAPI"]
-    API -->|"authorized canonical JSON"| IPFS[("Public IPFS")]
+    Browser["React browser"] -->|"wallet proof + claim + policy"| API["FastAPI"]
+    API -->|"verified schema-v6 JSON"| IPFS[("Public IPFS")]
+    API -->|"scoped one-time insurer permit"| Permit["Permit signer"]
     API -->|"exact EIP-712 request"| Browser
-    Browser -->|"insurer signature"| API
+    Browser -->|"claimant submitter signature"| API
     API --> Outbox[("PostgreSQL relay outbox")]
     Relayer["Restricted gas relayer"] --> Outbox
     Relayer -->|"ERC-2771 execute"| Chain[("Sepolia registry")]
@@ -33,17 +34,19 @@ flowchart LR
     API --> Browser
 ```
 
-The split is intentional: the insurer authorizes the exact call, then the
-browser polls while an isolated relayer anchors it. Kafka handles the slower
-screening work without holding the submission request open.
+The split is intentional: policy eligibility and the insurer permit authorize
+the claim, the claimant or representative authorizes the exact call, and an
+isolated relayer only pays gas. Kafka handles slower screening without holding
+the submission request open. See the
+[public-intake design and provisioning guide](docs/PUBLIC_CLAIM_INTAKE.md).
 
 ## What is stored where
 
 | Place      | Stored                                                                                                                                                 | Deliberately not stored                                      |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
-| Browser    | Form state in memory; latest public receipt in local storage                                                                                           | Wallet keys, Pinata JWT, HMAC keys, saved insurer credential |
-| IPFS       | Authorized schema-v5 synthetic claim JSON                                                                                                              | Encryption or access control                                 |
-| Sepolia    | Claim ID, submitter, hash, CID, status, score, timestamps                                                                                              | Full claim, SHAP reasons, private fingerprints               |
+| Browser    | Form state and short claimant session in memory; latest public receipt in local storage                                                                 | Wallet keys, Pinata JWT, HMAC keys, saved bearer sessions    |
+| IPFS       | Authorized schema-v6 synthetic claim JSON                                                                                                              | Encryption or access control                                 |
+| Sepolia    | Claim ID, claimant, insurer, submitter, claimant commitment, hash, CID, status, score, timestamps                                                      | Full claim, SHAP reasons, private fingerprints               |
 | Kafka      | Versioned blockchain and IPFS references                                                                                                               | Full claim payload                                           |
 | PostgreSQL | Gasless idempotency/outbox/transaction attempts; confirmed public index and event history; versioned features, keyed fingerprints, score, SHAP reasons; private human-outcome revisions | HMAC keys, raw policy reference, description, evidence |
 
@@ -135,17 +138,17 @@ On macOS, install XGBoost's OpenMP runtime once with `brew install libomp`.
 Using the explicit `apps/backend/.venv/bin/python` path avoids accidentally
 running the root virtual environment or a system Python without dependencies.
 
-### 2. Configure the gasless deployment
+### 2. Deploy and configure public intake
 
 ```bash
 test -f .env.local || cp .env.example .env.local
 ```
 
-Review `.env.local`; do not merely source it unchanged. The required local
-values are explained in [the configuration checklist](LOCAL_DEVELOPMENT.md#3-create-and-review-envlocal).
-The selected `sepolia-gasless-v1` artifact uses registry block `11426492`.
-Every configured insurer `signerAddress` must have the submitter role and must
-match the account connected in the browser wallet.
+Review `.env.local`; do not merely source it unchanged. The previous
+`sepolia-gasless-v1` contract lacks permits and is intentionally rejected for
+writes. Deploy this branch, record its block, save its Ignition artifacts under
+a new deployment ID, provision policy and owner-only permit-key settings, then
+follow the [public-intake guide](docs/PUBLIC_CLAIM_INTAKE.md).
 
 Build the reviewed synthetic model artifact:
 
@@ -192,7 +195,7 @@ set -a; source .env.local; set +a
 Then run exactly one command per terminal:
 
 ```bash
-# Terminal A — keyless FastAPI
+# Terminal A — transaction-keyless FastAPI
 apps/backend/.venv/bin/python -m uvicorn \
   apps.backend.app.main:app --reload --host 127.0.0.1 --port 8000
 
@@ -229,9 +232,10 @@ Readiness should report every dependency as `ok`. Open:
 - indexer operations: <http://127.0.0.1:5173/operations>
 - Kafka UI: <http://127.0.0.1:8081>
 
-In the claims page, use the raw insurer API key—not its SHA-256 digest—and
-connect the wallet bound to that credential. The insurer signs EIP-712 data but
-does not pay gas. A healthy run progresses through:
+In the claims page, connect a claimant or authorized representative wallet and
+enter the configured synthetic policy reference. The wallet first proves
+ownership, then signs the exact EIP-712 request without paying gas. A healthy
+run progresses through:
 
 ```text
 Browser:  prepared -> wallet signed -> authorized
@@ -268,14 +272,14 @@ or `Inconclusive` in PostgreSQL after model screening. Corrections append a new
 revision instead of overwriting history. These human outcomes do not change the
 contract status: `Approved`/`Rejected` remain business lifecycle decisions and
 are never converted automatically into fraud labels. `Inconclusive` is excluded
-from binary-label eligibility, and this prototype performs no automatic
+from binary-label eligibility, and the application performs no automatic model
 retraining.
 
 ## Sepolia deployments
 
 | Purpose                       | Deployment ID               | Registry                                                                                            | Forwarder                                                                                         | Start block |
 | ----------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------- |
-| Current gasless research flow | `sepolia-gasless-v1`        | [`0x5A7A...A300`](https://sepolia.etherscan.io/address/0x5A7A3e22843397f998823D0d58aBd2E1f4b2A300)  | [`0x0e68...5F0`](https://sepolia.etherscan.io/address/0x0e68Ac27a344f454373604Eec3144c427661E5F0) | `11426492`  |
+| Previous gasless flow (no public permits) | `sepolia-gasless-v1` | [`0x5A7A...A300`](https://sepolia.etherscan.io/address/0x5A7A3e22843397f998823D0d58aBd2E1f4b2A300) | [`0x0e68...5F0`](https://sepolia.etherscan.io/address/0x0e68Ac27a344f454373604Eec3144c427661E5F0) | `11426492` |
 | Read-only legacy history      | `sepolia-security-audit-v1` | [`0x2AbA...B78cB`](https://sepolia.etherscan.io/address/0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB) | None                                                                                              | `11377814`  |
 
 Both use Sepolia chain ID `11155111`. Runtime selection is explicit through
@@ -336,7 +340,7 @@ retention rules, and a validated and monitored model.
 | Area                                    | Guide                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------------- |
 | Complete local startup                  | [Local development](LOCAL_DEVELOPMENT.md)                              |
-| FastAPI and insurer credentials         | [Backend](apps/backend/BACKEND.md)                                     |
+| FastAPI, claimant sessions, policies and permits | [Backend](apps/backend/BACKEND.md)                              |
 | Gasless relayer                         | [Relayer](apps/relayer/RELAYER.md)                                     |
 | Gasless security and operations         | [Production gasless runbook](apps/relayer/PRODUCTION.md)               |
 | Indexer monitoring and recovery         | [Indexer operations runbook](apps/listener/OPERATIONS.md)              |

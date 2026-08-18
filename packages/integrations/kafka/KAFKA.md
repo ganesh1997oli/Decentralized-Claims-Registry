@@ -53,7 +53,7 @@ The worker deliberately treats failures in two different ways:
   commit that offset, so the same event is retried later.
 - Permanent defects in the immutable claim—an unsupported/malformed stored
   schema, invalid gateway authorization, or mismatch between the authorized
-  insurer wallet and the on-chain claimant—are written to an append-only JSONL
+  public parties and the on-chain claim—are written to an append-only JSONL
   dead-letter file. The file is flushed and `fsync` is called before the handler
   returns, allowing Kafka to commit the rejected event and process the next
   claim in that partition.
@@ -145,7 +145,8 @@ apps/backend/.venv/bin/python -m apps.listener.claims_listener
 
 The worker needs the assessor wallet, IPFS gateway, PostgreSQL, model artifact,
 `CLAIM_AUTHORIZATION_KEY`, and `DUPLICATE_FINGERPRINT_KEY`. It does not receive
-raw insurer API keys, their digests, the submitter wallet, or Pinata JWT.
+claimant bearer tokens, permit-issuer keys, submitter wallet keys, or the Pinata
+JWT.
 
 Do not run `consumer.py` with the scorer's group ID: consumers in one Kafka
 group divide partitions and would take messages away from the scoring worker.

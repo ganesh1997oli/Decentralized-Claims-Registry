@@ -1,21 +1,24 @@
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID
 
 from fastapi.testclient import TestClient
 
+from apps.backend.app.claimant_auth import ClaimantAuthenticationError, ClaimantSession
 from apps.backend.app.gasless_service import (
     GaslessClaimSubmissionService,
+    GaslessSubmissionEligibilityError,
+    GaslessSubmissionRateLimitError,
     GaslessSubmissionServiceError,
 )
 from apps.backend.app.main import (
     app,
     get_active_deployment,
-    get_authenticated_insurer_principal,
     get_claim_query_service,
+    get_claimant_session,
+    get_claimant_session_manager,
     get_gasless_submission_service,
-    get_insurer_principal,
     get_postgres_repositories,
-    get_submission_boundary,
 )
 from apps.backend.app.models import (
     ClaimListItemResponse,
@@ -26,12 +29,6 @@ from apps.backend.app.models import (
 from apps.backend.app.service import (
     ClaimQueryService,
     ClaimQueryServiceError,
-)
-from apps.backend.app.submission_auth import (
-    InsurerPrincipal,
-    SubmissionAuthenticationError,
-    SubmissionAuthorizationError,
-    SubmissionRateLimitError,
 )
 from packages.duplicates import DuplicateCheck, DuplicateMatch
 from packages.integrations.postgres import AssessmentRecord
@@ -129,7 +126,7 @@ class SuccessfulGaslessService:
     def prepare(self, claim, principal, *, idempotency_key, client_ip):
         assert claim.claim_reference == "synthetic-claim-api-1"
         assert claim.insurer_id == "northstar-mutual"
-        assert principal.insurer_id == "northstar-mutual"
+        assert principal.claimant_address == SIGNER
         assert idempotency_key == "claim-request-1"
         assert client_ip == "testclient"
         return gasless_response()
@@ -137,12 +134,12 @@ class SuccessfulGaslessService:
     def authorize(self, submission_id, signature, principal):
         assert submission_id == SUBMISSION_ID
         assert signature == "0x" + ("ab" * 65)
-        assert principal.credential_id == "northstar-test-v1"
+        assert principal.credential_id == "claimant-" + ("a" * 64)
         return gasless_response("authorized")
 
     def status(self, submission_id, principal):
         assert submission_id == SUBMISSION_ID
-        assert principal.credential_id == "northstar-test-v1"
+        assert principal.credential_id == "claimant-" + ("a" * 64)
         return gasless_response("confirmed")
 
     def list_claims(self, *, page, page_size):
@@ -182,6 +179,21 @@ class FailingQueryService:
 class UnexpectedService:
     def prepare(self, claim, principal, **_values):
         raise AssertionError("Invalid input must not reach the submission service")
+
+
+class IneligibleGaslessService:
+    def prepare(self, claim, principal, **_values):
+        raise GaslessSubmissionEligibilityError(
+            "The selected insurer does not match the verified policy"
+        )
+
+
+class RateLimitedGaslessService:
+    def prepare(self, claim, principal, **_values):
+        raise GaslessSubmissionRateLimitError(
+            "Daily quota reached",
+            retry_after=3600,
+        )
 
 
 class SuccessfulAssessmentRepository:
@@ -232,34 +244,26 @@ def active_deployment():
     return SimpleNamespace(chain_id=11_155_111, address="0xcontract")
 
 
-def authenticated_principal():
-    return InsurerPrincipal(
-        insurer_id="northstar-mutual",
-        credential_id="northstar-test-v1",
-        signer_address="0x1111111111111111111111111111111111111111",
-        permitted_operations=frozenset({"submit_claim"}),
-        daily_quota=25,
+def authenticated_claimant():
+    return ClaimantSession(
+        subject_id="claimant-" + ("a" * 64),
+        claimant_address=SIGNER,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
     )
 
 
 def allow_authenticated_submission():
-    app.dependency_overrides[get_insurer_principal] = authenticated_principal
+    app.dependency_overrides[get_claimant_session] = authenticated_claimant
 
 
-class BoundaryProbe:
+class ClaimantSessionManagerProbe:
     def __init__(self, result=None, error=None):
-        self.result = result or authenticated_principal()
+        self.result = result or authenticated_claimant()
         self.error = error
         self.calls = []
 
-    def authorize_and_reserve(self, *, api_key, claimed_insurer_id, client_ip):
-        self.calls.append((api_key, claimed_insurer_id, client_ip))
-        if self.error is not None:
-            raise self.error
-        return self.result
-
-    def authenticate(self, *, api_key, client_ip):
-        self.calls.append((api_key, client_ip))
+    def authenticate(self, access_token):
+        self.calls.append(access_token)
         if self.error is not None:
             raise self.error
         return self.result
@@ -278,20 +282,14 @@ def test_cors_preflight_allows_the_local_react_app():
         headers={
             "Origin": "http://127.0.0.1:5173",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": (
-                "content-type,x-insurer-api-key,idempotency-key"
-                ",x-insurer-signer-address"
-            ),
+            "Access-Control-Request-Headers": "authorization,content-type,idempotency-key",
         },
     )
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == ("http://127.0.0.1:5173")
     assert "POST" in response.headers["access-control-allow-methods"]
-    assert "X-Insurer-API-Key" in response.headers["access-control-allow-headers"]
-    assert "X-Insurer-Signer-Address" in response.headers[
-        "access-control-allow-headers"
-    ]
+    assert "Authorization" in response.headers["access-control-allow-headers"]
     assert "Idempotency-Key" in response.headers["access-control-allow-headers"]
 
 
@@ -330,10 +328,7 @@ def test_prepare_gasless_claim_returns_wallet_typed_data():
         response = TestClient(app).post(
             "/claims/gasless/prepare",
             json=VALID_CLAIM,
-            headers={
-                "Idempotency-Key": "claim-request-1",
-                "X-Insurer-Signer-Address": SIGNER,
-            },
+            headers={"Idempotency-Key": "claim-request-1"},
         )
     finally:
         app.dependency_overrides.clear()
@@ -347,19 +342,18 @@ def test_prepare_gasless_claim_returns_wallet_typed_data():
     assert body["typed_data"]["domain"]["verifyingContract"] == FORWARDER
 
 
-def test_prepare_claim_authenticates_api_key_and_authoritative_insurer():
-    boundary = BoundaryProbe()
+def test_prepare_claim_authenticates_claimant_bearer_session():
+    manager = ClaimantSessionManagerProbe()
     app.dependency_overrides[get_gasless_submission_service] = (
         SuccessfulGaslessService
     )
-    app.dependency_overrides[get_submission_boundary] = lambda: boundary
+    app.dependency_overrides[get_claimant_session_manager] = lambda: manager
     try:
         response = TestClient(app).post(
             "/claims/gasless/prepare",
             json=VALID_CLAIM,
             headers={
-                "X-Insurer-API-Key": "test-api-key",
-                "X-Insurer-Signer-Address": SIGNER,
+                "Authorization": "Bearer claimant-session-token",
                 "Idempotency-Key": "claim-request-1",
             },
         )
@@ -367,34 +361,31 @@ def test_prepare_claim_authenticates_api_key_and_authoritative_insurer():
         app.dependency_overrides.clear()
 
     assert response.status_code == 201
-    assert boundary.calls == [("test-api-key", "northstar-mutual", "testclient")]
+    assert manager.calls == ["claimant-session-token"]
 
 
-def test_prepare_claim_requires_an_insurer_api_key():
-    boundary = BoundaryProbe(
-        error=SubmissionAuthenticationError("Invalid insurer API credential")
+def test_prepare_claim_requires_a_claimant_bearer_session():
+    manager = ClaimantSessionManagerProbe(
+        error=ClaimantAuthenticationError("A claimant bearer session is required")
     )
     app.dependency_overrides[get_gasless_submission_service] = UnexpectedService
-    app.dependency_overrides[get_submission_boundary] = lambda: boundary
+    app.dependency_overrides[get_claimant_session_manager] = lambda: manager
     try:
         response = TestClient(app).post(
             "/claims/gasless/prepare",
             json=VALID_CLAIM,
-            headers={
-                "Idempotency-Key": "claim-request-1",
-                "X-Insurer-Signer-Address": SIGNER,
-            },
+            headers={"Idempotency-Key": "claim-request-1"},
         )
     finally:
         app.dependency_overrides.clear()
 
     assert response.status_code == 401
-    assert response.headers["www-authenticate"] == "ApiKey"
+    assert response.headers["www-authenticate"] == "Bearer"
 
 
 def test_authentication_runs_before_gasless_service_initialization():
-    boundary = BoundaryProbe(
-        error=SubmissionAuthenticationError("Invalid insurer API credential")
+    manager = ClaimantSessionManagerProbe(
+        error=ClaimantAuthenticationError("A claimant bearer session is required")
     )
 
     def unexpected_service_initialization():
@@ -403,15 +394,12 @@ def test_authentication_runs_before_gasless_service_initialization():
     app.dependency_overrides[get_gasless_submission_service] = (
         unexpected_service_initialization
     )
-    app.dependency_overrides[get_submission_boundary] = lambda: boundary
+    app.dependency_overrides[get_claimant_session_manager] = lambda: manager
     try:
         response = TestClient(app).post(
             "/claims/gasless/prepare",
             json=VALID_CLAIM,
-            headers={
-                "Idempotency-Key": "claim-request-1",
-                "X-Insurer-Signer-Address": SIGNER,
-            },
+            headers={"Idempotency-Key": "claim-request-1"},
         )
     finally:
         app.dependency_overrides.clear()
@@ -419,23 +407,14 @@ def test_authentication_runs_before_gasless_service_initialization():
     assert response.status_code == 401
 
 
-def test_prepare_claim_rejects_insurer_identity_mismatch():
-    boundary = BoundaryProbe(
-        error=SubmissionAuthorizationError(
-            "The selected insurer does not match the authenticated credential"
-        )
-    )
-    app.dependency_overrides[get_gasless_submission_service] = UnexpectedService
-    app.dependency_overrides[get_submission_boundary] = lambda: boundary
+def test_prepare_claim_rejects_policy_eligibility_mismatch():
+    app.dependency_overrides[get_gasless_submission_service] = IneligibleGaslessService
+    allow_authenticated_submission()
     try:
         response = TestClient(app).post(
             "/claims/gasless/prepare",
             json=VALID_CLAIM,
-            headers={
-                "X-Insurer-API-Key": "test-api-key",
-                "X-Insurer-Signer-Address": SIGNER,
-                "Idempotency-Key": "claim-request-1",
-            },
+            headers={"Idempotency-Key": "claim-request-1"},
         )
     finally:
         app.dependency_overrides.clear()
@@ -444,44 +423,14 @@ def test_prepare_claim_rejects_insurer_identity_mismatch():
     assert "does not match" in response.json()["detail"]
 
 
-def test_prepare_claim_rejects_a_wallet_not_bound_to_the_credential():
-    boundary = BoundaryProbe()
-    app.dependency_overrides[get_gasless_submission_service] = UnexpectedService
-    app.dependency_overrides[get_submission_boundary] = lambda: boundary
-    try:
-        response = TestClient(app).post(
-            "/claims/gasless/prepare",
-            json=VALID_CLAIM,
-            headers={
-                "X-Insurer-API-Key": "test-api-key",
-                "X-Insurer-Signer-Address": (
-                    "0x4444444444444444444444444444444444444444"
-                ),
-                "Idempotency-Key": "claim-request-1",
-            },
-        )
-    finally:
-        app.dependency_overrides.clear()
-
-    assert response.status_code == 403
-    assert "connected wallet" in response.json()["detail"]
-
-
 def test_prepare_claim_returns_retry_after_for_rate_limit():
-    boundary = BoundaryProbe(
-        error=SubmissionRateLimitError("Daily quota reached", retry_after=3600)
-    )
-    app.dependency_overrides[get_gasless_submission_service] = UnexpectedService
-    app.dependency_overrides[get_submission_boundary] = lambda: boundary
+    app.dependency_overrides[get_gasless_submission_service] = RateLimitedGaslessService
+    allow_authenticated_submission()
     try:
         response = TestClient(app).post(
             "/claims/gasless/prepare",
             json=VALID_CLAIM,
-            headers={
-                "X-Insurer-API-Key": "test-api-key",
-                "X-Insurer-Signer-Address": SIGNER,
-                "Idempotency-Key": "claim-request-1",
-            },
+            headers={"Idempotency-Key": "claim-request-1"},
         )
     finally:
         app.dependency_overrides.clear()
@@ -494,9 +443,7 @@ def test_authorize_and_poll_gasless_claim():
     app.dependency_overrides[get_gasless_submission_service] = (
         SuccessfulGaslessService
     )
-    app.dependency_overrides[get_authenticated_insurer_principal] = (
-        authenticated_principal
-    )
+    app.dependency_overrides[get_claimant_session] = authenticated_claimant
     try:
         authorized = TestClient(app).post(
             f"/claims/gasless/{SUBMISSION_ID}/authorize",
@@ -716,7 +663,7 @@ def test_list_claims_reports_missing_read_configuration_as_json_503(monkeypatch)
 
 
 def test_prepare_claim_reports_missing_write_configuration_as_json_503(monkeypatch):
-    """Missing keyless preparation settings must return structured JSON."""
+    """Missing public-intake settings must return structured JSON."""
 
     def unavailable(_service_class):
         raise GaslessSubmissionServiceError("gasless deployment is not configured")

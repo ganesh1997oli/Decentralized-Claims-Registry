@@ -1,16 +1,18 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 
+from apps.backend.app.claimant_auth import ClaimantSession
 from apps.backend.app.gasless_blockchain import PreparedForwardRequest
 from apps.backend.app.gasless_service import (
     GaslessClaimSubmissionService,
     GaslessSubmissionAccessError,
 )
 from apps.backend.app.models import ClaimSubmission
+from apps.backend.app.policy_eligibility import ClaimantPrincipal
 from apps.backend.app.submission_auth import ClaimAuthorizationSigner, InsurerPrincipal
 from packages.integrations.postgres import GaslessSubmissionRecord
 
@@ -18,6 +20,8 @@ SUBMISSION_ID = UUID("11111111-1111-4111-8111-111111111111")
 SIGNER = "0x1111111111111111111111111111111111111111"
 CONTRACT = "0x2222222222222222222222222222222222222222"
 FORWARDER = "0x3333333333333333333333333333333333333333"
+INSURER = "0x4444444444444444444444444444444444444444"
+PERMIT_ISSUER = "0x5555555555555555555555555555555555555555"
 NOW = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
 PRINCIPAL = InsurerPrincipal(
     insurer_id="northstar-mutual",
@@ -25,6 +29,21 @@ PRINCIPAL = InsurerPrincipal(
     signer_address=SIGNER,
     permitted_operations=frozenset({"submit_claim"}),
     daily_quota=25,
+)
+CLAIMANT_SESSION = ClaimantSession(
+    subject_id="claimant-" + ("a" * 64),
+    claimant_address=SIGNER,
+    expires_at=NOW + timedelta(minutes=15),
+)
+PUBLIC_PRINCIPAL = ClaimantPrincipal(
+    subject_id=CLAIMANT_SESSION.subject_id,
+    claimant_address=SIGNER,
+    submitter_address=SIGNER,
+    claimant_commitment="0x" + ("aa" * 32),
+    insurer_id="northstar-mutual",
+    insurer_address=INSURER,
+    policy_id="policy-internal-42",
+    daily_quota=4,
 )
 
 
@@ -75,13 +94,22 @@ class FakeChain:
             forwarder_address=FORWARDER,
         )
         self.verified = []
+        self.prepared_permit_id = None
 
     def validate_signer(self, signer_address):
         assert signer_address == SIGNER
         return SIGNER
 
-    def prepare_request(self, *, signer_address, claim_hash, data_pointer):
-        assert signer_address == SIGNER
+    def validate_principal(self, principal):
+        return self.validate_signer(principal.signer_address)
+
+    def permit_issuer_address(self, principal):
+        assert principal.insurer_address == INSURER
+        return PERMIT_ISSUER
+
+    def prepare_request(self, *, principal, claim_hash, data_pointer, permit_id):
+        assert principal.signer_address == SIGNER
+        self.prepared_permit_id = permit_id
         assert len(claim_hash) == 32
         assert data_pointer == "ipfs://bafygaslesstest"
         return PreparedForwardRequest(
@@ -119,6 +147,12 @@ class FakeStore:
             request_fingerprint=values["request_fingerprint"],
             client_fingerprint=values["client_fingerprint"],
             state="preparing",
+            submission_kind=values["submission_kind"],
+            claimant_address=values["claimant_address"],
+            insurer_address=values["insurer_address"],
+            claimant_commitment=values["claimant_commitment"],
+            policy_id=values["policy_id"],
+            permit_issuer_address=values["permit_issuer_address"],
             created_at=NOW,
             updated_at=NOW,
         )
@@ -153,7 +187,14 @@ class FakeStore:
         return self.record
 
 
-def service(ipfs=None, chain=None, store=None):
+class FakeEligibility:
+    def verify(self, submitted_claim, session):
+        assert submitted_claim.policy_reference == "synthetic-policy-42"
+        assert session == CLAIMANT_SESSION
+        return PUBLIC_PRINCIPAL
+
+
+def service(ipfs=None, chain=None, store=None, eligibility=None):
     return GaslessClaimSubmissionService(
         ipfs=ipfs or FakeIPFS(),
         chain=chain or FakeChain(),
@@ -165,6 +206,7 @@ def service(ipfs=None, chain=None, store=None):
         insurer_minute_limit=5,
         client_minute_limit=20,
         allow_rate_limit_bypass=False,
+        eligibility=eligibility,
         clock=lambda: NOW,
         new_submission_id=lambda: SUBMISSION_ID,
     )
@@ -199,6 +241,34 @@ def test_network_preflight_matches_the_active_deployment():
     assert result.forwarder_address == FORWARDER
     assert result.domain_name == "ClaimsRegistryForwarder"
     assert result.domain_version == "1"
+
+
+def test_public_prepare_persists_parties_and_schema_v6_authorization():
+    ipfs = FakeIPFS()
+    chain = FakeChain()
+    store = FakeStore()
+
+    result = service(
+        ipfs=ipfs,
+        chain=chain,
+        store=store,
+        eligibility=FakeEligibility(),
+    ).prepare(
+        claim(),
+        CLAIMANT_SESSION,
+        idempotency_key="public-request-123",
+        client_ip="192.0.2.10",
+    )
+
+    assert result.state == "prepared"
+    assert b'"schemaVersion":6' in ipfs.payload
+    assert b'"claimant-policy-permit-hmac-sha256-v3"' in ipfs.payload
+    assert store.record.submission_kind == "public"
+    assert store.record.claimant_address == SIGNER
+    assert store.record.insurer_address == INSURER
+    assert store.record.policy_id == "policy-internal-42"
+    assert store.record.permit_issuer_address == PERMIT_ISSUER
+    assert chain.prepared_permit_id is not None
 
 
 def test_prepare_is_idempotent_and_does_not_upload_twice():
@@ -244,7 +314,7 @@ def test_authorize_rejects_a_different_configured_signer():
         signer_address="0x4444444444444444444444444444444444444444",
     )
 
-    with pytest.raises(GaslessSubmissionAccessError, match="signer"):
+    with pytest.raises(GaslessSubmissionAccessError, match="claimant session"):
         subject.authorize(SUBMISSION_ID, "0x" + ("ab" * 65), changed)
 
 

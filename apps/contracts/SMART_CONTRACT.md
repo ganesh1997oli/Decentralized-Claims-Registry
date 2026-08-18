@@ -12,17 +12,20 @@ they are not selected by the claims application.
 ```mermaid
 flowchart LR
     Admin["Default admin"] -->|"setSubmitter"| Submitter["Insurer submitter"]
+    Admin -->|"setPermitIssuer scoped to insurer"| Issuer["Eligibility permit issuer"]
     Admin -->|"setAssessor scoped to insurer"| Assessor["Scoring assessor"]
-    Submitter -->|"sign ForwardRequest"| Forwarder["ClaimsForwarder"]
+    Claimant["Claimant / representative"] -->|"sign ForwardRequest"| Forwarder["ClaimsForwarder"]
+    Issuer -->|"sign exact ClaimPermit"| Claim["Claim anchor"]
     Relayer["Unprivileged relayer"] -->|"pays gas"| Forwarder
-    Forwarder -->|"submitClaim as signer"| Claim["Claim anchor"]
+    Forwarder -->|"submitClaimWithPermit as signer"| Claim
     Assessor -->|"assessClaim only for its insurer"| Claim
     Admin -. "delayed two-step transfer" .-> NewAdmin["New admin"]
 ```
 
-Admin, submitter, and assessor must be different addresses. Scoped roles can be
-changed only through `setSubmitter` and `setAssessor`; generic role calls are
-blocked so they cannot bypass separation and assessor-scope checks.
+Admin, submitter, permit issuer, and assessor must be different addresses.
+Scoped roles can be changed only through `setSubmitter`, `setPermitIssuer`, and
+`setAssessor`; generic role calls are blocked so they cannot bypass separation
+or insurer-scope checks.
 
 ## Claim lifecycle
 
@@ -49,13 +52,18 @@ stateDiagram-v2
 | Function | Meaning |
 | --- | --- |
 | `submitClaim(hash, pointer)` | Create a `Submitted` claim from an authorized submitter |
+| `submitClaimWithPermit(permit, pointer, signature)` | Create a public claim from a wallet signer plus one-time insurer permit |
 | `getClaim(id)` | Read one compact claim record |
+| `getClaimParties(id)` | Read insurer, actual submitter and claimant commitment |
+| `claimPermitDigest(permit)` | Return the canonical EIP-712 permit digest |
+| `isClaimPermitUsed(id)` | Check one-time permit consumption |
 | `verifyClaimData(id, bytes)` | Compare supplied bytes with the saved Keccak-256 hash |
 | `assessClaim(id, status, score)` | Apply an allowed transition from the scoped assessor |
 | `isSubmitter` / `isAssessor` | Preflight a service wallet's role |
 | `isAssessorFor` | Read one assessor/insurer scope |
+| `isPermitIssuerFor` | Read one permit-issuer/insurer scope |
 | `trustedForwarder` | Read the immutable ERC-2771 forwarder |
-| `setSubmitter` / `setAssessor` | Administer scoped service roles |
+| `setSubmitter` / `setPermitIssuer` / `setAssessor` | Administer scoped service roles |
 
 Pointers must be a bare alphanumeric `ipfs://CID` no longer than 128 bytes.
 Paths, query strings, and other schemes are rejected before they become
@@ -97,7 +105,7 @@ Terminal B:
 ```bash
 cd apps/contracts
 cp ignition/parameters/sepolia.json.example /tmp/claims-local.json
-# Replace the three placeholders with different local Hardhat accounts.
+# Replace the four role placeholders with different local Hardhat accounts.
 npm exec -- hardhat ignition deploy ignition/modules/Claimsregistry.ts \
   --parameters /tmp/claims-local.json \
   --network localhost
@@ -115,19 +123,24 @@ npm exec -- hardhat keystore set SEPOLIA_RPC_URL
 npm exec -- hardhat keystore set SEPOLIA_DEPLOYER_PRIVATE_KEY
 
 cp ignition/parameters/sepolia.json.example ignition/parameters/sepolia.json
-# Replace every address; admin, submitter and assessor must be distinct.
+# Replace every address; admin, submitter, permit issuer and assessor must be distinct.
 npm exec -- hardhat ignition deploy ignition/modules/Claimsregistry.ts \
   --parameters ignition/parameters/sepolia.json \
   --network sepolia
 ```
 
-The deployer/admin key is not an application runtime secret. Each insurer keeps
-its submitter wallet, the scoring worker receives only an assessor key, and the
-separate relayer receives an unprivileged gas-paying key. FastAPI is keyless.
+The deployer/admin key is not an application runtime secret. The eligibility
+service receives only an insurer-scoped, non-paying permit key, the scoring
+worker receives only an assessor key, and the relayer receives an unprivileged
+gas-paying key. FastAPI never receives claimant or transaction-paying keys.
 
 ## Sepolia deployment artifacts
 
-The current gasless research deployment is:
+The currently checked-in gasless deployment predates permit-backed public intake
+and is therefore read-only for the new writer. Deploy this branch first and save
+its Ignition artifacts under a new ID such as `sepolia-public-intake-v1`.
+
+The previous gasless research deployment is:
 
 | Item | Value |
 | --- | --- |

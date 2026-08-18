@@ -13,6 +13,9 @@ from packages.integrations.postgres.assessor_outcome_repository import (
 from packages.integrations.postgres.claim_index_repository import (
     PostgresClaimIndexRepository,
 )
+from packages.integrations.postgres.claimant_auth_repository import (
+    PostgresClaimantAuthChallengeRepository,
+)
 from packages.integrations.postgres.database import PostgresDatabase
 from packages.integrations.postgres.duplicate_repository import (
     PostgresDuplicateRepository,
@@ -37,6 +40,7 @@ class PostgresRepositories:
     duplicates: PostgresDuplicateRepository
     features: PostgresFeatureRepository
     gasless_submissions: PostgresGaslessSubmissionRepository
+    claimant_auth_challenges: PostgresClaimantAuthChallengeRepository
     database: PostgresDatabase
 
     @classmethod
@@ -55,6 +59,9 @@ class PostgresRepositories:
             duplicates=PostgresDuplicateRepository(database),
             features=PostgresFeatureRepository(database),
             gasless_submissions=PostgresGaslessSubmissionRepository(database),
+            claimant_auth_challenges=PostgresClaimantAuthChallengeRepository(
+                database
+            ),
             database=database,
         )
 

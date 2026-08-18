@@ -1,4 +1,4 @@
-"""Focused unit tests for the keyless gateway and restricted relay adapter.
+"""Focused unit tests for the transaction-keyless gateway and relay adapter.
 
 These tests replace Web3 contracts, RPC calls, and account signing with small
 fakes so they exercise policy and recovery branches without a live blockchain.
@@ -15,6 +15,7 @@ from uuid import UUID
 
 import pytest
 from hexbytes import HexBytes
+from web3 import Web3
 
 import apps.backend.app.gasless_blockchain as gasless
 from apps.backend.app.gasless_blockchain import (
@@ -23,6 +24,7 @@ from apps.backend.app.gasless_blockchain import (
     GaslessRelayChain,
     PreparedForwardRequest,
 )
+from apps.backend.app.submission_auth import InsurerPrincipal
 from packages.integrations.ethereum import (
     ClaimsDeployment,
     DeploymentConfigurationError,
@@ -34,9 +36,18 @@ REGISTRY = "0x2222222222222222222222222222222222222222"
 FORWARDER = "0x3333333333333333333333333333333333333333"
 RELAYER = "0x4444444444444444444444444444444444444444"
 ADMIN = "0x5555555555555555555555555555555555555555"
+INSURER = "0x6666666666666666666666666666666666666666"
+PERMIT_ISSUER = "0x7777777777777777777777777777777777777777"
 CLAIM_HASH = "0x" + ("12" * 32)
 TRANSACTION_HASH = "0x" + ("34" * 32)
 SIGNATURE = "0x" + ("ab" * 65)
+PRINCIPAL = InsurerPrincipal(
+    insurer_id="northstar-mutual",
+    credential_id="northstar-test-v1",
+    signer_address=SIGNER,
+    permitted_operations=frozenset({"submit_claim"}),
+    daily_quota=25,
+)
 
 DEPLOYMENT = ClaimsDeployment(
     deployment_id="sepolia-gasless-test",
@@ -177,6 +188,7 @@ def gateway(functions: FakeGatewayFunctions | None = None) -> GaslessClaimsGatew
     adapter.deployment = DEPLOYMENT
     adapter.forward_gas = 250_000
     adapter.signature_ttl_seconds = 600
+    adapter.permit_issuer = None
     adapter.registry = FakeRegistry(functions)
     adapter.forwarder = SimpleNamespace(functions=adapter.registry.functions)
     adapter.w3 = SimpleNamespace(
@@ -245,7 +257,7 @@ def test_gateway_prepares_allowlisted_call_and_verifies_signature():
     adapter = gateway(functions)
 
     request = adapter.prepare_request(
-        signer_address=SIGNER,
+        principal=PRINCIPAL,
         claim_hash=HexBytes(CLAIM_HASH),
         data_pointer="ipfs://bafy-test",
     )
@@ -294,7 +306,7 @@ def test_gateway_configuration_builds_validated_adapters_and_enforces_caps(
     adapter = GaslessClaimsGateway.from_mapping({"RPC_URL": "http://rpc.test"})
 
     assert adapter.deployment == DEPLOYMENT
-    assert adapter.forward_gas == 250_000
+    assert adapter.forward_gas == 400_000
     with pytest.raises(GaslessBlockchainError, match="SEPOLIA_RPC_URL is required"):
         GaslessClaimsGateway.from_mapping({})
     with pytest.raises(GaslessBlockchainError, match="sponsorship cap"):
@@ -360,7 +372,7 @@ def test_relay_signer_builds_only_the_prevalidated_forwarder_transaction():
 
 def test_relay_signer_rejects_incomplete_wrong_target_and_excess_gas():
     adapter = relay_chain()
-    with pytest.raises(GaslessBlockchainError, match="no insurer signature"):
+    with pytest.raises(GaslessBlockchainError, match="no submitter signature"):
         adapter.prepare_relay_signer(submission_record(insurer_signature=None))
     with pytest.raises(GaslessBlockchainError, match="does not match"):
         adapter.prepare_relay_signer(submission_record(chain_id=1))
@@ -467,3 +479,51 @@ def test_confirm_rejects_event_that_does_not_match_authorization():
                 "transactionHash": HexBytes(TRANSACTION_HASH),
             },
         )
+
+
+def test_confirm_public_submission_requires_matching_party_event():
+    record = submission_record(
+        submission_kind="public",
+        claimant_address=SIGNER,
+        insurer_address=INSURER,
+        claimant_commitment="0x" + ("aa" * 32),
+        permit_issuer_address=PERMIT_ISSUER,
+    )
+    claim_event = {
+        "args": {
+            "claimant": SIGNER,
+            "claimHash": HexBytes(CLAIM_HASH),
+            "dataPointer": "ipfs://bafy-test",
+            "claimId": 7,
+        }
+    }
+    permit_id = Web3.keccak(text=f"claim-permit:{record.submission_id}")
+    party_event = {
+        "args": {
+            "claimId": 7,
+            "insurer": INSURER,
+            "submittedBy": SIGNER,
+            "claimantCommitment": HexBytes(record.claimant_commitment),
+            "permitId": permit_id,
+            "permitIssuer": PERMIT_ISSUER,
+        }
+    }
+    adapter = relay_chain()
+    adapter.registry.events = SimpleNamespace(
+        ClaimSubmitted=lambda: SimpleNamespace(
+            process_receipt=lambda _receipt: [claim_event]
+        ),
+        ClaimPartiesRecorded=lambda: SimpleNamespace(
+            process_receipt=lambda _receipt: [party_event]
+        ),
+    )
+    receipt = {
+        "status": 1,
+        "blockNumber": 100,
+        "transactionHash": HexBytes(TRANSACTION_HASH),
+    }
+
+    assert adapter.confirm(record, receipt).claim_id == 7
+    party_event["args"]["insurer"] = RELAYER
+    with pytest.raises(GaslessBlockchainError, match="ClaimPartiesRecorded"):
+        adapter.confirm(record, receipt)

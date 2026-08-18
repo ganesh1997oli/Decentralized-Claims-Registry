@@ -2,6 +2,8 @@ import { expect, test } from '@playwright/test'
 import {
   GASLESS_SUBMISSION_ID,
   authorizedGaslessSubmission,
+  claimantChallenge,
+  claimantSession,
   confirmedGaslessSubmission,
   gaslessNetwork,
   installMockWallet,
@@ -92,6 +94,16 @@ test('shows a delayed assessment without reloading the browser', async ({
       return
     }
 
+    if (request.method() === 'POST' && path === '/api/claimant/session/challenge') {
+      await route.fulfill({ status: 201, json: claimantChallenge() })
+      return
+    }
+
+    if (request.method() === 'POST' && path === '/api/claimant/session') {
+      await route.fulfill({ json: claimantSession() })
+      return
+    }
+
     if (request.method() === 'POST' && path === '/api/claims/gasless/prepare') {
       submitted = true
       await route.fulfill({
@@ -167,9 +179,6 @@ test('shows a delayed assessment without reloading the browser', async ({
   })
 
   await page.goto('/')
-  await page
-    .getByRole('textbox', { name: /^Insurer API credential/ })
-    .fill('local-northstar-mutual-api-key-change-me')
   await page.getByRole('button', { name: /Sign & submit gaslessly/ }).click()
 
   // This assertion is intentionally made without page.reload(). It protects the

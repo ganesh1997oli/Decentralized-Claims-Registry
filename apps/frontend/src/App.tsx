@@ -13,9 +13,9 @@ export { IndexerOperationsView } from './components/IndexerOperationsDashboard.t
 export { ReceiptCard } from './components/ReceiptCard.tsx'
 
 function DataBoundaryAside() {
-  // Keep the prototype's privacy boundary visible beside submission: public IPFS
-  // and Sepolia must receive synthetic data only, while the browser retains no
-  // backend credential or model artifact.
+  // Keep the deployment's privacy boundary visible beside submission: public
+  // IPFS and Sepolia must receive synthetic data only, while the browser retains
+  // no backend credential or model artifact.
   return (
     <aside className="space-y-5 lg:sticky lg:top-6">
       <section className="rounded-3xl bg-ink p-6 text-white">
@@ -84,7 +84,7 @@ function RegistryApp() {
             <span>
               <span className="block text-sm font-bold">Claims Registry</span>
               <span className="block text-xs text-white/55">
-                Sepolia prototype
+                Public claim intake
               </span>
             </span>
           </a>
@@ -197,7 +197,7 @@ function RegistryApp() {
 
       <footer className="border-t border-ink/8 bg-white/60">
         <div className="mx-auto flex max-w-7xl flex-col gap-2 px-5 py-6 text-xs text-slate sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-12">
-          <span>Decentralized Claims Registry · Research prototype</span>
+          <span>Decentralized Claims Registry · Sepolia test environment</span>
           <span>React → FastAPI → Sepolia → Kafka → XGBoost</span>
         </div>
       </footer>

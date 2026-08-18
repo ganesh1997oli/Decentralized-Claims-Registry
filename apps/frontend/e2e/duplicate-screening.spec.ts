@@ -2,6 +2,8 @@ import { expect, test } from '@playwright/test'
 import {
   GASLESS_SUBMISSION_ID,
   authorizedGaslessSubmission,
+  claimantChallenge,
+  claimantSession,
   confirmedGaslessSubmission,
   gaslessNetwork,
   installMockWallet,
@@ -70,8 +72,7 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
 }) => {
   const consoleErrors: string[] = []
   let submittedPayload: Record<string, unknown> | undefined
-  let submittedApiKey: string | undefined
-  let submittedSigner: string | undefined
+  let submittedAuthorization: string | undefined
   let submittedIdempotencyKey: string | undefined
   await installMockWallet(page)
   page.on('console', (message) => {
@@ -87,12 +88,21 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
       return
     }
 
-    // Capture claim data in JSON while the insurer credential, wallet address,
-    // and idempotency key stay in their dedicated headers.
+    if (request.method() === 'POST' && path === '/api/claimant/session/challenge') {
+      await route.fulfill({ status: 201, json: claimantChallenge() })
+      return
+    }
+
+    if (request.method() === 'POST' && path === '/api/claimant/session') {
+      await route.fulfill({ json: claimantSession() })
+      return
+    }
+
+    // Capture claim data while the short-lived bearer session and idempotency
+    // key remain in their dedicated headers.
     if (request.method() === 'POST' && path === '/api/claims/gasless/prepare') {
       submittedPayload = request.postDataJSON() as Record<string, unknown>
-      submittedApiKey = request.headers()['x-insurer-api-key']
-      submittedSigner = request.headers()['x-insurer-signer-address']
+      submittedAuthorization = request.headers().authorization
       submittedIdempotencyKey = request.headers()['idempotency-key']
       await route.fulfill({
         status: 201,
@@ -152,9 +162,6 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
   await page
     .getByLabel('Synthetic insurer', { exact: true })
     .selectOption('harbour-shield')
-  await page
-    .getByRole('textbox', { name: /^Insurer API credential/ })
-    .fill('local-harbour-shield-api-key-change-me')
   await page.getByLabel('Claim reference').fill('harbour-production-test')
   await page.getByLabel('Policy reference').fill('harbour-policy-test')
   await page.getByRole('button', { name: /Sign & submit gaslessly/ }).click()
@@ -168,7 +175,7 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
       'This is a review signal only. Similar synthetic incident details do not prove that either claim is fraudulent.',
     ),
   ).toBeVisible()
-  // The credential/header assertions protect the browser-side security boundary;
+  // The session/header assertions protect the browser-side security boundary;
   // the duplicate-message assertions above protect the user-facing behavior.
   expect(submittedPayload).toMatchObject({
     insurerId: 'harbour-shield',
@@ -176,10 +183,7 @@ test('submits a claim and displays a review-only cross-insurer match', async ({
     policyReference: 'harbour-policy-test',
   })
   expect(submittedPayload).not.toHaveProperty('insurerApiKey')
-  expect(submittedApiKey).toBe('local-harbour-shield-api-key-change-me')
-  expect(submittedSigner).toBe(
-    '0x2222222222222222222222222222222222222222',
-  )
+  expect(submittedAuthorization).toBe(`Bearer ${claimantSession().access_token}`)
   expect(submittedIdempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
   expect(consoleErrors).toEqual([])
 })

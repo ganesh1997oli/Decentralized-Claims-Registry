@@ -12,11 +12,16 @@ contract ClaimsRegistryTest is Test {
 
   address admin = makeAddr("admin");
   address insurer = makeAddr("insurer");
+  uint256 permitIssuerKey = 0xA11CE;
+  address permitIssuer = vm.addr(permitIssuerKey);
   address assessor = makeAddr("assessor");
   address otherInsurer = makeAddr("otherInsurer");
   address otherAssessor = makeAddr("otherAssessor");
+  address claimant = makeAddr("claimant");
 
   bytes32 constant CLAIM_HASH = keccak256("policy-42:incident-2026-07-13");
+  bytes32 constant CLAIMANT_COMMITMENT = keccak256("claimant:northstar:alice");
+  bytes32 constant PERMIT_ID = keccak256("public-claim-permit-1");
   string constant DATA_POINTER = "ipfs://bafydemocid";
 
   event ClaimSubmitted(
@@ -36,7 +41,40 @@ contract ClaimsRegistryTest is Test {
 
   function setUp() public {
     forwarder = new ClaimsForwarder();
-    registry = new ClaimsRegistry(admin, insurer, assessor, address(forwarder), 0);
+    registry = new ClaimsRegistry(
+      admin,
+      insurer,
+      permitIssuer,
+      assessor,
+      address(forwarder),
+      0
+    );
+  }
+
+  function _publicPermit()
+    private
+    view
+    returns (ClaimsRegistry.ClaimPermit memory)
+  {
+    return
+      ClaimsRegistry.ClaimPermit({
+        claimant: claimant,
+        submitter: claimant,
+        insurer: insurer,
+        claimantCommitment: CLAIMANT_COMMITMENT,
+        claimHash: CLAIM_HASH,
+        dataPointerHash: keccak256(bytes(DATA_POINTER)),
+        permitId: PERMIT_ID,
+        deadline: uint48(block.timestamp + 1 hours)
+      });
+  }
+
+  function _signPermit(
+    ClaimsRegistry.ClaimPermit memory permit
+  ) private view returns (bytes memory) {
+    bytes32 digest = registry.claimPermitDigest(permit);
+    (uint8 v, bytes32 r, bytes32 s) = vm.sign(permitIssuerKey, digest);
+    return abi.encodePacked(r, s, v);
   }
 
   function test_TrustedForwarderRestoresInsurerIdentity() public {
@@ -96,6 +134,55 @@ contract ClaimsRegistryTest is Test {
     assertEq(fraudScore, 0);
     assertEq(submittedAt, 1_000_000);
     assertEq(updatedAt, 1_000_000);
+  }
+
+  function test_PublicClaimUsesScopedSingleUsePermit() public {
+    ClaimsRegistry.ClaimPermit memory permit = _publicPermit();
+    bytes memory signature = _signPermit(permit);
+
+    vm.prank(claimant);
+    uint256 id = registry.submitClaimWithPermit(
+      permit,
+      DATA_POINTER,
+      signature
+    );
+
+    (address storedClaimant, bytes32 storedHash, , , , , ) = registry.getClaim(
+      id
+    );
+    (
+      address storedInsurer,
+      address storedSubmitter,
+      bytes32 storedCommitment
+    ) = registry.getClaimParties(id);
+    assertEq(storedClaimant, claimant);
+    assertEq(storedHash, CLAIM_HASH);
+    assertEq(storedInsurer, insurer);
+    assertEq(storedSubmitter, claimant);
+    assertEq(storedCommitment, CLAIMANT_COMMITMENT);
+    assertTrue(registry.isClaimPermitUsed(PERMIT_ID));
+
+    vm.prank(claimant);
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.ClaimPermitAlreadyUsed.selector,
+        PERMIT_ID
+      )
+    );
+    registry.submitClaimWithPermit(permit, DATA_POINTER, signature);
+  }
+
+  function test_RevertWhen_PublicPermitPointerIsSubstituted() public {
+    ClaimsRegistry.ClaimPermit memory permit = _publicPermit();
+    bytes memory signature = _signPermit(permit);
+
+    vm.prank(claimant);
+    vm.expectRevert(ClaimsRegistry.ClaimPermitPointerMismatch.selector);
+    registry.submitClaimWithPermit(
+      permit,
+      "ipfs://bafyothercid",
+      signature
+    );
   }
 
   function test_RevertWhen_SubmitterIsUnauthorized() public {

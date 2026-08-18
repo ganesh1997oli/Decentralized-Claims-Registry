@@ -25,6 +25,7 @@ from apps.backend.app.blockchain import (
     SepoliaClaimsRegistry,
 )
 from apps.backend.app.models import StoredClaimDocument
+from apps.backend.app.policy_eligibility import ClaimantPrincipal
 from apps.backend.app.submission_auth import (
     ClaimAuthorizationSigner,
     ClaimAuthorizationVerificationError,
@@ -242,7 +243,9 @@ class ClaimScorer(Protocol):
 class ClaimAuthorizationVerifier(Protocol):
     """Recover the API-authenticated identity embedded in IPFS bytes."""
 
-    def verify_claim(self, claim: StoredClaimDocument) -> InsurerPrincipal:
+    def verify_claim(
+        self, claim: StoredClaimDocument
+    ) -> InsurerPrincipal | ClaimantPrincipal:
         """Verify gateway authorization and return its insurer principal."""
 
         ...
@@ -501,10 +504,15 @@ class ClaimScoringHandler:
                 "insurer_identity_mismatch",
                 "Authorized insurer identity does not match the claim",
             )
-        if principal.signer_address.lower() != event.claimant.lower():
+        authorized_claimant = (
+            principal.claimant_address
+            if isinstance(principal, ClaimantPrincipal)
+            else principal.signer_address
+        )
+        if authorized_claimant.lower() != event.claimant.lower():
             raise PermanentClaimProcessingError(
                 "claimant_identity_mismatch",
-                "Authorized insurer signer does not match the on-chain claimant",
+                "Authorized claimant identity does not match the on-chain claimant",
             )
         duplicate_check = self.duplicate_detector.check(event, claim)
         feature_snapshot = self.feature_processor.process(

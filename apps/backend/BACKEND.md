@@ -1,9 +1,10 @@
 # FastAPI backend
 
-The backend is a keyless preparation and status service. It authenticates the
-insurer, binds the credential to its wallet, creates and verifies one canonical
-IPFS document, and returns an exact EIP-712 request. A separate relayer sponsors
-only wallet-authorized requests from the PostgreSQL outbox.
+The backend is transaction-keyless: it never holds a claimant or gas-paying
+relayer key. It verifies a claimant wallet session and policy, creates one
+canonical IPFS document, signs a narrowly scoped insurer permit, and returns an
+exact EIP-712 request. A separate relayer sponsors only wallet-authorized
+requests from the PostgreSQL outbox.
 
 > Claim content is public and unencrypted on IPFS. Use fictional test data only.
 
@@ -18,14 +19,18 @@ sequenceDiagram
     participant R as Relayer
     participant E as Forwarder + registry
 
-    B->>A: API key + wallet + Idempotency-Key
-    A->>A: Bind credential to wallet; reserve durable quota
-    A->>A: Validate and authorize canonical schema-v5 JSON
+    B->>A: Wallet address
+    A-->>B: One-time readable challenge
+    B->>A: Challenge signature
+    A-->>B: Short-lived claimant bearer session
+    B->>A: Claim + policy reference + Idempotency-Key
+    A->>A: Verify policy, coverage, parties, limits and quota
+    A->>A: Create canonical schema-v6 JSON and scoped insurer permit
     A->>I: Upload exact bytes
     A->>I: Download and compare exact bytes
     A->>P: Store exact ForwardRequest
     A-->>B: EIP-712 typed data
-    B->>B: Insurer wallet signs
+    B->>B: Claimant or representative wallet signs
     B->>A: POST signature
     A->>E: Verify signature
     A->>P: Authorized outbox state
@@ -44,7 +49,10 @@ feature persistence, XGBoost/SHAP, and assessment write-back.
 | --- | --- |
 | `app/main.py` | Routes, dependencies, CORS, liveness and error translation |
 | `app/models.py` | Strict request, IPFS document and response shapes |
-| `app/submission_auth.py` | Digest-based credentials, quotas, request size and HMAC attestation |
+| `app/claimant_auth.py` | One-time wallet challenges and short bearer sessions |
+| `app/policy_eligibility.py` | Policy, coverage, party and quota verification seam |
+| `app/claim_permits.py` | Owner-only, insurer-scoped EIP-712 permit signer |
+| `app/submission_auth.py` | Versioned canonical-document HMAC attestation and request size |
 | `app/assessor_outcomes.py` | Independent digest-only human-review authentication |
 | `app/gasless_service.py` | Idempotent IPFS, EIP-712, sponsorship and status workflow |
 | `app/gasless_blockchain.py` | Keyless preparation plus least-privilege relay adapter |
@@ -63,13 +71,15 @@ dashboard does not construct a Web3 client, wallet, or Pinata upload client.
 | `GET` | `/health/ready` | Checks auth config, migrations, IPFS signing config and Sepolia access |
 | `GET` | `/claims?page=1&page_size=10` | Confirmed indexed state, newest first; maximum page size 50 |
 | `GET` | `/claims/{claim_id}/assessment` | Stored model and duplicate result, or `404` while pending |
+| `POST` | `/claimant/session/challenge` | Issue a one-time wallet sign-in message |
+| `POST` | `/claimant/session` | Exchange the wallet proof for a short bearer session |
 | `GET` | `/assessor/session` | Validate a human-review key and return its bound assessor reference |
 | `GET` | `/assessor/claims/{claim_id}/outcome` | Latest private human outcome revision, or `404` before review |
 | `POST` | `/assessor/claims/{claim_id}/outcome` | Append `ConfirmedFraud`, `Legitimate`, or `Inconclusive` after screening |
 | `GET` | `/claims/gasless/config` | Public server-authoritative wallet network preflight |
 | `POST` | `/claims/gasless/prepare` | Authenticate, upload, and return exact EIP-712 typed data |
 | `POST` | `/claims/gasless/{id}/authorize` | Verify wallet signature and enqueue sponsorship |
-| `GET` | `/claims/gasless/{id}` | Read durable relay/confirmation status for the owning credential |
+| `GET` | `/claims/gasless/{id}` | Read durable relay/confirmation status for the owning claimant subject |
 | `POST` | `/claims` | Disabled with HTTP 410; no custodial fallback |
 
 `201` means a wallet-signable request was prepared, not that it was mined.
@@ -89,8 +99,8 @@ set -a
 source .env.local
 set +a
 
-# The API must remain keyless even though the shared local file also contains
-# worker/relayer settings for developer convenience.
+# The API must remain free of transaction-paying and assessor keys even though
+# the shared local file contains worker settings for developer convenience.
 unset SEPOLIA_DEPLOYER_PRIVATE_KEY
 unset SEPOLIA_ASSESSOR_PRIVATE_KEY
 unset SEPOLIA_RELAYER_PRIVATE_KEY
@@ -106,7 +116,7 @@ apps/backend/.venv/bin/python -m uvicorn \
 `--reload` is a development convenience: Uvicorn starts a watcher and replaces
 the application process when Python files change. It does not reload values in
 `.env.local` automatically; stop and restart the command after changing a
-credential digest, deployment ID, or other environment setting.
+wallet-session key, deployment ID, or other environment setting.
 
 Verify the process and its dependencies separately:
 
@@ -119,9 +129,9 @@ curl --fail --silent http://127.0.0.1:8000/claims/gasless/config \
   | apps/backend/.venv/bin/python -m json.tool
 ```
 
-Liveness only proves that FastAPI can answer HTTP. Readiness also checks insurer
-configuration, current migrations, the gasless contracts and submitter roles,
-Pinata configuration, claim authorization, and the operations credential.
+Liveness only proves that FastAPI can answer HTTP. Readiness also checks claimant
+authentication, policy and permit configuration, current migrations, contract
+role scopes, Pinata, claim authorization, and the operations credential.
 
 Useful URLs:
 
@@ -135,15 +145,21 @@ Useful URLs:
 
 | Setting | Used by | Meaning |
 | --- | --- | --- |
-| `INSURER_CREDENTIALS_JSON` | API | Credential IDs, insurer IDs, unique wallet signer addresses, SHA-256 digests, quotas and optional test exemptions |
-| `CLAIM_AUTHORIZATION_KEY` | API + worker | Signs the canonical claim so the worker can trust its insurer identity |
+| `CLAIMANT_SESSION_SIGNING_KEY` | API | Signs short-lived claimant bearer sessions |
+| `CLAIMANT_SUBJECT_KEY` | API | Produces a stable, non-wallet outbox owner ID |
+| `CLAIMANT_AUTH_FINGERPRINT_KEY` | API | HMACs client identities in the challenge ledger |
+| `POLICY_ELIGIBILITY_RECORDS_JSON` | API | Digest-only controlled policy adapter records |
+| `POLICY_REFERENCE_LOOKUP_KEY` | API | HMAC key for policy-reference lookup |
+| `CLAIMANT_COMMITMENT_KEY` | API | Creates the privacy-preserving on-chain claimant commitment |
+| `CLAIM_PERMIT_ISSUERS_JSON` | API | Insurer IDs and absolute owner-only permit key-file paths |
+| `CLAIM_AUTHORIZATION_KEY` | API + worker | Signs canonical schema-v6 bytes so the worker can trust verified parties |
 | `GASLESS_REQUEST_FINGERPRINT_KEY` | API | HMACs idempotency content and client fingerprints stored in PostgreSQL |
 | `PINATA_JWT` | API | Server-side public upload credential |
 | `DATABASE_URL` | API + relayer | Durable idempotency, relay outbox, index, assessments and duplicate results |
 | `SEPOLIA_RELAYER_PRIVATE_KEY_FILE` | Relayer only | Dedicated gas-paying account; forbidden from all registry roles |
 | `FRONTEND_ORIGINS` | API | Allowed browser origins |
 | `MAX_CLAIM_BODY_BYTES` | API | Request limit; default 16 KiB |
-| `INSURER_RATE_LIMIT_PER_MINUTE` | API | Per-insurer submission limit; default 5 |
+| `CLAIMANT_RATE_LIMIT_PER_MINUTE` | API | Per-claimant sponsored submission limit; default 5 |
 | `IP_RATE_LIMIT_PER_MINUTE` | API | Per-IP authentication-attempt limit; default 20 |
 | `ALLOW_RATE_LIMIT_BYPASS` | API | Master switch for explicitly exempt performance-test credentials; default `false` |
 | `INDEXER_OPERATIONS_API_KEY_SHA256` | API | SHA-256 digest of the separate read-only operations credential |
@@ -151,8 +167,10 @@ Useful URLs:
 | `ASSESSOR_OUTCOME_CREDENTIALS_JSON` | API | Human assessor references and SHA-256 API-key digests for the private outcome console |
 | `CONFIRMATION_BLOCKS` | API + listener | Keeps the displayed safe head consistent with listener confirmation depth |
 
-The deployer, relayer, assessor, and insurer wallet keys do not belong in the API
-container. Never put any secret in a `VITE_` variable. See the
+The deployer, relayer, assessor, and claimant wallet keys do not belong in the
+API container. The permit signer is a separate, non-paying role loaded from an
+owner-only file; use a managed signer boundary in a hosted deployment. Never put
+any secret in a `VITE_` variable. See the
 [production gasless runbook](../relayer/PRODUCTION.md) for
 deployment, limits, replacements, monitoring, compromise, and rollback.
 
@@ -198,20 +216,20 @@ governed dataset process may consider `ConfirmedFraud` and `Legitimate` records;
 `Inconclusive` is explicitly ineligible for a binary label. No endpoint in this
 module trains, approves, or deploys a model.
 
-### Local insurer credentials
+### Legacy insurer credentials
 
-The example configuration contains one intentionally public local credential:
+`SubmissionBoundary` remains available only to verify and migrate existing
+schema-v5 documents. Public HTTP submission routes do not load or accept insurer
+API keys, and the React form no longer contains a credential field. The legacy
+local fixture was:
 
 | Fictional insurer | Local key |
 | --- | --- |
 | `northstar-mutual` | `local-northstar-mutual-api-key-change-me` |
 
-Its configured signer is the initial submitter in `sepolia-gasless-v1`. To use
-another fictional insurer, generate a credential bound to that insurer wallet,
-grant the wallet the on-chain submitter role, and grant the assessor scope for
-that signer. FastAPI readiness checks every configured signer; leaving a
-placeholder address in the JSON intentionally prevents the API from becoming
-ready.
+Do not provision new public claimants through this mechanism. New intake uses a
+wallet session plus `POLICY_ELIGIBILITY_RECORDS_JSON`; insurer authority comes
+from the scoped permit key, not a browser-supplied organization secret.
 
 For a hosted research run, generate a random key and its digest-only record:
 
@@ -227,12 +245,12 @@ printed JSON record in `INSURER_CREDENTIALS_JSON`. Valid sponsorship quotas are
 rechecked durably under PostgreSQL locks; the earlier invalid-credential abuse
 counter remains process-local and should also be enforced at a production edge.
 
-### Authorised performance-test bypass
+### Legacy performance-test bypass
 
-The normal claim form has no control that disables submission limits. For an
-isolated performance test, create a dedicated credential for a test wallet that
-has the required on-chain role. Its digest-only record must contain the explicit
-exemption:
+This compatibility mechanism applies only to legacy insurer principals. Public
+claimants always use the durable PostgreSQL limits from their verified policy;
+neither the browser nor a bearer token can request an exemption. For historical
+schema-v5 test tooling, the old record shape was:
 
 ```json
 {
@@ -276,8 +294,8 @@ curl --fail --silent http://127.0.0.1:8000/claims/gasless/config \
   | apps/backend/.venv/bin/python -m json.tool
 ```
 
-The normal end-to-end client is the React form because preparation requires a
-credential-bound wallet address and authorization requires an EIP-712 signature.
+The normal end-to-end client is the React form because preparation requires two
+wallet proofs and an EIP-712 signature.
 Swagger can inspect the request/response schemas, but it cannot safely replace
 the wallet-signing step. Open <http://127.0.0.1:5173>, connect the configured
 test wallet, and follow the browser progress states.
@@ -289,7 +307,7 @@ server-custodial fallback that silently uses a backend submitter key.
 
 ```mermaid
 flowchart TD
-    Request["POST /claims/gasless/prepare"] --> Auth{"Credential bound to wallet and within quota?"}
+    Request["POST /claims/gasless/prepare"] --> Auth{"Bearer session and policy eligible within quota?"}
     Auth -->|No| FourXX["401 / 403 / 429"]
     Auth -->|Yes| Config{"Dependencies configured?"}
     Config -->|No| Unavailable["503 with safe JSON detail"]
@@ -317,8 +335,8 @@ Pinata, or require PostgreSQL.
 - Public IPFS cannot protect real claim data.
 - Claims pagination is served by the confirmed PostgreSQL event projection and
   can lag Sepolia by the configured confirmation depth.
-- API keys and process-local invalid-attempt limits are not enterprise identity
-  or distributed edge abuse prevention. Valid sponsorship quotas are durable.
+- Wallet proof is not policy eligibility by itself; the policy adapter must use
+  an authoritative insurer source before real-world use. Sponsorship quotas are durable.
 - The relayer key should use a secret-manager file mount or managed signer and a
   capped balance. It never belongs in the API process.
 

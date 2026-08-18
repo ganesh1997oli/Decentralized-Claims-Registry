@@ -2,16 +2,18 @@
 
 The browser lets a researcher submit a fictional motor claim and follow its
 public anchor, screening result, and current Sepolia state. The insurer wallet
-signs EIP-712 typed data but never pays gas; Pinata, Kafka, model, database, and
-the restricted relayer stay server-side.
+is no longer required: a claimant or authorized representative proves control
+of their own wallet, then signs EIP-712 typed data without paying gas. Pinata,
+Kafka, model, database, and the restricted relayer stay server-side.
 
 ## UI flow
 
 ```mermaid
 flowchart LR
-    Form["Synthetic claim form"] -->|"API key + wallet address"| API["FastAPI"]
-    API --> Typed["Exact EIP-712 request"]
-    Typed -->|"Insurer wallet signature"| API
+    Form["Synthetic claim form"] -->|"wallet challenge + policy"| API["FastAPI"]
+    API --> Eligibility["Policy eligibility + insurer permit"]
+    Eligibility --> Typed["Exact EIP-712 request"]
+    Typed -->|"Claimant submitter signature"| API
     API --> Receipt["Anchor receipt"]
     Receipt --> Pending["Assessment pending"]
     Pending -->|"poll every 2 seconds"| Result["Duplicate check + score + SHAP"]
@@ -31,14 +33,14 @@ not update claim approval/rejection state or initiate model retraining.
 | File | Owns |
 | --- | --- |
 | `src/App.tsx` | Page composition and research warnings |
-| `src/components/ClaimForm.tsx` | Form state, temporary credential, validation and submission |
+| `src/components/ClaimForm.tsx` | Form state, validation, retry identity and submission |
 | `src/hooks/useClaimsWorkspace.ts` | Pagination, cancellation, detail loading, polling and receipt persistence |
 | `src/components/ReceiptCard.tsx` | Anchor, duplicate, score and SHAP presentation |
 | `src/components/ClaimsDashboard.tsx` | Newest-first indexed list, checkpoint and selection |
 | `src/components/IndexerOperationsDashboard.tsx` | Authenticated lag, counts, reconciliation and recent-event telemetry |
 | `src/components/AssessorOutcomeDashboard.tsx` | Separate human-review queue and append-only fraud-outcome form |
 | `src/api.ts` | Gasless fetch calls plus runtime response-shape validation |
-| `src/wallet.ts` | Narrow EIP-1193 connect, chain switch, and EIP-712 boundary |
+| `src/wallet.ts` | Narrow EIP-1193 connect, sign-in, chain switch, and EIP-712 boundary |
 | `src/gasless-submission.ts` | Idempotent prepare, sign, authorize, recovery, and polling workflow |
 | `src/display-receipt.ts` | Safe merge of a browser receipt and current chain state |
 | `src/receipt-storage.ts` | Latest public submission receipt only |
@@ -48,16 +50,16 @@ not update claim approval/rejection state or initiate model retraining.
 
 ```mermaid
 flowchart TD
-    Memory["React memory"] --> A["Form fields + insurer API key"]
+    Memory["React memory"] --> A["Form fields + short-lived claimant session"]
     Storage["localStorage"] --> B["Latest public receipt only"]
     Bundle["Vite bundle"] --> C["VITE_API_BASE_URL + VITE_IPFS_GATEWAY"]
     Never["Never in browser"] --> D["Relayer key, Pinata JWT, HMAC keys, database credentials"]
     Session["assessor tab sessionStorage"] --> E["Raw human-assessor key only"]
 ```
 
-The insurer credential is cleared when the form resets and is not written to
-local storage, URLs, analytics, or logs. Browser storage failures are treated as
-a lost convenience, not as an application failure.
+The bearer session exists only inside the active submission function and is not
+written to local storage, URLs, analytics, or logs. Browser storage failures are
+treated as a lost convenience, not as an application failure.
 
 ## Install and run
 
@@ -79,13 +81,14 @@ npm --prefix apps/frontend run dev -- --host 127.0.0.1
 Open <http://127.0.0.1:5173>. A complete submission also requires:
 
 - an EIP-1193 wallet extension enabled in this browser;
-- the test wallet address bound to the selected insurer credential;
+- a wallet address listed as the claimant or authorized submitter for the policy;
 - Sepolia available in the wallet (the UI asks it to switch networks); and
-- the raw insurer API key, not the SHA-256 digest stored by FastAPI.
+- a policy reference whose keyed digest exists in the configured eligibility adapter.
 
-The wallet signs the exact EIP-712 `ForwardRequest`. It does not send the
-transaction and does not pay gas. The isolated relayer performs those steps only
-after FastAPI verifies and durably records the signature.
+The wallet first signs a readable, one-time ownership message and later signs the
+exact EIP-712 `ForwardRequest`. Neither signature sends a transaction. The
+isolated relayer pays only after FastAPI verifies policy eligibility, obtains a
+scoped insurer permit, and durably records the request signature.
 
 The dedicated indexer dashboard is at <http://127.0.0.1:5173/operations>. For
 the checked-in local configuration, use
@@ -113,8 +116,7 @@ secret.
   may already have reached FastAPI.
 - The wallet is connected and switched using server-authoritative network data
   before claim bytes are pinned.
-- A stable idempotency key survives network retry but resets if form content or
-  credentials change.
+- A stable idempotency key survives network retry but resets if form content changes.
 - A successful submission displays the confirmed sponsored transaction, block,
   hash, and CID.
 - The workspace polls for up to one minute while the Kafka worker finishes.
@@ -156,5 +158,5 @@ review-only duplicate experience without contacting Sepolia.
 - A duplicate match and XGBoost score are review signals only.
 - Use only fictional policy, claimant, and incident information.
 
-See the [backend guide](../backend/BACKEND.md) for local credentials and the
+See the [backend guide](../backend/BACKEND.md) for claimant, policy, and permit configuration and the
 [root runbook](../../README.md) for the complete process order.
