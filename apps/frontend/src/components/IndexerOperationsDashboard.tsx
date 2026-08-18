@@ -331,6 +331,7 @@ function EventAuditPanel({
               <option value="">All events</option>
               <option value="ClaimSubmitted">Submitted</option>
               <option value="ClaimAssessed">Assessed</option>
+              <option value="ClaimDecided">Decided</option>
             </select>
           </label>
           <label className="field-group">

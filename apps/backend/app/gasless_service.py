@@ -47,7 +47,11 @@ from apps.backend.app.policy_eligibility import (
     PolicyEligibilityConfigurationError,
     PolicyEligibilityError,
 )
-from apps.backend.app.service import IPFSStore, canonical_claim_bytes
+from apps.backend.app.service import (
+    ClaimDocumentPrivacy,
+    IPFSStore,
+    canonical_claim_bytes,
+)
 from apps.backend.app.submission_auth import (
     ClaimAuthorizationSigner,
     InsurerPrincipal,
@@ -62,6 +66,11 @@ from packages.integrations.postgres import (
     PostgresDatabase,
     PostgresGaslessSubmissionRepository,
     PostgresStorageError,
+)
+from packages.integrations.privacy import (
+    ClaimEnvelopeCipher,
+    ClaimEnvelopeConfigurationError,
+    ClaimEnvelopeError,
 )
 from packages.observability import get_event_logger
 
@@ -185,6 +194,7 @@ class GaslessClaimSubmissionService:
         chain: GaslessClaimsGateway,
         store: GaslessSubmissionStore,
         authorization: ClaimAuthorizationSigner,
+        privacy: ClaimDocumentPrivacy,
         fingerprint_key: bytes,
         insurer_minute_limit: int,
         client_minute_limit: int,
@@ -208,6 +218,7 @@ class GaslessClaimSubmissionService:
         self.chain = chain
         self.store = store
         self.authorization = authorization
+        self.privacy = privacy
         self.fingerprint_key = fingerprint_key
         self.insurer_minute_limit = insurer_minute_limit
         self.client_minute_limit = client_minute_limit
@@ -261,6 +272,7 @@ class GaslessClaimSubmissionService:
                     PostgresDatabase(database_url)
                 ),
                 authorization=ClaimAuthorizationSigner.from_mapping(settings),
+                privacy=ClaimEnvelopeCipher.from_mapping(settings),
                 fingerprint_key=raw_fingerprint_key.encode("utf-8"),
                 insurer_minute_limit=_positive_int(
                     settings,
@@ -284,6 +296,7 @@ class GaslessClaimSubmissionService:
             GaslessBlockchainError,
             PolicyEligibilityConfigurationError,
             PostgresStorageError,
+            ClaimEnvelopeConfigurationError,
         ) as exc:
             raise GaslessSubmissionServiceError(str(exc)) from exc
 
@@ -415,11 +428,12 @@ class GaslessClaimSubmissionService:
             return self._response(record)
 
         try:
-            payload = canonical_claim_bytes(claim, principal, self.authorization)
+            plaintext = canonical_claim_bytes(claim, principal, self.authorization)
+            payload = self.privacy.seal(plaintext)
             cid = self.ipfs.upload_bytes(
                 payload,
-                filename=f"{claim.claim_reference}.json",
-                content_type="application/json",
+                filename=f"{claim.claim_reference}.claim-envelope.json",
+                content_type="application/vnd.claims-registry.envelope+json",
             )
             data_pointer = f"ipfs://{cid}"
             if self.ipfs.download_pointer(data_pointer) != payload:
@@ -463,7 +477,12 @@ class GaslessClaimSubmissionService:
                 raise
             if isinstance(
                 exc,
-                (IPFSError, GaslessBlockchainError, PostgresStorageError),
+                (
+                    IPFSError,
+                    GaslessBlockchainError,
+                    PostgresStorageError,
+                    ClaimEnvelopeError,
+                ),
             ):
                 raise GaslessSubmissionServiceError(str(exc)) from exc
             raise GaslessSubmissionServiceError(

@@ -158,6 +158,75 @@ def test_assessment_without_submission_stops_checkpoint_progress():
     assert "SELECT 1 FROM indexed_claims" in cursor.executions[-1][0]
 
 
+def test_terminal_decision_updates_projection_and_confirms_matching_proposal():
+    cursor = FakeCursor(
+        one=(
+            {
+                "decision_hash": "0x" + "77" * 32,
+                "confirmed_transaction_hash": None,
+            },
+        ),
+        update_rowcount=1,
+    )
+
+    repository_for(cursor).index_claim_decided(
+        chain_id=11_155_111,
+        contract_address="0xABCDEF",
+        claim_id=7,
+        status=2,
+        fraud_score=4_200,
+        block_number=120,
+        block_hash="0xBLOCK3",
+        transaction_hash="0xDECISION",
+        log_index=4,
+        event_timestamp=1_750_000_200,
+        decision_hash="0x" + "77" * 32,
+    )
+
+    assert "ClaimDecided" in cursor.executions[0][1]
+    projection_statement, projection_parameters = cursor.executions[1]
+    assert "UPDATE indexed_claims" in projection_statement
+    assert projection_parameters[:3] == (2, 4_200, 1_750_000_200)
+    assert "FOR UPDATE" in cursor.executions[2][0]
+    confirmation_statement, confirmation_parameters = cursor.executions[3]
+    assert "UPDATE coverage_decision_proposals" in confirmation_statement
+    assert confirmation_parameters == (
+        "0xdecision",
+        1_750_000_200,
+        11_155_111,
+        "0xabcdef",
+        7,
+        "0x" + "77" * 32,
+    )
+
+
+def test_terminal_decision_with_a_different_hash_stops_checkpoint_progress():
+    cursor = FakeCursor(
+        one=(
+            {
+                "decision_hash": "0x" + "66" * 32,
+                "confirmed_transaction_hash": None,
+            },
+        ),
+        update_rowcount=1,
+    )
+
+    with pytest.raises(PostgresStorageError, match="does not match"):
+        repository_for(cursor).index_claim_decided(
+            chain_id=11_155_111,
+            contract_address="0xABCDEF",
+            claim_id=7,
+            status=2,
+            fraud_score=4_200,
+            block_number=120,
+            block_hash="0xBLOCK3",
+            transaction_hash="0xDECISION",
+            log_index=4,
+            event_timestamp=1_750_000_200,
+            decision_hash="0x" + "77" * 32,
+        )
+
+
 def test_claim_page_is_deployment_scoped_and_newest_first():
     cursor = FakeCursor(
         rows=(

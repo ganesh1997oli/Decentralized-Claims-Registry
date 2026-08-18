@@ -3,11 +3,13 @@ import {
   authorizeGaslessClaim,
   createClaimantChallenge,
   createClaimantSession,
+  getGovernanceSession,
   getGaslessNetwork,
   getGaslessSubmission,
   getClaimAssessment,
   getIndexerOperations,
   listClaims,
+  prepareCoverageDecision,
   prepareGaslessClaim,
   searchIndexerEvents,
   type ClaimPayload,
@@ -580,5 +582,87 @@ describe('searchIndexerEvents', () => {
         limit: 20,
       }),
     ).rejects.toThrow('unexpected event-search response')
+  })
+})
+
+describe('coverage governance API', () => {
+  it('authenticates a scoped maker and prepares exact checker-wallet calldata', async () => {
+    const session = {
+      governance_reference: 'northstar-governance-1',
+      insurer_address: '0x1111111111111111111111111111111111111111',
+    }
+    const proposal = {
+      decision_id: '11111111-1111-4111-8111-111111111111',
+      claim_id: 7,
+      decision_status: 'Approved',
+      decision_hash: `0x${'12'.repeat(32)}`,
+      decision_maker_address: '0x2222222222222222222222222222222222222222',
+      proposed_by: session.governance_reference,
+      human_outcome_id: '22222222-2222-4222-8222-222222222222',
+      human_outcome_revision: 3,
+      created_at: '2026-08-18T19:30:00Z',
+      confirmed_transaction_hash: null,
+      confirmed_at: null,
+      chain_id: 11155111,
+      contract_address: '0x3333333333333333333333333333333333333333',
+      transaction_data: '0x1234',
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(session), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(proposal), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getGovernanceSession('maker-secret')).resolves.toEqual(session)
+    await expect(
+      prepareCoverageDecision(
+        7,
+        'Approved',
+        proposal.decision_maker_address,
+        'maker-secret',
+      ),
+    ).resolves.toEqual(proposal)
+
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      headers: { 'X-Governance-API-Key': 'maker-secret' },
+    })
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      'http://127.0.0.1:8000/governance/claims/7/decision',
+    )
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      decision_status: 'Approved',
+      decision_maker_address: proposal.decision_maker_address,
+    })
+  })
+
+  it('rejects an incomplete decision proposal before wallet use', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ decision_status: 'Approved' }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+
+    await expect(
+      prepareCoverageDecision(
+        7,
+        'Approved',
+        '0x2222222222222222222222222222222222222222',
+        'maker-secret',
+      ),
+    ).rejects.toThrow('unexpected decision proposal')
   })
 })

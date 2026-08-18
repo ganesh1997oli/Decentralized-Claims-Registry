@@ -36,6 +36,12 @@ from apps.backend.app.claimant_auth import (
     ClaimantSession,
     ClaimantSessionManager,
 )
+from apps.backend.app.coverage_governance import (
+    CoverageGovernanceAccessError,
+    CoverageGovernanceError,
+    CoverageGovernanceService,
+    CoverageGovernanceStateError,
+)
 from apps.backend.app.gasless_service import (
     GaslessClaimSubmissionService,
     GaslessSubmissionAccessError,
@@ -43,6 +49,12 @@ from apps.backend.app.gasless_service import (
     GaslessSubmissionRateLimitError,
     GaslessSubmissionServiceError,
     GaslessSubmissionStateError,
+)
+from apps.backend.app.governance_auth import (
+    GovernanceAuthenticationError,
+    GovernanceBoundary,
+    GovernanceConfigurationError,
+    GovernancePrincipal,
 )
 from apps.backend.app.health import ReadinessProbe, build_readiness_probe
 from apps.backend.app.indexer_operations import (
@@ -66,11 +78,14 @@ from apps.backend.app.models import (
     ClaimIndexEventPageResponse,
     ClaimPageResponse,
     ClaimSubmission,
+    CoverageDecisionProposalResponse,
+    CoverageDecisionRequest,
     DuplicateDetectionResponse,
     DuplicateMatchResponse,
     GaslessAuthorizationRequest,
     GaslessNetworkResponse,
     GaslessSubmissionResponse,
+    GovernanceSessionResponse,
     HealthResponse,
     IndexerOperationsResponse,
     ReadinessResponse,
@@ -90,6 +105,7 @@ from packages.integrations.ethereum import (
     load_claims_deployment,
 )
 from packages.integrations.postgres import (
+    CoverageDecisionConflictError,
     PostgresConfigurationError,
     PostgresRepositories,
     PostgresStorageError,
@@ -103,6 +119,10 @@ indexer_operations_api_key_header = APIKeyHeader(
 )
 assessor_outcome_api_key_header = APIKeyHeader(
     name="X-Assessor-API-Key",
+    auto_error=False,
+)
+governance_api_key_header = APIKeyHeader(
+    name="X-Governance-API-Key",
     auto_error=False,
 )
 claimant_bearer = HTTPBearer(auto_error=False)
@@ -176,6 +196,72 @@ def get_assessor_principal(
 AssessorPrincipalDependency = Annotated[
     AssessorPrincipal,
     Depends(get_assessor_principal),
+]
+
+
+@lru_cache
+def load_governance_boundary() -> GovernanceBoundary:
+    """Load digest-only maker credentials once per API process."""
+
+    return GovernanceBoundary.from_env()
+
+
+def get_governance_boundary() -> GovernanceBoundary:
+    try:
+        return load_governance_boundary()
+    except GovernanceConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Coverage governance authentication is unavailable: {exc}",
+        ) from exc
+
+
+GovernanceBoundaryDependency = Annotated[
+    GovernanceBoundary,
+    Depends(get_governance_boundary),
+]
+
+
+def get_governance_principal(
+    boundary: GovernanceBoundaryDependency,
+    api_key: Annotated[str | None, Security(governance_api_key_header)],
+) -> GovernancePrincipal:
+    """Authenticate the proposal maker; the wallet remains a second checker."""
+
+    try:
+        return boundary.authenticate(api_key)
+    except GovernanceAuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "ApiKey"},
+        ) from exc
+
+
+GovernancePrincipalDependency = Annotated[
+    GovernancePrincipal,
+    Depends(get_governance_principal),
+]
+
+
+@lru_cache
+def load_coverage_governance_service() -> CoverageGovernanceService:
+    return CoverageGovernanceService.from_env()
+
+
+def get_coverage_governance_service() -> CoverageGovernanceService:
+    try:
+        return load_coverage_governance_service()
+    except (CoverageGovernanceError, DeploymentConfigurationError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Coverage governance is unavailable: {exc}",
+        ) from exc
+
+
+CoverageGovernanceServiceDependency = Annotated[
+    CoverageGovernanceService,
+    Depends(get_coverage_governance_service),
 ]
 
 
@@ -266,6 +352,7 @@ app.add_middleware(
         "Idempotency-Key",
         "X-Operations-API-Key",
         "X-Assessor-API-Key",
+        "X-Governance-API-Key",
     ],
 )
 
@@ -651,7 +738,7 @@ def search_indexer_events(
         Query(pattern=r"^0x[0-9a-fA-F]{64}$"),
     ] = None,
     event_type: Annotated[
-        Literal["ClaimSubmitted", "ClaimAssessed"] | None,
+        Literal["ClaimSubmitted", "ClaimAssessed", "ClaimDecided"] | None,
         Query(),
     ] = None,
     claim_status: Annotated[
@@ -931,6 +1018,90 @@ def record_assessor_outcome(
             detail=str(exc),
         ) from exc
     return _assessor_outcome_response(record)
+
+
+@app.get(
+    "/governance/session",
+    response_model=GovernanceSessionResponse,
+    tags=["governance"],
+    responses={401: {"description": "Missing or invalid governance API key"}},
+)
+def get_governance_session(
+    principal: GovernancePrincipalDependency,
+) -> GovernanceSessionResponse:
+    """Validate a proposal-maker key without contacting a wallet or contract."""
+
+    return GovernanceSessionResponse(
+        governance_reference=principal.governance_reference,
+        insurer_address=principal.insurer_address,
+    )
+
+
+@app.post(
+    "/governance/claims/{claim_id}/decision",
+    response_model=CoverageDecisionProposalResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["governance"],
+    responses={
+        401: {"description": "Missing or invalid governance API key"},
+        403: {"description": "Insurer or decision-wallet scope mismatch"},
+        409: {"description": "Decision prerequisites are not satisfied"},
+    },
+)
+def prepare_coverage_decision(
+    claim_id: Annotated[int, Path(ge=0)],
+    request: CoverageDecisionRequest,
+    principal: GovernancePrincipalDependency,
+    service: CoverageGovernanceServiceDependency,
+) -> CoverageDecisionProposalResponse:
+    """Persist governance evidence and return calldata for a separate wallet.
+
+    A successful response does not mean the claim was decided. It means the
+    proposal is durable and the connected wallet was confirmed to have the
+    appropriate insurer scope. The browser still displays and sends the
+    transaction; only a confirmed ClaimDecided event changes the indexed state.
+    """
+
+    try:
+        prepared = service.prepare(
+            claim_id=claim_id,
+            decision_status=request.decision_status,
+            decision_maker_address=request.decision_maker_address,
+            principal=principal,
+        )
+    except CoverageGovernanceAccessError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except (CoverageGovernanceStateError, CoverageDecisionConflictError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except (CoverageGovernanceError, PostgresStorageError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Coverage governance is temporarily unavailable",
+        ) from exc
+
+    proposal = prepared.proposal
+    return CoverageDecisionProposalResponse(
+        decision_id=proposal.decision_id,
+        claim_id=proposal.claim_id,
+        decision_status=proposal.decision_status,
+        decision_hash=proposal.decision_hash,
+        decision_maker_address=proposal.decision_maker_address,
+        proposed_by=proposal.proposed_by,
+        human_outcome_id=proposal.human_outcome_id,
+        human_outcome_revision=proposal.human_outcome_revision,
+        created_at=proposal.created_at,
+        confirmed_transaction_hash=proposal.confirmed_transaction_hash,
+        confirmed_at=proposal.confirmed_at,
+        chain_id=prepared.chain_id,
+        contract_address=prepared.contract_address,
+        transaction_data=prepared.transaction_data,
+    )
 
 
 @app.post("/claims", status_code=status.HTTP_410_GONE, tags=["claims"])

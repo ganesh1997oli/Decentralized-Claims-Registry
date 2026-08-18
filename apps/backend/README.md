@@ -6,7 +6,8 @@ canonical IPFS document, signs a narrowly scoped insurer permit, and returns an
 exact EIP-712 request. A separate relayer sponsors only wallet-authorized
 requests from the PostgreSQL outbox.
 
-> Claim content is public and unencrypted on IPFS. Use fictional test data only.
+> Claim content is encrypted before public IPFS storage. The CID, encrypted
+> envelope, chain state and timing remain public; use fictional test data only.
 
 ## Submission flow
 
@@ -26,8 +27,9 @@ sequenceDiagram
     B->>A: Claim + policy reference + Idempotency-Key
     A->>A: Verify policy, coverage, parties, limits and quota
     A->>A: Create canonical schema-v6 JSON and scoped insurer permit
-    A->>I: Upload exact bytes
-    A->>I: Download and compare exact bytes
+    A->>A: Encrypt with a fresh AES-256-GCM data key
+    A->>I: Upload exact encrypted envelope bytes
+    A->>I: Download and compare exact envelope bytes
     A->>P: Store exact ForwardRequest
     A-->>B: EIP-712 typed data
     B->>B: Claimant or representative wallet signs
@@ -54,7 +56,10 @@ feature persistence, XGBoost/SHAP, and assessment write-back.
 | `app/claim_permits.py` | Owner-only, insurer-scoped EIP-712 permit signer |
 | `app/submission_auth.py` | Versioned canonical-document HMAC attestation and request size |
 | `app/assessor_outcomes.py` | Independent digest-only human-review authentication |
+| `app/governance_auth.py` | Digest-only insurer-scoped decision-proposal authentication |
+| `app/coverage_governance.py` | Maker/checker validation and deterministic decision calldata |
 | `app/gasless_service.py` | Idempotent IPFS, EIP-712, sponsorship and status workflow |
+| `packages/integrations/privacy/claim_envelope.py` | AES-256-GCM envelope encryption and local/KMS key wrapping |
 | `app/gasless_blockchain.py` | Keyless preparation plus least-privilege relay adapter |
 | `apps/relayer/gasless_relayer.py` | Separate durable sign/broadcast/confirm worker |
 | `app/health.py` | Dependency-safe readiness reporting |
@@ -76,6 +81,8 @@ dashboard does not construct a Web3 client, wallet, or Pinata upload client.
 | `GET` | `/assessor/session` | Validate a human-review key and return its bound assessor reference |
 | `GET` | `/assessor/claims/{claim_id}/outcome` | Latest private human outcome revision, or `404` before review |
 | `POST` | `/assessor/claims/{claim_id}/outcome` | Append `ConfirmedFraud`, `Legitimate`, or `Inconclusive` after screening |
+| `GET` | `/governance/session` | Validate a proposal-maker key and return its insurer scope |
+| `POST` | `/governance/claims/{claim_id}/decision` | Validate and persist an `Approved`/`Rejected` proposal, then return wallet calldata |
 | `GET` | `/claims/gasless/config` | Public server-authoritative wallet network preflight |
 | `POST` | `/claims/gasless/prepare` | Authenticate, upload, and return exact EIP-712 typed data |
 | `POST` | `/claims/gasless/{id}/authorize` | Verify wallet signature and enqueue sponsorship |
@@ -131,7 +138,8 @@ curl --fail --silent http://127.0.0.1:8000/claims/gasless/config \
 
 Liveness only proves that FastAPI can answer HTTP. Readiness also checks claimant
 authentication, policy and permit configuration, current migrations, contract
-role scopes, Pinata, claim authorization, and the operations credential.
+role scopes, a governance-capable ABI, Pinata, claim encryption, claim
+authorization, and the operations/governance credentials.
 
 Useful URLs:
 
@@ -155,6 +163,10 @@ Useful URLs:
 | `CLAIM_AUTHORIZATION_KEY` | API + worker | Signs canonical schema-v6 bytes so the worker can trust verified parties |
 | `GASLESS_REQUEST_FINGERPRINT_KEY` | API | HMACs idempotency content and client fingerprints stored in PostgreSQL |
 | `PINATA_JWT` | API | Server-side public upload credential |
+| `DEPLOYMENT_ENVIRONMENT` | API + worker | Rejects development-only encryption adapters when set to `production` |
+| `CLAIM_ENCRYPTION_PROVIDER` | API + worker | `local` for development or `gcp-kms` for production |
+| `CLAIM_ENCRYPTION_ACTIVE_KEY_ID` / `CLAIM_ENCRYPTION_LOCAL_KEYS_JSON` | API + worker (development only) | Rotatable local wrapping-key ring; never permitted in production |
+| `CLAIM_ENCRYPTION_GCP_KMS_KEY` | API + worker (production) | Full CryptoKey resource used to wrap each random data key |
 | `DATABASE_URL` | API + relayer | Durable idempotency, relay outbox, index, assessments and duplicate results |
 | `SEPOLIA_RELAYER_PRIVATE_KEY_FILE` | Relayer only | Dedicated gas-paying account; forbidden from all registry roles |
 | `FRONTEND_ORIGINS` | API | Allowed browser origins |
@@ -165,6 +177,7 @@ Useful URLs:
 | `INDEXER_OPERATIONS_API_KEY_SHA256` | API | SHA-256 digest of the separate read-only operations credential |
 | `INDEXER_STALE_AFTER_SECONDS` | API | Marks a lagging checkpoint stalled after this age; default 120 seconds |
 | `ASSESSOR_OUTCOME_CREDENTIALS_JSON` | API | Human assessor references and SHA-256 API-key digests for the private outcome console |
+| `GOVERNANCE_CREDENTIALS_JSON` | API | Proposal-maker references, insurer scopes and SHA-256 API-key digests |
 | `CONFIRMATION_BLOCKS` | API + listener | Keeps the displayed safe head consistent with listener confirmation depth |
 
 The deployer, relayer, assessor, and claimant wallet keys do not belong in the
@@ -215,6 +228,50 @@ updates Sepolia nor maps claim `Approved`/`Rejected` status to fraud. A later
 governed dataset process may consider `ConfirmedFraud` and `Legitimate` records;
 `Inconclusive` is explicitly ineligible for a binary label. No endpoint in this
 module trains, approves, or deploys a model.
+
+### Coverage-decision governance
+
+The `/governance` browser surface is intentionally a maker/checker workflow.
+`X-Governance-API-Key` authenticates the person preparing a proposal and binds
+that proposal to one insurer. It does not authorize a blockchain transaction.
+FastAPI verifies the indexed lifecycle, completed model screen, latest human
+conclusion, insurer scope, and the connected wallet's
+`isDecisionMakerFor(wallet, insurer)` role before it stores a deterministic
+decision hash and returns `decideClaim` calldata.
+
+The browser then asks the separate decision-maker wallet to broadcast that exact
+calldata. FastAPI never sees its private key and never automatically converts a
+fraud label into a coverage decision. The listener marks the PostgreSQL proposal
+confirmed only after the matching `ClaimDecided` event reaches finality.
+
+Generate an independent maker credential with:
+
+```bash
+apps/backend/.venv/bin/python \
+  apps/backend/scripts/generate_governance_credential.py \
+  northstar-governance-1 0xYOUR_INSURER_WALLET
+```
+
+Give the raw key to the proposal maker and append only the printed digest-bearing
+record to `GOVERNANCE_CREDENTIALS_JSON`. Keep this identity separate from the
+decision wallet and put the route behind enterprise identity controls when
+hosted.
+
+### Claim-envelope encryption
+
+Every new submission is encrypted before it crosses the IPFS adapter. A random
+256-bit data-encryption key protects the canonical claim with AES-GCM; the small
+data key is then wrapped by the configured provider. Sepolia commits to the
+canonical encrypted envelope, so the listener can verify integrity without
+decryption authority. The scoring worker verifies the chain hash before it
+unwraps and authenticates the claim.
+
+`local` uses an explicit base64 key ring and is rejected when
+`DEPLOYMENT_ENVIRONMENT=production`. `gcp-kms` requires a full CryptoKey resource
+and keeps the wrapping key out of process memory. Rotate by adding/retaining old
+local keys or by rotating the KMS CryptoKey's primary version; existing
+envelopes retain enough provider metadata to unwrap their data key. Do not set
+`CLAIM_ALLOW_LEGACY_PLAINTEXT=true` in production.
 
 ### Legacy insurer credentials
 
@@ -332,7 +389,9 @@ Pinata, or require PostgreSQL.
 
 ## Known limits
 
-- Public IPFS cannot protect real claim data.
+- Public IPFS exposes permanent encrypted envelopes and access patterns.
+  Confidentiality still depends on KMS policy, key retention and operational
+  access controls.
 - Claims pagination is served by the confirmed PostgreSQL event projection and
   can lag Sepolia by the configured confirmation depth.
 - Wallet proof is not policy eligibility by itself; the policy adapter must use
@@ -351,8 +410,8 @@ The API has two durable abuse-control boundaries: wallet authentication and
 sponsored claim preparation. Both use PostgreSQL transactions so limits remain
 consistent across API replicas and restarts.
 
-> Use fictional claim data in this repository. Preparing a claim uploads the
-> canonical document to public IPFS, and authorizing it can spend Sepolia ETH
+> Use fictional claim data in this repository. Preparing a claim uploads its
+> encrypted envelope to public IPFS, and authorizing it can spend Sepolia ETH
 > from the relayer account.
 
 ### Boundaries

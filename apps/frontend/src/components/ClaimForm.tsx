@@ -443,8 +443,9 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
 
               <div className="rounded-2xl border border-coral/25 bg-coral-pale p-4 text-sm leading-6 text-ink">
                 <strong className="font-bold">Evidence is intentionally disabled.</strong>{' '}
-                This application currently uses public, unencrypted IPFS. Photos and documents
-                will be added only after encrypted storage is implemented.
+                Claim JSON is encrypted before public IPFS storage, but arbitrary files need a
+                separate malware-scanning, file-type, retention and authorised-viewing pipeline
+                before they can be accepted safely.
               </div>
 
               {error && (

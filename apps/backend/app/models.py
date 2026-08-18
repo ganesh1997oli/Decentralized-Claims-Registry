@@ -397,6 +397,47 @@ class AssessorSessionResponse(BaseModel):
     assessor_reference: str
 
 
+CoverageDecisionStatus = Literal["Approved", "Rejected"]
+
+
+class CoverageDecisionRequest(BaseModel):
+    """Terminal outcome and separate wallet chosen by a governance operator."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision_status: CoverageDecisionStatus
+    decision_maker_address: str = Field(pattern=r"^0x[0-9a-fA-F]{40}$")
+
+
+class GovernanceSessionResponse(BaseModel):
+    """Non-secret maker identity and insurer scope bound to an API key."""
+
+    governance_reference: str
+    insurer_address: str = Field(pattern=r"^0x[0-9a-fA-F]{40}$")
+
+
+class CoverageDecisionProposalResponse(BaseModel):
+    """Audited proposal and exact non-custodial wallet transaction request."""
+
+    decision_id: UUID
+    claim_id: int = Field(ge=0)
+    decision_status: CoverageDecisionStatus
+    decision_hash: str = Field(pattern=r"^0x[0-9a-fA-F]{64}$")
+    decision_maker_address: str = Field(pattern=r"^0x[0-9a-fA-F]{40}$")
+    proposed_by: str
+    human_outcome_id: UUID
+    human_outcome_revision: int = Field(gt=0)
+    created_at: datetime
+    confirmed_transaction_hash: str | None = Field(
+        default=None,
+        pattern=r"^0x[0-9a-fA-F]{64}$",
+    )
+    confirmed_at: datetime | None = None
+    chain_id: int = Field(gt=0)
+    contract_address: str = Field(pattern=r"^0x[0-9a-fA-F]{40}$")
+    transaction_data: str = Field(pattern=r"^0x[0-9a-fA-F]+$")
+
+
 class ClaimListItemResponse(BaseModel):
     """Current on-chain state for one claim in the claims dashboard."""
 
@@ -452,7 +493,7 @@ class ClaimIndexEventResponse(BaseModel):
 
     event_id: str
     claim_id: int = Field(ge=0)
-    event_type: Literal["ClaimSubmitted", "ClaimAssessed"]
+    event_type: Literal["ClaimSubmitted", "ClaimAssessed", "ClaimDecided"]
     block_number: int = Field(ge=0)
     transaction_hash: str
     log_index: int = Field(ge=0)

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,8 @@ from packages.integrations.ethereum import (
 from packages.integrations.ethereum.deployment import (
     FORWARDER_REQUIRED_FUNCTIONS,
     GASLESS_REGISTRY_FUNCTIONS,
+    GOVERNANCE_REGISTRY_EVENTS,
+    GOVERNANCE_REGISTRY_FUNCTIONS,
     PUBLIC_INTAKE_REGISTRY_EVENTS,
     PUBLIC_INTAKE_REGISTRY_FUNCTIONS,
     REQUIRED_EVENTS,
@@ -182,6 +185,24 @@ def test_public_intake_deployment_requires_the_complete_permit_interface(tmp_pat
 
     assert deployment.supports_public_intake is True
     deployment.require_public_intake()
+    assert deployment.supports_governance is False
+    with pytest.raises(DeploymentConfigurationError, match="coverage decisions"):
+        deployment.require_governance()
+
+    governed = replace(
+        deployment,
+        abi=deployment.abi
+        + tuple(
+            {"type": "function", "name": name}
+            for name in GOVERNANCE_REGISTRY_FUNCTIONS
+        )
+        + tuple(
+            {"type": "event", "name": name}
+            for name in GOVERNANCE_REGISTRY_EVENTS
+        ),
+    )
+    assert governed.supports_governance is True
+    governed.require_governance()
 
 
 class FakeCall:

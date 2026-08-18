@@ -96,6 +96,13 @@ class FakeIPFS:
         return self.payload
 
 
+class TestPrivacy:
+    """Worker unit tests use already-open canonical bytes."""
+
+    def open(self, payload):
+        return payload
+
+
 class PointerIPFS:
     """Return different immutable IPFS bytes for consecutive claim events."""
 
@@ -273,6 +280,7 @@ def test_worker_scores_persists_and_assesses_one_verified_claim():
         repository=repository,
         registry=registry,
         authorization=AUTHORIZATION,
+        privacy=TestPrivacy(),
     )
 
     handler(event)
@@ -311,6 +319,7 @@ def test_worker_commits_a_duplicate_without_scoring_again():
         repository=FakeRepository(record),
         registry=FakeRegistry(status=4, fraud_score=6800),
         authorization=AUTHORIZATION,
+        privacy=TestPrivacy(),
     )
 
     handler(event)
@@ -346,6 +355,7 @@ def test_worker_recovers_when_chain_write_finished_before_database_update():
         repository=repository,
         registry=registry,
         authorization=AUTHORIZATION,
+        privacy=TestPrivacy(),
     )
 
     handler(event)
@@ -367,6 +377,7 @@ def test_worker_rejects_changed_ipfs_bytes_before_scoring():
         repository=repository,
         registry=FakeRegistry(),
         authorization=AUTHORIZATION,
+        privacy=TestPrivacy(),
     )
 
     with pytest.raises(ValueError, match="hash"):
@@ -411,6 +422,7 @@ def test_worker_rejects_claim_not_attested_by_authenticated_gateway():
         repository=repository,
         registry=FakeRegistry(),
         authorization=AUTHORIZATION,
+        privacy=TestPrivacy(),
     )
 
     with pytest.raises(PermanentClaimProcessingError) as raised:
@@ -437,6 +449,7 @@ def test_worker_rejects_attested_claim_submitted_by_a_different_wallet():
         repository=repository,
         registry=FakeRegistry(),
         authorization=AUTHORIZATION,
+        privacy=TestPrivacy(),
     )
 
     with pytest.raises(PermanentClaimProcessingError) as raised:
@@ -486,6 +499,7 @@ def test_malformed_claim_is_quarantined_before_the_next_claim_is_processed():
         repository=repository,
         registry=FakeRegistry(),
         authorization=AUTHORIZATION,
+        privacy=TestPrivacy(),
     )
     partition_safe_handler = QuarantiningClaimHandler(
         handler,

@@ -1,8 +1,9 @@
 // EIP-1193 wallet boundary for the sponsored-claim flow. This module requests
 // account access, a readable sign-in proof, chain selection, and one EIP-712
-// authorization. It never asks the wallet to send a transaction because the
-// isolated relayer pays the gas.
-import type { EIP712TypedData } from './api.ts'
+// authorization. Claim intake never asks the wallet to send a transaction
+// because the isolated relayer pays gas. Coverage governance deliberately uses
+// a separate wallet transaction so a checker must explicitly finalize it.
+import type { CoverageDecisionProposal, EIP712TypedData } from './api.ts'
 
 type EthereumRequest = {
   method: string
@@ -21,6 +22,7 @@ declare global {
 
 const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/
 const SIGNATURE_PATTERN = /^0x[0-9a-fA-F]{130}$/
+const TRANSACTION_HASH_PATTERN = /^0x[0-9a-fA-F]{64}$/
 
 function providerError(error: unknown, fallback: string): Error {
   // Wallet providers expose implementation-specific objects. Convert the only
@@ -172,4 +174,48 @@ export async function signForwardRequest(
     throw new Error('The wallet returned an invalid EIP-712 signature.')
   }
   return signature
+}
+
+/**
+ * Sends the already-audited coverage decision from the scoped checker wallet.
+ *
+ * Unlike sponsored claimant intake, governance intentionally requires the
+ * decision maker to see and pay for a normal wallet transaction. The backend
+ * supplies no private key and cannot broadcast on the operator's behalf.
+ */
+export async function sendCoverageDecisionTransaction(
+  proposal: CoverageDecisionProposal,
+  provider: EthereumProvider = browserWallet(),
+): Promise<string> {
+  if (
+    !ADDRESS_PATTERN.test(proposal.decision_maker_address) ||
+    !ADDRESS_PATTERN.test(proposal.contract_address) ||
+    !/^0x[0-9a-fA-F]+$/.test(proposal.transaction_data)
+  ) {
+    throw new Error('The governance service returned invalid transaction fields.')
+  }
+  await switchWalletChain(proposal.chain_id, provider)
+  let transactionHash: unknown
+  try {
+    transactionHash = await provider.request({
+      method: 'eth_sendTransaction',
+      params: [
+        {
+          from: proposal.decision_maker_address,
+          to: proposal.contract_address,
+          data: proposal.transaction_data,
+          value: '0x0',
+        },
+      ],
+    })
+  } catch (error) {
+    throw providerError(error, 'Could not submit the coverage decision')
+  }
+  if (
+    typeof transactionHash !== 'string' ||
+    !TRANSACTION_HASH_PATTERN.test(transactionHash)
+  ) {
+    throw new Error('The wallet returned an invalid transaction hash.')
+  }
+  return transactionHash
 }

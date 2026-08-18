@@ -48,6 +48,20 @@ erDiagram
         text notes
         timestamptz assessed_at
     }
+    COVERAGE_DECISION_PROPOSALS {
+        uuid decision_id PK
+        bigint chain_id
+        text contract_address
+        bigint claim_id
+        text decision_status
+        text decision_hash
+        text decision_maker_address
+        text proposed_by
+        uuid human_outcome_id
+        int human_outcome_revision
+        text confirmed_transaction_hash
+        timestamptz confirmed_at
+    }
     CLAIM_FEATURE_SNAPSHOTS {
         text event_id PK
         bigint chain_id
@@ -100,6 +114,7 @@ number reused by a new deployment cannot expose the old contract's result.
 | `gasless_submission_repository.py` | Idempotency, durable quotas, outbox transitions, EOA nonce reservation and relay attempts |
 | `assessment_repository.py` | Score, SHAP, processing state and chain receipt |
 | `assessor_outcome_repository.py` | Append-only human fraud conclusions and correction revisions |
+| `coverage_decision_repository.py` | Idempotent maker proposals and finalized-chain confirmation |
 | `duplicate_repository.py` | Private incident fingerprint and current matches |
 | `feature_processor.py` | Validation, direct features and policy HMAC |
 | `feature_repository.py` | Historical enrichment and immutable feature snapshots |
@@ -122,6 +137,25 @@ The table stores neither `Approved` nor `Rejected`, because those contract state
 are business dispositions rather than fraud labels. It also contains no model
 version, probability, retraining flag, or deployment action. `Inconclusive`
 records remain useful audit evidence but are not eligible for a binary label.
+
+## Coverage decision proposals
+
+`coverage_decision_proposals` is the audit seam between private review and the
+terminal public lifecycle. FastAPI creates a deterministic canonical proposal
+only after verifying completed screening, the latest non-inconclusive human
+outcome, insurer scope and the connected wallet's decision-maker role. The row
+contains references and hashes, never private assessor notes or claim evidence.
+
+An exact retry returns the same proposal. A changed status, wallet or governing
+human revision conflicts instead of overwriting audit history. After the wallet
+broadcasts `decideClaim`, only the confirmed `ClaimDecided` listener event can
+set the transaction hash and confirmation timestamp, and only when its
+`decisionHash` matches the saved proposal.
+
+The indexer refuses to advance past a `ClaimDecided` event without that exact
+prior proposal. This does not erase a direct on-chain call by an authorized
+wallet; it makes the bypass visible and prevents the local audit projection from
+silently presenting it as a completed maker/checker workflow.
 
 ## Gasless submission outbox
 
@@ -156,9 +190,10 @@ nonce conflict that must be reconciled rather than silently skipped.
 ## Blockchain claims index
 
 `ClaimSubmitted` appends an immutable `claim_index_events` row and creates the
-corresponding `indexed_claims` projection. `ClaimAssessed` appends another audit
-row and advances status, score, and timestamps. The update compares block number
-and log index, so replaying an older range cannot overwrite a later state.
+corresponding `indexed_claims` projection. `ClaimAssessed` appends screening
+state and score. `ClaimDecided` appends the terminal business state and confirms
+the matching proposal hash. Updates compare block number and log index, so
+replaying an older range cannot overwrite a later state.
 
 The listener persists `claim_index_checkpoints` only after the complete confirmed
 range has also passed IPFS verification and Kafka publication. A failure leaves

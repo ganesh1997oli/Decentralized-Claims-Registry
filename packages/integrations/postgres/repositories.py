@@ -16,6 +16,9 @@ from packages.integrations.postgres.claim_index_repository import (
 from packages.integrations.postgres.claimant_auth_repository import (
     PostgresClaimantAuthChallengeRepository,
 )
+from packages.integrations.postgres.coverage_decision_repository import (
+    PostgresCoverageDecisionRepository,
+)
 from packages.integrations.postgres.database import PostgresDatabase
 from packages.integrations.postgres.duplicate_repository import (
     PostgresDuplicateRepository,
@@ -37,6 +40,7 @@ class PostgresRepositories:
     claims: PostgresClaimIndexRepository
     assessments: PostgresAssessmentRepository
     assessor_outcomes: PostgresAssessorOutcomeRepository
+    coverage_decisions: PostgresCoverageDecisionRepository
     duplicates: PostgresDuplicateRepository
     features: PostgresFeatureRepository
     gasless_submissions: PostgresGaslessSubmissionRepository
@@ -56,6 +60,7 @@ class PostgresRepositories:
             claims=PostgresClaimIndexRepository(database),
             assessments=PostgresAssessmentRepository(database),
             assessor_outcomes=PostgresAssessorOutcomeRepository(database),
+            coverage_decisions=PostgresCoverageDecisionRepository(database),
             duplicates=PostgresDuplicateRepository(database),
             features=PostgresFeatureRepository(database),
             gasless_submissions=PostgresGaslessSubmissionRepository(database),

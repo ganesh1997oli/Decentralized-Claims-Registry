@@ -14,12 +14,14 @@ from dataclasses import dataclass
 
 from apps.backend.app.claimant_auth import ClaimantSessionManager
 from apps.backend.app.gasless_blockchain import GaslessClaimsGateway
+from apps.backend.app.governance_auth import GovernanceBoundary
 from apps.backend.app.indexer_operations import IndexerOperationsBoundary
 from apps.backend.app.policy_eligibility import ConfiguredPolicyEligibility
 from apps.backend.app.submission_auth import ClaimAuthorizationSigner
 from packages.integrations.ethereum import load_claims_deployment
 from packages.integrations.ipfs import IPFSClient
 from packages.integrations.postgres import PostgresMigrator, PostgresRepositories
+from packages.integrations.privacy import ClaimEnvelopeCipher
 from packages.observability import get_event_logger
 
 logger = get_event_logger(__name__)
@@ -142,10 +144,17 @@ def build_readiness_probe() -> ReadinessProbe:
         # authorization key. Sepolia itself has a dedicated result above.
         IPFSClient.from_env(require_upload=True)
         ClaimAuthorizationSigner.from_env()
+        ClaimEnvelopeCipher.from_env()
         if len(os.environ.get("GASLESS_REQUEST_FINGERPRINT_KEY", "")) < 32:
             raise ValueError(
                 "GASLESS_REQUEST_FINGERPRINT_KEY must contain at least 32 bytes"
             )
+
+    def check_coverage_governance() -> None:
+        """Require proposal authentication and a governance-capable ABI."""
+
+        GovernanceBoundary.from_env()
+        load_claims_deployment(os.environ).require_governance()
 
     return ReadinessProbe(
         (
@@ -173,6 +182,11 @@ def build_readiness_probe() -> ReadinessProbe:
                 "submission_dependencies",
                 check_submission_dependencies,
                 "claim submission dependencies are unavailable",
+            ),
+            ReadinessCheck(
+                "coverage_governance",
+                check_coverage_governance,
+                "coverage governance configuration is unavailable",
             ),
         )
     )

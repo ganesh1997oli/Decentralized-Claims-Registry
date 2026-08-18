@@ -2,8 +2,9 @@
 
 For each ``ClaimSubmitted`` event, the listener downloads the referenced IPFS
 document and checks its Keccak-256 hash against the value stored by the contract.
-Only verified events are published to Kafka. ``ClaimAssessed`` events are also
-printed so an operator can follow the claim lifecycle from one terminal.
+Only verified events are published to Kafka. ``ClaimAssessed`` and
+``ClaimDecided`` events are projected separately so operators can distinguish a
+model screening result from the insurer's terminal coverage decision.
 
 The listener reads small confirmed block ranges, projects each public event into
 PostgreSQL, and saves a deployment-scoped database checkpoint. That makes public
@@ -191,6 +192,11 @@ class ClaimIndexWriter(Protocol):
 
         ...
 
+    def index_claim_decided(self, **values: Any) -> None:
+        """Idempotently apply one confirmed ``ClaimDecided`` log."""
+
+        ...
+
 
 class PermanentClaimEventError(RuntimeError):
     """An invalid immutable event that cannot become valid on a later retry."""
@@ -250,7 +256,7 @@ class JsonlDeadLetterSink:
 class ClaimEventProcessor:
     """Verify confirmed claim logs and publish deterministic scoring events."""
 
-    event_names = ("ClaimSubmitted", "ClaimAssessed")
+    event_names = ("ClaimSubmitted", "ClaimAssessed", "ClaimDecided")
 
     def __init__(
         self,
@@ -294,7 +300,13 @@ class ClaimEventProcessor:
 
         entries = []
         for name in self.event_names:
-            event_type = getattr(self.contract.events, name)()
+            event_factory = getattr(self.contract.events, name, None)
+            # Historical read-only deployments predate ClaimDecided. Their ABI
+            # remains replayable, while current governance deployments expose
+            # the additional event and are validated before decision writes.
+            if event_factory is None:
+                continue
+            event_type = event_factory()
             entries.extend(
                 event_type.get_logs(
                     from_block=from_block,
@@ -310,6 +322,8 @@ class ClaimEventProcessor:
                     self._handle_claim_submitted(event)
                 elif event["event"] == "ClaimAssessed":
                     self._handle_claim_assessed(event)
+                elif event["event"] == "ClaimDecided":
+                    self._handle_claim_decided(event)
                 else:
                     raise ValueError(f"Unsupported claim event: {event['event']}")
             except PermanentClaimEventError as exc:
@@ -502,6 +516,42 @@ class ClaimEventProcessor:
         )
         if self.metrics is not None:
             self.metrics.observe_event("claim_assessed")
+
+    def _handle_claim_decided(self, event: Any) -> None:
+        """Project a final insurer decision without treating it as model output."""
+
+        args = event["args"]
+        raw_status = args["newStatus"]
+        status = (
+            STATUS_NAMES[raw_status]
+            if raw_status < len(STATUS_NAMES)
+            else f"?{raw_status}"
+        )
+        if self.indexer is not None:
+            self.indexer.index_claim_decided(
+                chain_id=self.chain_id,
+                contract_address=self.contract_address,
+                claim_id=args["claimId"],
+                status=raw_status,
+                fraud_score=args["fraudScore"],
+                block_number=event["blockNumber"],
+                block_hash=hx(event["blockHash"]),
+                transaction_hash=hx(event["transactionHash"]),
+                log_index=event["logIndex"],
+                event_timestamp=args["timestamp"],
+                decision_hash=hx(args["decisionHash"]),
+            )
+        logger.info(
+            "claim.decided",
+            claim_id=args["claimId"],
+            status=status,
+            decision_maker=args["decisionMaker"],
+            decision_hash=hx(args["decisionHash"]),
+            block_number=event["blockNumber"],
+            transaction_hash=hx(event["transactionHash"]),
+        )
+        if self.metrics is not None:
+            self.metrics.observe_event("claim_decided")
 
 
 class ConfirmedBlockPoller:

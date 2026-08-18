@@ -523,7 +523,7 @@ class ClaimAuthorizationSigner:
     """Attest the parties and eligibility embedded in an IPFS claim document."""
 
     def __init__(self, key: bytes) -> None:
-        """Require enough HMAC key material before signing public IPFS bytes."""
+        """Require enough HMAC key material before signing canonical claim bytes."""
 
         if len(key) < _MINIMUM_AUTHORIZATION_KEY_BYTES:
             raise SubmissionAuthConfigurationError(

@@ -81,12 +81,16 @@ class RecordingClaimIndexer:
     def __init__(self) -> None:
         self.submissions = []
         self.assessments = []
+        self.decisions = []
 
     def index_claim_submitted(self, **values) -> None:
         self.submissions.append(values)
 
     def index_claim_assessed(self, **values) -> None:
         self.assessments.append(values)
+
+    def index_claim_decided(self, **values) -> None:
+        self.decisions.append(values)
 
 
 class PointerValidatingIPFS:
@@ -149,6 +153,24 @@ def assessment_event():
     }
 
 
+def decision_event():
+    return {
+        "event": "ClaimDecided",
+        "blockNumber": 102,
+        "blockHash": bytes.fromhex("55" * 32),
+        "transactionHash": bytes.fromhex("66" * 32),
+        "logIndex": 3,
+        "args": {
+            "claimId": 7,
+            "newStatus": 2,
+            "decisionMaker": "0x4444444444444444444444444444444444444444",
+            "decisionHash": bytes.fromhex("77" * 32),
+            "fraudScore": 4200,
+            "timestamp": 1_750_000_200,
+        },
+    }
+
+
 def test_processor_orders_events_and_publishes_only_verified_claims(caplog):
     payload = b'{"schemaVersion":3,"claimReference":"verified"}'
     publisher = FakePublisher()
@@ -156,6 +178,7 @@ def test_processor_orders_events_and_publishes_only_verified_claims(caplog):
         events=SimpleNamespace(
             ClaimSubmitted=FakeEventType([submission_event(payload)]),
             ClaimAssessed=FakeEventType([assessment_event()]),
+            ClaimDecided=FakeEventType([decision_event()]),
         )
     )
     processor = ClaimEventProcessor(
@@ -171,6 +194,7 @@ def test_processor_orders_events_and_publishes_only_verified_claims(caplog):
 
     events = [getattr(record, "event_name", None) for record in caplog.records]
     assert events.index("claim.submitted") < events.index("claim.assessed")
+    assert events.index("claim.assessed") < events.index("claim.decided")
     assert len(publisher.events) == 1
     event = publisher.events[0]
     assert event.claim_id == 7
@@ -184,6 +208,7 @@ def test_processor_projects_submission_and_assessment_in_chain_order():
         events=SimpleNamespace(
             ClaimSubmitted=FakeEventType([submission_event(payload)]),
             ClaimAssessed=FakeEventType([assessment_event()]),
+            ClaimDecided=FakeEventType([decision_event()]),
         )
     )
     processor = ClaimEventProcessor(
@@ -203,6 +228,9 @@ def test_processor_projects_submission_and_assessment_in_chain_order():
     assert len(indexer.assessments) == 1
     assert indexer.assessments[0]["status"] == 1
     assert indexer.assessments[0]["fraud_score"] == 4200
+    assert len(indexer.decisions) == 1
+    assert indexer.decisions[0]["status"] == 2
+    assert indexer.decisions[0]["decision_hash"] == f"0x{'77' * 32}"
 
 
 def test_processor_rejects_tampered_ipfs_bytes_before_kafka_publish():

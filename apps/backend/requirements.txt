@@ -1,4 +1,5 @@
 -r ../../packages/integrations/ipfs/requirements.txt
+-r ../../packages/integrations/privacy/requirements.txt
 -r ../../packages/integrations/postgres/requirements.txt
 
 web3>=7.0,<8.0

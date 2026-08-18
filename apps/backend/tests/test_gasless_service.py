@@ -77,8 +77,8 @@ class FakeIPFS:
     def upload_bytes(self, payload, *, filename, content_type):
         self.uploads += 1
         self.payload = payload
-        assert filename == "synthetic-gasless-1.json"
-        assert content_type == "application/json"
+        assert filename == "synthetic-gasless-1.claim-envelope.json"
+        assert content_type == "application/vnd.claims-registry.envelope+json"
         return "bafygaslesstest"
 
     def download_pointer(self, pointer, *, attempts=3):
@@ -194,6 +194,13 @@ class FakeEligibility:
         return PUBLIC_PRINCIPAL
 
 
+class TestPrivacy:
+    """Make encrypted storage observable without coupling service tests to crypto."""
+
+    def seal(self, plaintext):
+        return b"encrypted:" + plaintext
+
+
 def service(ipfs=None, chain=None, store=None, eligibility=None):
     return GaslessClaimSubmissionService(
         ipfs=ipfs or FakeIPFS(),
@@ -202,6 +209,7 @@ def service(ipfs=None, chain=None, store=None, eligibility=None):
         authorization=ClaimAuthorizationSigner(
             b"gasless-service-authorization-key-32-bytes"
         ),
+        privacy=TestPrivacy(),
         fingerprint_key=b"gasless-request-fingerprint-key-32-bytes",
         insurer_minute_limit=5,
         client_minute_limit=20,
@@ -228,6 +236,7 @@ def test_prepare_returns_exact_wallet_domain_and_schema_v5_payload():
     assert result.typed_data.domain.verifying_contract == FORWARDER
     assert result.typed_data.message.nonce == "7"
     assert result.typed_data.message.from_address == SIGNER
+    assert ipfs.payload.startswith(b"encrypted:")
     assert b'"schemaVersion":5' in ipfs.payload
     assert f'"signerAddress":"{SIGNER}"'.encode() in ipfs.payload
     assert store.record.claim_hash == result.claim_hash

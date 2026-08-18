@@ -349,6 +349,65 @@ def assessor_outcome_from_row(
     )
 
 
+CoverageDecisionStatus = Literal["Approved", "Rejected"]
+
+
+@dataclass(frozen=True)
+class CoverageDecisionProposalRecord:
+    """One immutable, maker-checker coverage proposal awaiting a wallet write."""
+
+    decision_id: UUID
+    chain_id: int
+    contract_address: str
+    claim_id: int
+    decision_status: CoverageDecisionStatus
+    decision_hash: str
+    decision_maker_address: str
+    proposed_by: str
+    human_outcome_id: UUID
+    human_outcome_revision: int
+    created_at: datetime
+    confirmed_transaction_hash: str | None
+    confirmed_at: datetime | None
+
+
+def coverage_decision_proposal_from_row(
+    row: dict[str, Any] | None,
+) -> CoverageDecisionProposalRecord | None:
+    """Validate driver values at the PostgreSQL/domain boundary."""
+
+    if row is None:
+        return None
+    decision_status = str(row["decision_status"])
+    if decision_status not in {"Approved", "Rejected"}:
+        raise ValueError("PostgreSQL returned an invalid coverage decision")
+    created_at = row["created_at"]
+    confirmed_at = row["confirmed_at"]
+    if not isinstance(created_at, datetime):
+        raise TypeError("PostgreSQL returned an invalid proposal timestamp")
+    if confirmed_at is not None and not isinstance(confirmed_at, datetime):
+        raise TypeError("PostgreSQL returned an invalid confirmation timestamp")
+    return CoverageDecisionProposalRecord(
+        decision_id=UUID(str(row["decision_id"])),
+        chain_id=int(row["chain_id"]),
+        contract_address=str(row["contract_address"]),
+        claim_id=int(row["claim_id"]),
+        decision_status=decision_status,  # type: ignore[arg-type]
+        decision_hash=str(row["decision_hash"]),
+        decision_maker_address=str(row["decision_maker_address"]),
+        proposed_by=str(row["proposed_by"]),
+        human_outcome_id=UUID(str(row["human_outcome_id"])),
+        human_outcome_revision=int(row["human_outcome_revision"]),
+        created_at=created_at,
+        confirmed_transaction_hash=(
+            str(row["confirmed_transaction_hash"])
+            if row["confirmed_transaction_hash"] is not None
+            else None
+        ),
+        confirmed_at=confirmed_at,
+    )
+
+
 def assessment_from_row(row: dict[str, Any] | None) -> AssessmentRecord | None:
     """Translate an internal database row into the stable domain record."""
 

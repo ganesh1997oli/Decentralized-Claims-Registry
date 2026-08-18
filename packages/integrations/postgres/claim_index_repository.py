@@ -323,6 +323,71 @@ class PostgresClaimIndexRepository:
         log_index: int,
         event_timestamp: int,
     ) -> None:
+        """Project a confirmed model-screening transition."""
+
+        self._index_claim_state_changed(
+            event_type="ClaimAssessed",
+            chain_id=chain_id,
+            contract_address=contract_address,
+            claim_id=claim_id,
+            status=status,
+            fraud_score=fraud_score,
+            block_number=block_number,
+            block_hash=block_hash,
+            transaction_hash=transaction_hash,
+            log_index=log_index,
+            event_timestamp=event_timestamp,
+            decision_hash=None,
+        )
+
+    def index_claim_decided(
+        self,
+        *,
+        chain_id: int,
+        contract_address: str,
+        claim_id: int,
+        status: int,
+        fraud_score: int,
+        block_number: int,
+        block_hash: str,
+        transaction_hash: str,
+        log_index: int,
+        event_timestamp: int,
+        decision_hash: str,
+    ) -> None:
+        """Project a confirmed terminal coverage decision."""
+
+        self._index_claim_state_changed(
+            event_type="ClaimDecided",
+            chain_id=chain_id,
+            contract_address=contract_address,
+            claim_id=claim_id,
+            status=status,
+            fraud_score=fraud_score,
+            block_number=block_number,
+            block_hash=block_hash,
+            transaction_hash=transaction_hash,
+            log_index=log_index,
+            event_timestamp=event_timestamp,
+            decision_hash=decision_hash,
+        )
+
+    def _index_claim_state_changed(
+        self,
+        *,
+        event_type: str,
+        chain_id: int,
+        contract_address: str,
+        claim_id: int,
+        status: int,
+        fraud_score: int,
+        block_number: int,
+        block_hash: str,
+        transaction_hash: str,
+        log_index: int,
+        event_timestamp: int,
+        decision_hash: str | None,
+    ) -> None:
         """Apply a lifecycle event without allowing an older replay to regress it.
 
         The audit append and current-state update share one transaction. Tuple
@@ -346,7 +411,7 @@ class PostgresClaimIndexRepository:
                 chain_id=chain_id,
                 contract_address=normalized_contract,
                 claim_id=claim_id,
-                event_type="ClaimAssessed",
+                event_type=event_type,
                 block_number=block_number,
                 block_hash=block_hash.lower(),
                 transaction_hash=normalized_transaction,
@@ -385,6 +450,61 @@ class PostgresClaimIndexRepository:
                 ),
             )
             if cursor.rowcount:
+                if decision_hash is not None:
+                    # Confirmation is learned only from a finalized contract
+                    # event. This keeps an RPC broadcast response from being
+                    # mistaken for durable governance state. A scoped wallet
+                    # can technically bypass the browser and call Solidity
+                    # directly, so the listener also requires the exact prior
+                    # maker proposal before advancing its checkpoint.
+                    cursor.execute(
+                        """
+                        SELECT decision_hash, confirmed_transaction_hash
+                        FROM coverage_decision_proposals
+                        WHERE chain_id = %s
+                          AND contract_address = %s
+                          AND claim_id = %s
+                        FOR UPDATE
+                        """,
+                        (chain_id, normalized_contract, claim_id),
+                    )
+                    proposal = cursor.fetchone()
+                    if proposal is None:
+                        raise PostgresStorageError(
+                            "ClaimDecided has no prior coverage governance proposal"
+                        )
+                    if str(proposal["decision_hash"]).lower() != decision_hash.lower():
+                        raise PostgresStorageError(
+                            "ClaimDecided hash does not match its governance proposal"
+                        )
+                    existing_transaction = proposal["confirmed_transaction_hash"]
+                    if (
+                        existing_transaction is not None
+                        and str(existing_transaction).lower() != normalized_transaction
+                    ):
+                        raise PostgresStorageError(
+                            "Coverage proposal was confirmed by a different transaction"
+                        )
+                    cursor.execute(
+                        """
+                        UPDATE coverage_decision_proposals
+                        SET confirmed_transaction_hash = %s,
+                            confirmed_at = to_timestamp(%s)
+                        WHERE chain_id = %s
+                          AND contract_address = %s
+                          AND claim_id = %s
+                          AND decision_hash = %s
+                          AND confirmed_transaction_hash IS NULL
+                        """,
+                        (
+                            normalized_transaction,
+                            event_timestamp,
+                            chain_id,
+                            normalized_contract,
+                            claim_id,
+                            decision_hash.lower(),
+                        ),
+                    )
                 return
 
             # A zero row count can mean either a safe replay of an older event or
@@ -700,7 +820,12 @@ class PostgresClaimIndexRepository:
 
         if claim_id is not None and claim_id < 0:
             raise ValueError("claim_id cannot be negative")
-        if event_type not in (None, "ClaimSubmitted", "ClaimAssessed"):
+        if event_type not in (
+            None,
+            "ClaimSubmitted",
+            "ClaimAssessed",
+            "ClaimDecided",
+        ):
             raise ValueError("event_type is not supported")
         if status is not None and status not in range(5):
             raise ValueError("status must be between 0 and 4")

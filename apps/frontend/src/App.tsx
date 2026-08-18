@@ -3,6 +3,7 @@
 import { ClaimForm } from './components/ClaimForm.tsx'
 import { AssessorOutcomeDashboard } from './components/AssessorOutcomeDashboard.tsx'
 import { ClaimsDashboard } from './components/ClaimsDashboard.tsx'
+import { CoverageGovernanceDashboard } from './components/CoverageGovernanceDashboard.tsx'
 import { IndexerOperationsDashboard } from './components/IndexerOperationsDashboard.tsx'
 import { ReceiptCard } from './components/ReceiptCard.tsx'
 import { useClaimsWorkspace } from './hooks/useClaimsWorkspace.ts'
@@ -33,7 +34,8 @@ function DataBoundaryAside() {
           <div className="border-t border-white/10 pt-5">
             <dt className="font-bold text-white">On public IPFS</dt>
             <dd className="mt-1 leading-6 text-white/60">
-              The synthetic JSON payload. No real personal data.
+              An authenticated encrypted claim envelope. Public gateways do not
+              receive readable claim JSON.
             </dd>
           </div>
           <div className="border-t border-white/10 pt-5">
@@ -96,6 +98,12 @@ function RegistryApp() {
               Human assessor
             </a>
             <a
+              href="/governance"
+              className="hidden rounded-full px-3 py-2 text-xs font-semibold text-white/70 transition hover:bg-white/5 hover:text-white md:inline-flex"
+            >
+              Coverage governance
+            </a>
+            <a
               href="/operations"
               className="hidden rounded-full px-3 py-2 text-xs font-semibold text-white/70 transition hover:bg-white/5 hover:text-white md:inline-flex"
             >
@@ -128,9 +136,9 @@ function RegistryApp() {
               Submit once. Verify everywhere.
             </h1>
             <p className="mt-5 max-w-2xl text-base leading-7 text-slate sm:text-lg">
-              This form sends a synthetic claim to FastAPI. The backend pins the
-              canonical JSON to IPFS, checks the bytes, then anchors its hash and
-              CID on Ethereum Sepolia.
+              This form sends a synthetic claim to FastAPI. The backend seals the
+              canonical JSON in an authenticated encryption envelope, pins that
+              envelope to IPFS, then anchors its hash and CID on Ethereum Sepolia.
             </p>
           </div>
 
@@ -279,6 +287,36 @@ function OperationsApp() {
   )
 }
 
+function GovernanceApp() {
+  // Governance has its own credential and wallet surface. Keeping it off the
+  // public route avoids mounting decision authority during ordinary intake.
+  return (
+    <div className="min-h-screen">
+      <header className="border-b border-white/10 bg-ink text-white">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4 sm:px-8 lg:px-12">
+          <a href="/governance" className="flex items-center gap-3 rounded-md">
+            <span className="grid size-10 place-items-center rounded-xl bg-coral font-black text-ink">CR</span>
+            <span>
+              <span className="block text-sm font-bold">Claims Registry</span>
+              <span className="block text-xs text-white/55">Coverage governance</span>
+            </span>
+          </a>
+          <a href="/" className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-bold text-white/75">← Claims application</a>
+        </div>
+      </header>
+      <main className="mx-auto max-w-7xl px-5 py-10 sm:px-8 lg:px-12 lg:py-12">
+        <CoverageGovernanceDashboard />
+      </main>
+      <footer className="border-t border-ink/8 bg-white/60">
+        <div className="mx-auto flex max-w-7xl flex-col gap-2 px-5 py-6 text-xs text-slate sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-12">
+          <span>Authenticated proposal maker + scoped decision wallet</span>
+          <span>Terminal outcomes confirmed by Sepolia events</span>
+        </div>
+      </footer>
+    </div>
+  )
+}
+
 function App() {
   // These small, credential-separated surfaces need no client-side router.
   // Normalize only the trailing slash; unknown paths remain the public claims app.
@@ -287,6 +325,8 @@ function App() {
   const route = pathname.replace(/\/$/, '')
   return route === '/operations' ? (
     <OperationsApp />
+  ) : route === '/governance' ? (
+    <GovernanceApp />
   ) : route === '/assessor' ? (
     <AssessorApp />
   ) : (
