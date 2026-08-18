@@ -17,14 +17,26 @@ describe("ClaimsRegistry", async function () {
   } as const;
   const claimHash = keccak256(toHex("policy-42:incident-2026-07-13"));
   const dataPointer = "ipfs://bafybeigdyrzexamplecidexamplecidexampleci";
+  const claimantCommitment = keccak256(toHex("claimant:northstar:alice"));
+  const permitId = keccak256(toHex("public-claim-permit-1"));
 
   async function deployFixture() {
-    const [admin, insurer, assessor, otherInsurer, otherAssessor, relayer] =
-      await viem.getWalletClients();
+    const [
+      admin,
+      insurer,
+      permitIssuer,
+      assessor,
+      otherInsurer,
+      otherAssessor,
+      claimant,
+      representative,
+      relayer,
+    ] = await viem.getWalletClients();
     const forwarder = await viem.deployContract("ClaimsForwarder");
     const registry = await viem.deployContract("ClaimsRegistry", [
       admin.account.address,
       insurer.account.address,
+      permitIssuer.account.address,
       assessor.account.address,
       forwarder.address,
       0,
@@ -34,11 +46,67 @@ describe("ClaimsRegistry", async function () {
       registry,
       admin,
       insurer,
+      permitIssuer,
       assessor,
       otherInsurer,
       otherAssessor,
+      claimant,
+      representative,
       relayer,
     };
+  }
+
+  async function signedClaimPermit(
+    overrides: Partial<{
+      claimant: `0x${string}`;
+      submitter: `0x${string}`;
+      insurer: `0x${string}`;
+      claimantCommitment: `0x${string}`;
+      claimHash: `0x${string}`;
+      dataPointerHash: `0x${string}`;
+      permitId: `0x${string}`;
+      deadline: bigint;
+    }> = {},
+  ) {
+    const fixture = await deployFixture();
+    const publicClient = await viem.getPublicClient();
+    const chainId = await publicClient.getChainId();
+    const latestBlock = await publicClient.getBlock();
+    const permit = {
+      claimant: fixture.claimant.account.address,
+      submitter: fixture.claimant.account.address,
+      insurer: fixture.insurer.account.address,
+      claimantCommitment,
+      claimHash,
+      dataPointerHash: keccak256(toHex(dataPointer)),
+      permitId,
+      deadline: latestBlock.timestamp + 3_600n,
+      ...overrides,
+    } as const;
+    const signature = await fixture.permitIssuer.signTypedData({
+      account: fixture.permitIssuer.account,
+      domain: {
+        name: "ClaimsRegistry",
+        version: "2",
+        chainId,
+        verifyingContract: fixture.registry.address,
+      },
+      types: {
+        ClaimPermit: [
+          { name: "claimant", type: "address" },
+          { name: "submitter", type: "address" },
+          { name: "insurer", type: "address" },
+          { name: "claimantCommitment", type: "bytes32" },
+          { name: "claimHash", type: "bytes32" },
+          { name: "dataPointerHash", type: "bytes32" },
+          { name: "permitId", type: "bytes32" },
+          { name: "deadline", type: "uint48" },
+        ],
+      },
+      primaryType: "ClaimPermit",
+      message: permit,
+    });
+    return { ...fixture, permit, permitSignature: signature };
   }
 
   async function signedSubmissionRequest() {
@@ -129,6 +197,185 @@ describe("ClaimsRegistry", async function () {
     assert.equal(claim[3], Status.Submitted);
     assert.equal(claim[4], 0);
     assert.equal(await registry.read.claimCount(), 1n);
+  });
+
+  it("records a public claimant with an insurer-scoped one-time permit", async function () {
+    const {
+      registry,
+      claimant,
+      insurer,
+      permitIssuer,
+      permit,
+      permitSignature,
+    } = await signedClaimPermit();
+
+    await registry.write.submitClaimWithPermit(
+      [permit, dataPointer, permitSignature],
+      { account: claimant.account },
+    );
+
+    const claim = await registry.read.getClaim([0n]);
+    const parties = await registry.read.getClaimParties([0n]);
+    assert.equal(claim[0], getAddress(claimant.account.address));
+    assert.equal(claim[1], claimHash);
+    assert.equal(parties[0], getAddress(insurer.account.address));
+    assert.equal(parties[1], getAddress(claimant.account.address));
+    assert.equal(parties[2], claimantCommitment);
+    assert.equal(await registry.read.isClaimPermitUsed([permitId]), true);
+    assert.equal(
+      await registry.read.isPermitIssuerFor([
+        permitIssuer.account.address,
+        insurer.account.address,
+      ]),
+      true,
+    );
+  });
+
+  it("relays a public claimant permit without granting the wallet a role", async function () {
+    const {
+      forwarder,
+      registry,
+      claimant,
+      relayer,
+      permit,
+      permitSignature,
+    } = await signedClaimPermit();
+    const publicClient = await viem.getPublicClient();
+    const chainId = await publicClient.getChainId();
+    const nonce = await forwarder.read.nonces([claimant.account.address]);
+    const request = {
+      from: claimant.account.address,
+      to: registry.address,
+      value: 0n,
+      gas: 400_000n,
+      deadline: permit.deadline,
+      data: encodeFunctionData({
+        abi: registry.abi,
+        functionName: "submitClaimWithPermit",
+        args: [permit, dataPointer, permitSignature],
+      }),
+    } as const;
+    const forwardSignature = await claimant.signTypedData({
+      account: claimant.account,
+      domain: {
+        name: "ClaimsRegistryForwarder",
+        version: "1",
+        chainId,
+        verifyingContract: forwarder.address,
+      },
+      types: {
+        ForwardRequest: [
+          { name: "from", type: "address" },
+          { name: "to", type: "address" },
+          { name: "value", type: "uint256" },
+          { name: "gas", type: "uint256" },
+          { name: "nonce", type: "uint256" },
+          { name: "deadline", type: "uint48" },
+          { name: "data", type: "bytes" },
+        ],
+      },
+      primaryType: "ForwardRequest",
+      message: { ...request, nonce },
+    });
+
+    await forwarder.write.execute(
+      [{ ...request, signature: forwardSignature }],
+      { account: relayer.account },
+    );
+
+    assert.equal(
+      (await registry.read.getClaim([0n]))[0],
+      getAddress(claimant.account.address),
+    );
+    assert.equal(await registry.read.isSubmitter([claimant.account.address]), false);
+  });
+
+  it("supports an authorized representative without confusing them with the claimant", async function () {
+    const fixture = await deployFixture();
+    const publicClient = await viem.getPublicClient();
+    const chainId = await publicClient.getChainId();
+    const latestBlock = await publicClient.getBlock();
+    const permit = {
+      claimant: fixture.claimant.account.address,
+      submitter: fixture.representative.account.address,
+      insurer: fixture.insurer.account.address,
+      claimantCommitment,
+      claimHash,
+      dataPointerHash: keccak256(toHex(dataPointer)),
+      permitId,
+      deadline: latestBlock.timestamp + 3_600n,
+    } as const;
+    const signature = await fixture.permitIssuer.signTypedData({
+      account: fixture.permitIssuer.account,
+      domain: {
+        name: "ClaimsRegistry",
+        version: "2",
+        chainId,
+        verifyingContract: fixture.registry.address,
+      },
+      types: {
+        ClaimPermit: [
+          { name: "claimant", type: "address" },
+          { name: "submitter", type: "address" },
+          { name: "insurer", type: "address" },
+          { name: "claimantCommitment", type: "bytes32" },
+          { name: "claimHash", type: "bytes32" },
+          { name: "dataPointerHash", type: "bytes32" },
+          { name: "permitId", type: "bytes32" },
+          { name: "deadline", type: "uint48" },
+        ],
+      },
+      primaryType: "ClaimPermit",
+      message: permit,
+    });
+
+    await fixture.registry.write.submitClaimWithPermit(
+      [permit, dataPointer, signature],
+      { account: fixture.representative.account },
+    );
+
+    assert.equal(
+      (await fixture.registry.read.getClaim([0n]))[0],
+      getAddress(fixture.claimant.account.address),
+    );
+    assert.equal(
+      (await fixture.registry.read.getClaimParties([0n]))[1],
+      getAddress(fixture.representative.account.address),
+    );
+  });
+
+  it("rejects permit replay, pointer substitution, and the wrong submitter", async function () {
+    const { registry, claimant, representative, permit, permitSignature } =
+      await signedClaimPermit();
+
+    await viem.assertions.revertWithCustomError(
+      registry.write.submitClaimWithPermit(
+        [permit, dataPointer, permitSignature],
+        { account: representative.account },
+      ),
+      registry,
+      "ClaimPermitSubmitterMismatch",
+    );
+    await viem.assertions.revertWithCustomError(
+      registry.write.submitClaimWithPermit(
+        [permit, "ipfs://bafydifferentcid", permitSignature],
+        { account: claimant.account },
+      ),
+      registry,
+      "ClaimPermitPointerMismatch",
+    );
+    await registry.write.submitClaimWithPermit(
+      [permit, dataPointer, permitSignature],
+      { account: claimant.account },
+    );
+    await viem.assertions.revertWithCustomError(
+      registry.write.submitClaimWithPermit(
+        [permit, dataPointer, permitSignature],
+        { account: claimant.account },
+      ),
+      registry,
+      "ClaimPermitAlreadyUsed",
+    );
   });
 
   it("rejects unauthorized submitters and malformed pointers", async function () {

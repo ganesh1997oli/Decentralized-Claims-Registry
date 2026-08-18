@@ -15,6 +15,8 @@ from packages.integrations.ethereum import (
 from packages.integrations.ethereum.deployment import (
     FORWARDER_REQUIRED_FUNCTIONS,
     GASLESS_REGISTRY_FUNCTIONS,
+    PUBLIC_INTAKE_REGISTRY_EVENTS,
+    PUBLIC_INTAKE_REGISTRY_FUNCTIONS,
     REQUIRED_EVENTS,
     REQUIRED_FUNCTIONS,
 )
@@ -123,6 +125,63 @@ def test_gasless_deployment_loads_registry_and_forwarder_as_one_identity(tmp_pat
     assert deployment.supports_gasless is True
     assert deployment.address == registry_address
     assert deployment.forwarder_address == forwarder_address
+    with pytest.raises(DeploymentConfigurationError, match="public claim intake"):
+        deployment.require_public_intake()
+
+
+def test_public_intake_deployment_requires_the_complete_permit_interface(tmp_path):
+    deployment_dir = tmp_path / "public-intake-v1"
+    artifact_dir = deployment_dir / "artifacts"
+    artifact_dir.mkdir(parents=True)
+    addresses = {
+        CLAIMS_REGISTRY_MODULE_ID: "0x1111111111111111111111111111111111111111",
+        CLAIMS_FORWARDER_MODULE_ID: "0x2222222222222222222222222222222222222222",
+    }
+    (deployment_dir / "deployed_addresses.json").write_text(
+        json.dumps(addresses),
+        encoding="utf-8",
+    )
+    registry_functions = (
+        REQUIRED_FUNCTIONS
+        | GASLESS_REGISTRY_FUNCTIONS
+        | PUBLIC_INTAKE_REGISTRY_FUNCTIONS
+    )
+    (artifact_dir / f"{CLAIMS_REGISTRY_MODULE_ID}.json").write_text(
+        json.dumps(
+            {
+                "abi": [
+                    *(
+                        {"type": "function", "name": name}
+                        for name in registry_functions
+                    ),
+                    *(
+                        {"type": "event", "name": name}
+                        for name in REQUIRED_EVENTS | PUBLIC_INTAKE_REGISTRY_EVENTS
+                    ),
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / f"{CLAIMS_FORWARDER_MODULE_ID}.json").write_text(
+        json.dumps(
+            {
+                "abi": [
+                    {"type": "function", "name": name}
+                    for name in FORWARDER_REQUIRED_FUNCTIONS
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    deployment = load_claims_deployment(
+        {"CLAIMS_DEPLOYMENT_ID": "public-intake-v1"},
+        deployments_root=tmp_path,
+    )
+
+    assert deployment.supports_public_intake is True
+    deployment.require_public_intake()
 
 
 class FakeCall:

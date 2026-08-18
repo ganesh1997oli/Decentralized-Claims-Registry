@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   authorizeGaslessClaim,
+  createClaimantChallenge,
+  createClaimantSession,
   getGaslessNetwork,
   getGaslessSubmission,
   getClaimAssessment,
@@ -31,6 +33,8 @@ const payload: ClaimPayload = {
   description: 'Synthetic bumper damage',
   evidence: [],
 }
+
+const claimantToken = `v1.${'a'.repeat(40)}.${'b'.repeat(43)}`
 
 const receipt: ClaimReceipt = {
   claim_id: 4,
@@ -197,6 +201,51 @@ afterEach(() => {
 })
 
 describe('gasless claims API', () => {
+  it('creates a one-time wallet challenge and claimant session', async () => {
+    const challenge = {
+      challenge_id: '11111111-1111-4111-8111-111111111111',
+      message: 'Sign in to submit an insurance claim',
+      expires_at: '2026-08-18T12:05:00Z',
+    }
+    const session = {
+      access_token: claimantToken,
+      token_type: 'bearer',
+      expires_at: '2026-08-18T12:15:00Z',
+      claimant_address: gaslessSubmission.signer_address,
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(challenge), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(session), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      createClaimantChallenge(gaslessSubmission.signer_address),
+    ).resolves.toEqual(challenge)
+    const signature = `0x${'ab'.repeat(65)}`
+    await expect(
+      createClaimantSession(challenge.challenge_id, signature),
+    ).resolves.toEqual(session)
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      walletAddress: gaslessSubmission.signer_address,
+    })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      challenge_id: challenge.challenge_id,
+      signature,
+    })
+  })
+
   it('loads the server-authoritative wallet network', async () => {
     const network = {
       chain_id: 11155111,
@@ -230,8 +279,7 @@ describe('gasless claims API', () => {
     await expect(
       prepareGaslessClaim(
         payload,
-        'insurer-api-key',
-        gaslessSubmission.signer_address,
+        claimantToken,
         'request-123',
       ),
     ).resolves.toEqual(gaslessSubmission)
@@ -243,8 +291,7 @@ describe('gasless claims API', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Insurer-API-Key': 'insurer-api-key',
-        'X-Insurer-Signer-Address': gaslessSubmission.signer_address,
+        Authorization: `Bearer ${claimantToken}`,
         'Idempotency-Key': 'request-123',
       },
     })
@@ -266,14 +313,14 @@ describe('gasless claims API', () => {
       authorizeGaslessClaim(
         gaslessSubmission.submission_id,
         signature,
-        'insurer-api-key',
+        claimantToken,
       ),
     ).resolves.toEqual(authorized)
     expect(fetchMock.mock.calls[0][1]).toMatchObject({
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Insurer-API-Key': 'insurer-api-key',
+        Authorization: `Bearer ${claimantToken}`,
       },
     })
 
@@ -284,7 +331,7 @@ describe('gasless claims API', () => {
       }),
     )
     await expect(
-      getGaslessSubmission(gaslessSubmission.submission_id, 'insurer-api-key'),
+      getGaslessSubmission(gaslessSubmission.submission_id, claimantToken),
     ).resolves.toEqual(authorized)
   })
 
@@ -312,8 +359,7 @@ describe('gasless claims API', () => {
     await expect(
       prepareGaslessClaim(
         payload,
-        'insurer-api-key',
-        gaslessSubmission.signer_address,
+        claimantToken,
         'request-123',
       ),
     ).rejects.toThrow('unexpected gasless response')
@@ -333,8 +379,7 @@ describe('gasless claims API', () => {
     await expect(
       prepareGaslessClaim(
         payload,
-        'insurer-api-key',
-        gaslessSubmission.signer_address,
+        claimantToken,
         'request-123',
       ),
     ).rejects.toThrow('upstream unavailable')
@@ -346,8 +391,7 @@ describe('gasless claims API', () => {
     await expect(
       prepareGaslessClaim(
         payload,
-        'insurer-api-key',
-        gaslessSubmission.signer_address,
+        claimantToken,
         'request-123',
       ),
     ).rejects.toThrow('Confirm that the backend is running')

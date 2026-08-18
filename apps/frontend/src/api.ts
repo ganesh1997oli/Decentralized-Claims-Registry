@@ -19,6 +19,19 @@ export type ClaimPayload = {
   evidence: string[]
 }
 
+export type ClaimantChallenge = {
+  challenge_id: string
+  message: string
+  expires_at: string
+}
+
+export type ClaimantSession = {
+  access_token: string
+  token_type: 'bearer'
+  expires_at: string
+  claimant_address: string
+}
+
 export type AssessmentReason = {
   feature: string
   label: string
@@ -259,6 +272,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isAddress(value: unknown): value is string {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value)
+}
+
+function isTimestamp(value: unknown): value is string {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value))
+}
+
+function isClaimantChallenge(value: unknown): value is ClaimantChallenge {
+  return (
+    isRecord(value) &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      String(value.challenge_id),
+    ) &&
+    typeof value.message === 'string' &&
+    value.message.length > 0 &&
+    isTimestamp(value.expires_at)
+  )
+}
+
+function isClaimantSession(value: unknown): value is ClaimantSession {
+  return (
+    isRecord(value) &&
+    typeof value.access_token === 'string' &&
+    value.access_token.length >= 32 &&
+    value.token_type === 'bearer' &&
+    isTimestamp(value.expires_at) &&
+    isAddress(value.claimant_address)
+  )
 }
 
 /** Validates the public chain receipt before it enters React application state. */
@@ -640,6 +680,57 @@ function errorMessage(body: unknown, status: number): string {
   return `The claims API returned HTTP ${status}`
 }
 
+/** Requests the exact, short-lived sign-in message for a claimant wallet. */
+export async function createClaimantChallenge(
+  walletAddress: string,
+  signal?: AbortSignal,
+): Promise<ClaimantChallenge> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/claimant/session/challenge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletAddress }),
+      signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error('Could not start claimant wallet verification.')
+  }
+  const body: unknown = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isClaimantChallenge(body)) {
+    throw new Error('The claims API returned an unexpected wallet challenge')
+  }
+  return body
+}
+
+/** Exchanges a one-time wallet proof for an in-memory claimant bearer session. */
+export async function createClaimantSession(
+  challengeId: string,
+  signature: string,
+  signal?: AbortSignal,
+): Promise<ClaimantSession> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/claimant/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challenge_id: challengeId, signature }),
+      signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error('Could not complete claimant wallet verification.')
+  }
+  const body: unknown = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isClaimantSession(body)) {
+    throw new Error('The claims API returned an unexpected claimant session')
+  }
+  return body
+}
+
 /**
  * Fetches the deployment identity used to configure the wallet signing flow.
  *
@@ -652,7 +743,7 @@ export async function getGaslessNetwork(
 ): Promise<GaslessNetwork> {
   // Deployment discovery is intentionally unauthenticated and read-only. The
   // browser compares these values with the subsequent prepared response before
-  // it allows the insurer wallet to sign.
+  // it allows the verified claimant submitter wallet to sign.
   let response: Response
   try {
     response = await fetch(`${API_BASE_URL}/claims/gasless/config`, { signal })
@@ -679,22 +770,20 @@ export async function getGaslessNetwork(
  */
 export async function prepareGaslessClaim(
   payload: ClaimPayload,
-  insurerApiKey: string,
-  signerAddress: string,
+  accessToken: string,
   idempotencyKey: string,
   signal?: AbortSignal,
 ): Promise<GaslessSubmission> {
-  // Send credential, signer binding, and idempotency identity as headers while
-  // the body remains the schema-validated claim. The API stores credential/key
-  // fingerprints, not the raw header values, in its sponsorship tables.
+  // The bearer token proves wallet ownership. Policy eligibility, claimant
+  // identity, insurer selection, and the on-chain submitter are resolved by the
+  // backend instead of trusting extra identity headers from the browser.
   let response: Response
   try {
     response = await fetch(`${API_BASE_URL}/claims/gasless/prepare`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Insurer-API-Key': insurerApiKey,
-        'X-Insurer-Signer-Address': signerAddress,
+        Authorization: `Bearer ${accessToken}`,
         'Idempotency-Key': idempotencyKey,
       },
       body: JSON.stringify(payload),
@@ -723,7 +812,7 @@ export async function prepareGaslessClaim(
 }
 
 /**
- * Persists the insurer's verified wallet signature for asynchronous relaying.
+ * Persists the claimant submitter's verified signature for asynchronous relay.
  *
  * A successful response means the authorization is durable, not necessarily
  * that an Ethereum transaction has already been signed or broadcast.
@@ -731,10 +820,10 @@ export async function prepareGaslessClaim(
 export async function authorizeGaslessClaim(
   submissionId: string,
   signature: string,
-  insurerApiKey: string,
+  accessToken: string,
   signal?: AbortSignal,
 ): Promise<GaslessSubmission> {
-  // This endpoint records an insurer signature; it does not broadcast. Durable
+  // This endpoint records a submitter signature; it does not broadcast. Durable
   // authorization lets the isolated relayer safely continue after HTTP/browser
   // failure without receiving another signature.
   let response: Response
@@ -745,7 +834,7 @@ export async function authorizeGaslessClaim(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Insurer-API-Key': insurerApiKey,
+          Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({ signature }),
         signal,
@@ -753,7 +842,7 @@ export async function authorizeGaslessClaim(
     )
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error
-    throw new Error('Could not send the insurer authorization to FastAPI.')
+    throw new Error('Could not send the claimant authorization to FastAPI.')
   }
   const body: unknown = await response.json().catch(() => null)
   if (!response.ok) throw new Error(errorMessage(body, response.status))
@@ -766,17 +855,17 @@ export async function authorizeGaslessClaim(
 /** Reads one submission within the credential that originally created it. */
 export async function getGaslessSubmission(
   submissionId: string,
-  insurerApiKey: string,
+  accessToken: string,
   signal?: AbortSignal,
 ): Promise<GaslessSubmission> {
-  // Status is scoped by the same insurer credential used for preparation. A
-  // guessed UUID cannot reveal another insurer's workflow or public receipt.
+  // Status is scoped by the stable subject inside the claimant session. A
+  // guessed UUID cannot reveal another person's workflow or public receipt.
   let response: Response
   try {
     response = await fetch(
       `${API_BASE_URL}/claims/gasless/${encodeURIComponent(submissionId)}`,
       {
-        headers: { 'X-Insurer-API-Key': insurerApiKey },
+        headers: { Authorization: `Bearer ${accessToken}` },
         signal,
       },
     )

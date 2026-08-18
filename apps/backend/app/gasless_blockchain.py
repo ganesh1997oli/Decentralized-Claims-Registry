@@ -3,14 +3,14 @@
 This module deliberately exposes two different blockchain boundaries:
 
 * :class:`GaslessClaimsGateway` is used by FastAPI. It has no private key. It
-  creates the one allowlisted ``submitClaim`` request an insurer may sign and
+  creates the one allowlisted claim request a verified submitter may sign and
   asks the deployed forwarder to verify the resulting EIP-712 signature.
 * :class:`GaslessRelayChain` is used only by the isolated relayer process. It
   owns the gas-paying key, revalidates the request, signs a restricted
   ``ClaimsForwarder.execute`` transaction, and verifies the mined event.
 
 There are also two independent nonces. The *forwarder nonce* belongs to the
-insurer signer and prevents replaying its EIP-712 authorization. The *relayer
+submitter and prevents replaying its EIP-712 authorization. The *relayer
 nonce* belongs to the gas-paying Ethereum account and orders its transactions.
 PostgreSQL persists both because confusing or reconstructing either one during
 a retry could relay the wrong authorization or replace the wrong transaction.
@@ -29,6 +29,15 @@ from web3 import Web3
 from web3.exceptions import TransactionNotFound, Web3RPCError
 
 from apps.backend.app.blockchain import ChainSubmission
+from apps.backend.app.claim_permits import (
+    ClaimPermit,
+    ClaimPermitConfigurationError,
+    ClaimPermitIssuanceError,
+    ClaimPermitIssuer,
+    FileClaimPermitIssuer,
+)
+from apps.backend.app.policy_eligibility import ClaimantPrincipal
+from apps.backend.app.submission_auth import InsurerPrincipal
 from packages.integrations.ethereum import (
     ClaimsDeployment,
     DeploymentConfigurationError,
@@ -44,6 +53,11 @@ from packages.integrations.postgres import (
 
 FORWARDER_NAME = "ClaimsRegistryForwarder"
 FORWARDER_VERSION = "1"
+DEFAULT_FORWARD_GAS = 400_000
+MAX_FORWARD_GAS = 500_000
+DEFAULT_RELAY_TRANSACTION_GAS = 600_000
+MAX_RELAY_TRANSACTION_GAS = 750_000
+RELAY_ESTIMATE_BUFFER_PERCENT = 120
 
 
 class GaslessBlockchainError(RuntimeError):
@@ -77,7 +91,7 @@ def _hex(value: Any) -> str:
 
 @dataclass(frozen=True)
 class PreparedForwardRequest:
-    """The exact request an insurer signs and the forwarder later executes.
+    """The exact request a submitter signs and the forwarder later executes.
 
     Instances are immutable because every field contributes to the signature.
     After preparation, changing even the gas allowance or deadline would make
@@ -97,7 +111,7 @@ class PreparedForwardRequest:
 
         OpenZeppelin's forwarder reads the current nonce from its own storage,
         so the execute tuple does not repeat ``nonce``. Every other field is the
-        exact value covered by the insurer's EIP-712 signature.
+        exact value covered by the submitter's EIP-712 signature.
         """
 
         return {
@@ -193,8 +207,8 @@ class GaslessClaimsGateway:
 
     This is the safe blockchain adapter for the HTTP process. Its interface is
     intentionally narrower than Web3: callers provide claim content and an
-    insurer address, while this class fixes the contract, function, ETH value,
-    gas allowance, signature lifetime, and EIP-712 domain.
+    verified principal and claim anchor, while this class fixes the contract,
+    function, ETH value, gas allowance, signature lifetime, and EIP-712 domain.
     """
 
     def __init__(
@@ -204,8 +218,9 @@ class GaslessClaimsGateway:
         deployment: ClaimsDeployment,
         forward_gas: int,
         signature_ttl_seconds: int,
+        permit_issuer: ClaimPermitIssuer | None = None,
     ) -> None:
-        """Connect to and validate the keyless preparation dependencies.
+        """Connect to and validate transaction-keyless preparation dependencies.
 
         Deployment validation checks the configured chain, bytecode, registry
         ABI, forwarder ABI, and trusted-forwarder relationship. The hard caps
@@ -221,7 +236,7 @@ class GaslessClaimsGateway:
             self.forwarder = connect_claims_forwarder(self.w3, deployment)
         except (DeploymentConfigurationError, DeploymentValidationError) as exc:
             raise GaslessBlockchainError(str(exc)) from exc
-        if forward_gas > 500_000:
+        if forward_gas > MAX_FORWARD_GAS:
             raise GaslessBlockchainError(
                 "GASLESS_FORWARD_GAS cannot exceed the 500000 sponsorship cap"
             )
@@ -231,6 +246,7 @@ class GaslessClaimsGateway:
             )
         self.forward_gas = forward_gas
         self.signature_ttl_seconds = signature_ttl_seconds
+        self.permit_issuer = permit_issuer
 
     @classmethod
     def from_mapping(cls, settings: Mapping[str, str]) -> GaslessClaimsGateway:
@@ -245,23 +261,45 @@ class GaslessClaimsGateway:
             deployment = load_claims_deployment(settings)
         except DeploymentConfigurationError as exc:
             raise GaslessBlockchainError(str(exc)) from exc
+        try:
+            permit_issuer = (
+                FileClaimPermitIssuer.from_mapping(
+                    settings,
+                    chain_id=deployment.chain_id,
+                    registry_address=deployment.address,
+                )
+                if settings.get("CLAIM_PERMIT_ISSUERS_JSON", "").strip()
+                else None
+            )
+        except ClaimPermitConfigurationError as exc:
+            raise GaslessBlockchainError(str(exc)) from exc
+        if permit_issuer is not None:
+            try:
+                deployment.require_public_intake()
+            except DeploymentConfigurationError as exc:
+                raise GaslessBlockchainError(str(exc)) from exc
         return cls(
             rpc_url=rpc_url,
             deployment=deployment,
-            forward_gas=_positive_int(settings, "GASLESS_FORWARD_GAS", 250_000),
+            forward_gas=_positive_int(
+                settings,
+                "GASLESS_FORWARD_GAS",
+                DEFAULT_FORWARD_GAS,
+            ),
             signature_ttl_seconds=_positive_int(
                 settings, "GASLESS_SIGNATURE_TTL_SECONDS", 600
             ),
+            permit_issuer=permit_issuer,
         )
 
     @classmethod
     def from_env(cls) -> GaslessClaimsGateway:
-        """Construct the keyless gateway from the current process environment."""
+        """Construct the transaction-keyless gateway from process configuration."""
 
         return cls.from_mapping(os.environ)
 
     def validate_signer(self, signer_address: str) -> str:
-        """Verify the authenticated insurer wallet holds the on-chain role."""
+        """Verify a legacy authenticated insurer wallet still holds its role."""
 
         signer = Web3.to_checksum_address(signer_address)
         try:
@@ -277,14 +315,87 @@ class GaslessClaimsGateway:
             ) from exc
         return signer
 
+    def permit_issuer_address(self, principal: ClaimantPrincipal) -> str:
+        """Resolve and validate the least-privilege issuer for a public claim."""
+
+        return self.validate_public_intake_configuration(
+            principal.insurer_id,
+            principal.insurer_address,
+        )
+
+    def validate_public_intake_configuration(
+        self,
+        insurer_id: str,
+        insurer_address: str,
+    ) -> str:
+        """Verify one configured insurer and its issuer against the live registry."""
+
+        if self.permit_issuer is None:
+            raise GaslessBlockchainError(
+                "Public claim permit issuance is not configured"
+            )
+        try:
+            issuer_address = self.permit_issuer.issuer_address_for(
+                insurer_id
+            )
+            if not self.registry.functions.isSubmitter(
+                insurer_address
+            ).call():
+                raise GaslessBlockchainError(
+                    "The verified policy insurer is not authorized on-chain"
+                )
+            if not self.registry.functions.isPermitIssuerFor(
+                issuer_address,
+                insurer_address,
+            ).call():
+                raise GaslessBlockchainError(
+                    "The configured permit issuer is not scoped to the policy insurer"
+                )
+            return Web3.to_checksum_address(issuer_address)
+        except GaslessBlockchainError:
+            raise
+        except (ClaimPermitIssuanceError, ValueError) as exc:
+            raise GaslessBlockchainError(str(exc)) from exc
+        except Exception as exc:
+            raise GaslessBlockchainError(
+                "Could not verify the public claim permit roles"
+            ) from exc
+
+    def validate_principal(
+        self,
+        principal: InsurerPrincipal | ClaimantPrincipal,
+    ) -> str:
+        """Validate the wallet that will own the forwarder nonce.
+
+        Legacy insurer submissions still require `SUBMITTER_ROLE`. Public
+        claimants require no permanent role; their exact operation is protected
+        by the independently validated insurer permit.
+        """
+
+        if isinstance(principal, ClaimantPrincipal):
+            try:
+                signer = Web3.to_checksum_address(principal.submitter_address)
+                Web3.to_checksum_address(principal.claimant_address)
+                Web3.to_checksum_address(principal.insurer_address)
+            except ValueError as exc:
+                raise GaslessBlockchainError(
+                    "The verified public claim contains an invalid party address"
+                ) from exc
+            if int(signer, 16) == 0:
+                raise GaslessBlockchainError("The public claim submitter cannot be zero")
+            self.permit_issuer_address(principal)
+            return signer
+        return self.validate_signer(principal.signer_address)
+
     def prepare_request(
         self,
         *,
-        signer_address: str,
+        principal: InsurerPrincipal | ClaimantPrincipal,
         claim_hash: bytes,
         data_pointer: str,
+        permit_id: str | None = None,
     ) -> PreparedForwardRequest:
-        """Create the only forward request the API permits an insurer to sign.
+        """Create the only forward request the authenticated principal may sign.
 
         The server chooses the registry target, zero ETH value, function
         selector, calldata, gas allowance, current forwarder nonce, and short
@@ -292,18 +403,54 @@ class GaslessClaimsGateway:
         into a general-purpose transaction sponsor.
         """
 
-        signer = self.validate_signer(signer_address)
+        signer = self.validate_principal(principal)
         try:
             nonce = int(self.forwarder.functions.nonces(signer).call())
             latest = self.w3.eth.get_block("latest")
             deadline = int(latest["timestamp"]) + self.signature_ttl_seconds
-            data = self.registry.encode_abi(
-                "submitClaim",
-                args=[claim_hash, data_pointer],
-            )
+            if isinstance(principal, ClaimantPrincipal):
+                if permit_id is None:
+                    raise GaslessBlockchainError(
+                        "Public claim preparation requires a one-time permit ID"
+                    )
+                if self.permit_issuer is None:
+                    raise GaslessBlockchainError(
+                        "Public claim permit issuance is not configured"
+                    )
+                permit = ClaimPermit(
+                    claimant=Web3.to_checksum_address(principal.claimant_address),
+                    submitter=signer,
+                    insurer=Web3.to_checksum_address(principal.insurer_address),
+                    claimant_commitment=principal.claimant_commitment,
+                    claim_hash=_hex(HexBytes(claim_hash)),
+                    data_pointer_hash=_hex(Web3.keccak(text=data_pointer)),
+                    permit_id=permit_id,
+                    deadline=deadline,
+                )
+                signed_permit = self.permit_issuer.issue(
+                    principal.insurer_id,
+                    permit,
+                )
+                data = self.registry.encode_abi(
+                    "submitClaimWithPermit",
+                    args=[
+                        permit.message(),
+                        data_pointer,
+                        signed_permit.signature,
+                    ],
+                )
+            else:
+                data = self.registry.encode_abi(
+                    "submitClaim",
+                    args=[claim_hash, data_pointer],
+                )
+        except GaslessBlockchainError:
+            raise
+        except ClaimPermitIssuanceError as exc:
+            raise GaslessBlockchainError(str(exc)) from exc
         except Exception as exc:
             raise GaslessBlockchainError(
-                "Could not prepare the insurer's forward request"
+                "Could not prepare the claim submitter's forward request"
             ) from exc
         return PreparedForwardRequest(
             from_address=signer,
@@ -334,7 +481,7 @@ class GaslessClaimsGateway:
             ).call()
         except Exception as exc:
             raise GaslessBlockchainError(
-                "Could not verify the insurer's gasless signature"
+                "Could not verify the submitter's gasless signature"
             ) from exc
         if not valid:
             raise GaslessBlockchainError(
@@ -347,7 +494,7 @@ class GaslessRelayChain(GaslessClaimsGateway):
 
     The relayer key pays network fees but has no registry role. Consequently a
     leaked payer key cannot submit a claim by itself: the forwarder still needs
-    a current insurer signature over the exact allowlisted calldata.
+    a current submitter signature over the exact allowlisted calldata.
     """
 
     def __init__(
@@ -374,7 +521,16 @@ class GaslessRelayChain(GaslessClaimsGateway):
             deployment=deployment,
             forward_gas=forward_gas,
             signature_ttl_seconds=signature_ttl_seconds,
+            permit_issuer=None,
         )
+        if max_transaction_gas < forward_gas:
+            raise GaslessBlockchainError(
+                "GASLESS_MAX_TRANSACTION_GAS must cover GASLESS_FORWARD_GAS"
+            )
+        if max_transaction_gas > MAX_RELAY_TRANSACTION_GAS:
+            raise GaslessBlockchainError(
+                "GASLESS_MAX_TRANSACTION_GAS cannot exceed the 750000 relay cap"
+            )
         try:
             self.account = self.w3.eth.account.from_key(private_key)
         except Exception as exc:
@@ -405,7 +561,11 @@ class GaslessRelayChain(GaslessClaimsGateway):
             deployment = load_claims_deployment(settings)
         except DeploymentConfigurationError as exc:
             raise GaslessBlockchainError(str(exc)) from exc
-        forward_gas = _positive_int(settings, "GASLESS_FORWARD_GAS", 250_000)
+        forward_gas = _positive_int(
+            settings,
+            "GASLESS_FORWARD_GAS",
+            DEFAULT_FORWARD_GAS,
+        )
         signature_ttl_seconds = _positive_int(
             settings, "GASLESS_SIGNATURE_TTL_SECONDS", 600
         )
@@ -441,7 +601,9 @@ class GaslessRelayChain(GaslessClaimsGateway):
             forward_gas=forward_gas,
             signature_ttl_seconds=signature_ttl_seconds,
             max_transaction_gas=_positive_int(
-                settings, "GASLESS_MAX_TRANSACTION_GAS", 500_000
+                settings,
+                "GASLESS_MAX_TRANSACTION_GAS",
+                DEFAULT_RELAY_TRANSACTION_GAS,
             ),
             max_fee_per_gas_wei=Web3.to_wei(
                 _positive_int(settings, "GASLESS_MAX_FEE_GWEI", 100), "gwei"
@@ -473,6 +635,10 @@ class GaslessRelayChain(GaslessClaimsGateway):
                 == address
                 or self.registry.functions.isSubmitter(address).call()
                 or self.registry.functions.isAssessor(address).call()
+                or self.registry.functions.hasRole(
+                    self.registry.functions.PERMIT_ISSUER_ROLE().call(),
+                    address,
+                ).call()
             )
         except Exception as exc:
             raise GaslessBlockchainError(
@@ -480,7 +646,7 @@ class GaslessRelayChain(GaslessClaimsGateway):
             ) from exc
         if privileged:
             raise GaslessBlockchainError(
-                "The relayer account must not be an admin, submitter, or assessor"
+                "The relayer account must not hold an administrative or business role"
             )
 
     def pending_nonce(self) -> int:
@@ -568,7 +734,7 @@ class GaslessRelayChain(GaslessClaimsGateway):
 
         if not record.insurer_signature:
             raise GaslessBlockchainError(
-                "Authorized submission has no insurer signature"
+                "Authorized submission has no submitter signature"
             )
         request = PreparedForwardRequest.from_record(record)
         if (
@@ -592,7 +758,9 @@ class GaslessRelayChain(GaslessClaimsGateway):
             estimate = int(
                 execute.estimate_gas({"from": self.account.address, "value": 0})
             )
-            transaction_gas = (estimate * 120 + 99) // 100
+            transaction_gas = (
+                estimate * RELAY_ESTIMATE_BUFFER_PERCENT + 99
+            ) // 100
             if transaction_gas > self.max_transaction_gas:
                 raise GaslessBlockchainError(
                     "Relay transaction exceeds the configured gas cap"
@@ -719,9 +887,10 @@ class GaslessRelayChain(GaslessClaimsGateway):
         """Convert a successful, semantically matching receipt into a result.
 
         Transaction success alone is insufficient: exactly one
-        ``ClaimSubmitted`` event must name the authorized insurer, claim hash,
-        and IPFS pointer. This prevents unrelated or malformed receipts from
-        advancing the durable record to ``confirmed``.
+        ``ClaimSubmitted`` event must name the authorized claimant, claim hash,
+        and IPFS pointer. Public submissions must also emit one matching party
+        event, so a receipt cannot silently swap the insurer, representative,
+        claimant commitment, one-time permit, or permit issuer.
         """
 
         if receipt["status"] != 1:
@@ -733,13 +902,40 @@ class GaslessRelayChain(GaslessClaimsGateway):
             )
         event = events[0]["args"]
         if (
-            event["claimant"].lower() != record.signer_address.lower()
+            event["claimant"].lower()
+            != (record.claimant_address or record.signer_address).lower()
             or _hex(event["claimHash"]).lower() != (record.claim_hash or "").lower()
             or event["dataPointer"] != record.data_pointer
         ):
             raise GaslessBlockchainError(
                 "ClaimSubmitted event does not match the authorized submission"
             )
+        if record.submission_kind == "public":
+            party_events = self.registry.events.ClaimPartiesRecorded().process_receipt(
+                receipt
+            )
+            if len(party_events) != 1:
+                raise GaslessBlockchainError(
+                    "Public relay did not emit exactly one ClaimPartiesRecorded event"
+                )
+            parties = party_events[0]["args"]
+            expected_permit_id = _hex(
+                Web3.keccak(text=f"claim-permit:{record.submission_id}")
+            )
+            if (
+                int(parties["claimId"]) != int(event["claimId"])
+                or parties["insurer"].lower()
+                != (record.insurer_address or "").lower()
+                or parties["submittedBy"].lower() != record.signer_address.lower()
+                or _hex(parties["claimantCommitment"]).lower()
+                != (record.claimant_commitment or "").lower()
+                or _hex(parties["permitId"]).lower() != expected_permit_id.lower()
+                or parties["permitIssuer"].lower()
+                != (record.permit_issuer_address or "").lower()
+            ):
+                raise GaslessBlockchainError(
+                    "ClaimPartiesRecorded event does not match the authorized submission"
+                )
         return ChainSubmission(
             claim_id=int(event["claimId"]),
             transaction_hash=_hex(receipt["transactionHash"]),

@@ -21,7 +21,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.security import APIKeyHeader
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from apps.backend.app.assessor_outcomes import (
     AssessorOutcomeAuthenticationError,
@@ -29,9 +29,17 @@ from apps.backend.app.assessor_outcomes import (
     AssessorOutcomeConfigurationError,
     AssessorPrincipal,
 )
+from apps.backend.app.claimant_auth import (
+    ClaimantAuthConfigurationError,
+    ClaimantAuthenticationError,
+    ClaimantAuthenticationRateLimitError,
+    ClaimantSession,
+    ClaimantSessionManager,
+)
 from apps.backend.app.gasless_service import (
     GaslessClaimSubmissionService,
     GaslessSubmissionAccessError,
+    GaslessSubmissionEligibilityError,
     GaslessSubmissionRateLimitError,
     GaslessSubmissionServiceError,
     GaslessSubmissionStateError,
@@ -50,6 +58,10 @@ from apps.backend.app.models import (
     AssessorOutcomeRequest,
     AssessorOutcomeResponse,
     AssessorSessionResponse,
+    ClaimantChallengeRequest,
+    ClaimantChallengeResponse,
+    ClaimantSessionRequest,
+    ClaimantSessionResponse,
     ClaimAssessmentResponse,
     ClaimIndexEventPageResponse,
     ClaimPageResponse,
@@ -63,18 +75,14 @@ from apps.backend.app.models import (
     IndexerOperationsResponse,
     ReadinessResponse,
 )
+from apps.backend.app.policy_eligibility import PolicyEligibilityConfigurationError
 from apps.backend.app.service import (
     ClaimQueryService,
     ClaimQueryServiceError,
 )
 from apps.backend.app.submission_auth import (
     ClaimRequestSizeLimitMiddleware,
-    InsurerPrincipal,
     SubmissionAuthConfigurationError,
-    SubmissionAuthenticationError,
-    SubmissionAuthorizationError,
-    SubmissionBoundary,
-    SubmissionRateLimitError,
 )
 from packages.integrations.ethereum import (
     ClaimsDeployment,
@@ -89,10 +97,6 @@ from packages.integrations.postgres import (
 from packages.observability import configure_logging, get_event_logger
 
 logger = get_event_logger(__name__)
-insurer_api_key_header = APIKeyHeader(
-    name="X-Insurer-API-Key",
-    auto_error=False,
-)
 indexer_operations_api_key_header = APIKeyHeader(
     name="X-Operations-API-Key",
     auto_error=False,
@@ -101,6 +105,7 @@ assessor_outcome_api_key_header = APIKeyHeader(
     name="X-Assessor-API-Key",
     auto_error=False,
 )
+claimant_bearer = HTTPBearer(auto_error=False)
 
 
 @lru_cache
@@ -120,125 +125,6 @@ def get_active_deployment() -> ClaimsDeployment:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
-
-
-@lru_cache
-def load_submission_boundary() -> SubmissionBoundary:
-    """Load hashed insurer credentials and process-local abuse controls."""
-
-    return SubmissionBoundary.from_env()
-
-
-def get_submission_boundary() -> SubmissionBoundary:
-    """Translate unsafe insurer-auth configuration into service unavailability.
-
-    A missing boundary is a server deployment problem, not a bad caller key, so it
-    returns 503 before request-specific authentication and quota reservation.
-    """
-
-    try:
-        return load_submission_boundary()
-    except SubmissionAuthConfigurationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Insurer authentication is unavailable: {exc}",
-        ) from exc
-
-
-SubmissionBoundaryDependency = Annotated[
-    SubmissionBoundary,
-    Depends(get_submission_boundary),
-]
-
-
-def get_insurer_principal(
-    request: Request,
-    claim: ClaimSubmission,
-    boundary: SubmissionBoundaryDependency,
-    api_key: Annotated[str | None, Security(insurer_api_key_header)],
-    signer_address: Annotated[
-        str,
-        Header(
-            alias="X-Insurer-Signer-Address",
-            pattern=r"^0x[0-9a-fA-F]{40}$",
-        ),
-    ],
-) -> InsurerPrincipal:
-    """Authenticate the insurer and reserve quota before any external write."""
-
-    client_ip = request.client.host if request.client is not None else "unknown"
-    try:
-        principal = boundary.authorize_and_reserve(
-            api_key=api_key,
-            claimed_insurer_id=claim.insurer_id,
-            client_ip=client_ip,
-        )
-    except SubmissionAuthenticationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
-            headers={"WWW-Authenticate": "ApiKey"},
-        ) from exc
-    except SubmissionAuthorizationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(exc),
-        ) from exc
-    except SubmissionRateLimitError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=str(exc),
-            headers={"Retry-After": str(exc.retry_after)},
-        ) from exc
-    if principal.signer_address.lower() != signer_address.lower():
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "The connected wallet does not match the insurer's authorized signer"
-            ),
-        )
-    return principal
-
-
-InsurerPrincipalDependency = Annotated[
-    InsurerPrincipal,
-    Depends(get_insurer_principal),
-]
-
-
-def get_authenticated_insurer_principal(
-    request: Request,
-    boundary: SubmissionBoundaryDependency,
-    api_key: Annotated[str | None, Security(insurer_api_key_header)],
-) -> InsurerPrincipal:
-    """Authenticate idempotent authorize/status operations without new quota."""
-
-    client_ip = request.client.host if request.client is not None else "unknown"
-    try:
-        return boundary.authenticate(api_key=api_key, client_ip=client_ip)
-    except SubmissionAuthenticationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
-            headers={"WWW-Authenticate": "ApiKey"},
-        ) from exc
-    except SubmissionAuthorizationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(exc),
-        ) from exc
-    except SubmissionRateLimitError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=str(exc),
-            headers={"Retry-After": str(exc.retry_after)},
-        ) from exc
-
-
-AuthenticatedInsurerPrincipalDependency = Annotated[
-    InsurerPrincipal,
-    Depends(get_authenticated_insurer_principal),
-]
 
 
 @lru_cache
@@ -297,17 +183,23 @@ AssessorPrincipalDependency = Annotated[
 async def lifespan(_app: FastAPI):
     """Validate critical local configuration before the API accepts traffic.
 
-    Deployment metadata and insurer authentication are deterministic startup
-    prerequisites. Remote dependencies remain readiness checks so a temporary
-    outage does not force a process restart loop.
+    Deployment metadata, claimant authentication, permit issuance, and policy
+    eligibility are deterministic startup prerequisites. Remote dependencies
+    remain readiness checks so a temporary outage does not force a process
+    restart loop.
     """
 
     configure_logging("claims-api")
     # Artifact selection is local and fast. Refuse to start with a missing,
     # legacy, or incompatible contract instead of discovering it on first use.
     deployment = load_active_deployment()
-    deployment.require_gasless()
-    boundary = load_submission_boundary()
+    deployment.require_public_intake()
+    claimant_sessions = load_claimant_session_manager()
+    gasless = GaslessClaimSubmissionService.from_env()
+    if gasless.eligibility is None:
+        raise PolicyEligibilityConfigurationError(
+            "POLICY_ELIGIBILITY_RECORDS_JSON is required for public intake"
+        )
     logger.info(
         "api.deployment_configured",
         deployment_id=deployment.deployment_id,
@@ -315,11 +207,9 @@ async def lifespan(_app: FastAPI):
         contract_address=deployment.address,
     )
     logger.info(
-        "api.submission_boundary_configured",
-        boundary_type=type(boundary).__name__,
-        # This is deliberately the global, non-secret switch only. Credential
-        # exemptions and API-key material must not be disclosed at startup.
-        rate_limit_bypass_enabled=boundary.rate_limit_bypass_enabled,
+        "api.public_intake_configured",
+        authentication_type=type(claimant_sessions).__name__,
+        eligibility_type=type(gasless.eligibility).__name__,
     )
     yield
 
@@ -328,8 +218,8 @@ app = FastAPI(
     title="Decentralized Claims Registry API",
     version="0.1.0",
     description=(
-        "Validate a claim, prepare an insurer-signed ERC-2771 request, and track "
-        "its sponsored Sepolia transaction without holding a submitter key."
+        "Verify a claimant wallet and policy, prepare an insurer-permitted "
+        "ERC-2771 request, and track its sponsored Sepolia transaction."
     ),
     lifespan=lifespan,
 )
@@ -372,9 +262,8 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=[
         "Content-Type",
+        "Authorization",
         "Idempotency-Key",
-        "X-Insurer-API-Key",
-        "X-Insurer-Signer-Address",
         "X-Operations-API-Key",
         "X-Assessor-API-Key",
     ],
@@ -383,7 +272,7 @@ app.add_middleware(
 
 @lru_cache
 def get_gasless_submission_service() -> GaslessClaimSubmissionService:
-    """Create and cache the keyless preparation service for this API process.
+    """Create and cache the transaction-keyless service for this API process.
 
     Construction performs configuration and adapter validation but receives no
     relayer or assessor key. Uvicorn must be restarted after environment changes
@@ -445,6 +334,71 @@ PostgresRepositoriesDependency = Annotated[
 ActiveDeploymentDependency = Annotated[
     ClaimsDeployment,
     Depends(get_active_deployment),
+]
+
+
+@lru_cache
+def load_claimant_session_manager() -> ClaimantSessionManager:
+    """Construct the wallet-session module over the durable challenge store."""
+
+    deployment = load_active_deployment()
+    repositories = PostgresRepositories.from_env()
+    return ClaimantSessionManager.from_env(
+        repositories.claimant_auth_challenges,
+        chain_id=deployment.chain_id,
+    )
+
+
+def get_claimant_session_manager() -> ClaimantSessionManager:
+    """Translate configuration/storage startup failures into safe unavailability."""
+
+    try:
+        return load_claimant_session_manager()
+    except (
+        ClaimantAuthConfigurationError,
+        DeploymentConfigurationError,
+        PostgresConfigurationError,
+        PostgresStorageError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Claimant authentication is unavailable: {exc}",
+        ) from exc
+
+
+ClaimantSessionManagerDependency = Annotated[
+    ClaimantSessionManager,
+    Depends(get_claimant_session_manager),
+]
+
+
+def get_claimant_session(
+    manager: ClaimantSessionManagerDependency,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Security(claimant_bearer),
+    ],
+) -> ClaimantSession:
+    """Authenticate the wallet-backed bearer session used for claim ownership."""
+
+    token = (
+        credentials.credentials
+        if credentials is not None and credentials.scheme.lower() == "bearer"
+        else None
+    )
+    try:
+        return manager.authenticate(token)
+    except ClaimantAuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
+ClaimantSessionDependency = Annotated[
+    ClaimantSession,
+    Depends(get_claimant_session),
 ]
 
 
@@ -573,6 +527,79 @@ def health_ready(
         return body
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=body.model_dump()
+    )
+
+
+@app.post(
+    "/claimant/session/challenge",
+    response_model=ClaimantChallengeResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["claimant"],
+)
+def create_claimant_challenge(
+    request: Request,
+    challenge: ClaimantChallengeRequest,
+    manager: ClaimantSessionManagerDependency,
+) -> ClaimantChallengeResponse:
+    """Issue a short-lived, human-readable wallet ownership challenge."""
+
+    client_ip = request.client.host if request.client is not None else "unknown"
+    try:
+        issued = manager.issue_challenge(
+            challenge.wallet_address,
+            client_ip=client_ip,
+        )
+    except ClaimantAuthenticationRateLimitError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+    except ClaimantAuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except PostgresStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Claimant authentication is temporarily unavailable",
+        ) from exc
+    return ClaimantChallengeResponse(
+        challenge_id=issued.challenge_id,
+        message=issued.message,
+        expires_at=issued.expires_at,
+    )
+
+
+@app.post(
+    "/claimant/session",
+    response_model=ClaimantSessionResponse,
+    tags=["claimant"],
+)
+def create_claimant_session(
+    request: ClaimantSessionRequest,
+    manager: ClaimantSessionManagerDependency,
+) -> ClaimantSessionResponse:
+    """Consume one wallet signature and return a short-lived bearer session."""
+
+    try:
+        issued = manager.create_session(request.challenge_id, request.signature)
+    except ClaimantAuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except PostgresStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Claimant authentication is temporarily unavailable",
+        ) from exc
+    return ClaimantSessionResponse(
+        access_token=issued.access_token,
+        expires_at=issued.expires_at,
+        claimant_address=issued.claimant_address,
     )
 
 
@@ -914,7 +941,8 @@ def legacy_submit_claim() -> None:
         status_code=status.HTTP_410_GONE,
         detail=(
             "Direct server-signed submission is disabled. Use "
-            "/claims/gasless/prepare and authorize the returned EIP-712 request."
+            "a claimant session with /claims/gasless/prepare and authorize the "
+            "returned EIP-712 request."
         ),
     )
 
@@ -951,7 +979,7 @@ def get_gasless_network(
 def prepare_gasless_claim(
     request: Request,
     claim: ClaimSubmission,
-    principal: InsurerPrincipalDependency,
+    claimant: ClaimantSessionDependency,
     service: GaslessSubmissionServiceDependency,
     idempotency_key: Annotated[
         str,
@@ -965,16 +993,17 @@ def prepare_gasless_claim(
 ) -> GaslessSubmissionResponse:
     """Create or replay one durable, wallet-signable claim preparation.
 
-    Authentication binds the header credential and browser wallet; the
-    Idempotency-Key binds network retries to one exact claim payload. A 201 may
-    therefore describe either the newly prepared record or its safe replay.
+    The wallet session identifies the submitter, policy eligibility identifies
+    the claimant and insurer, and the Idempotency-Key binds network retries to
+    one exact claim payload. A 201 may therefore describe either the newly
+    prepared record or its safe replay.
     """
 
     client_ip = request.client.host if request.client is not None else "unknown"
     try:
         return service.prepare(
             claim,
-            principal,
+            claimant,
             idempotency_key=idempotency_key,
             client_ip=client_ip,
         )
@@ -983,6 +1012,11 @@ def prepare_gasless_claim(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=str(exc),
             headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+    except GaslessSubmissionEligibilityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
         ) from exc
     except GaslessSubmissionStateError as exc:
         raise HTTPException(
@@ -1005,10 +1039,10 @@ def prepare_gasless_claim(
 def authorize_gasless_claim(
     submission_id: UUID,
     authorization: GaslessAuthorizationRequest,
-    principal: AuthenticatedInsurerPrincipalDependency,
+    claimant: ClaimantSessionDependency,
     service: GaslessSubmissionServiceDependency,
 ) -> GaslessSubmissionResponse:
-    """Verify insurer intent and expose the durable record to the relayer.
+    """Verify submitter intent and expose the durable record to the relayer.
 
     The response is accepted/queued, not a blockchain receipt. Broadcasting and
     confirmation happen asynchronously in the isolated payer process.
@@ -1018,7 +1052,7 @@ def authorize_gasless_claim(
         return service.authorize(
             submission_id,
             authorization.signature,
-            principal,
+            claimant,
         )
     except GaslessSubmissionAccessError as exc:
         raise HTTPException(
@@ -1044,17 +1078,17 @@ def authorize_gasless_claim(
 )
 def get_gasless_claim_status(
     submission_id: UUID,
-    principal: AuthenticatedInsurerPrincipalDependency,
+    claimant: ClaimantSessionDependency,
     service: GaslessSubmissionServiceDependency,
 ) -> GaslessSubmissionResponse:
-    """Return credential-scoped outbox state until safe confirmation.
+    """Return claimant-scoped outbox state until safe confirmation.
 
     Polling is read-only and safe at browser frequency; it never allocates an
     Ethereum nonce, signs a payer transaction, or performs an RPC write.
     """
 
     try:
-        return service.status(submission_id, principal)
+        return service.status(submission_id, claimant)
     except GaslessSubmissionAccessError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -27,14 +27,15 @@ the real backend and infrastructure boundaries.
 
 ### `duplicate-screening.spec.ts`
 
-Submits a synthetic claim as Harbour Shield and verifies the following browser
-contract:
+Submits a synthetic claim through the public wallet flow and verifies the
+following browser contract:
 
-1. The form sends the selected insurer credential in the
-   `X-Insurer-API-Key` header.
-2. The credential is not copied into the JSON request body.
-3. A completed assessment is rendered as a review-only cross-insurer match.
-4. The browser produces no unexpected console errors.
+1. The form requests and signs a readable claimant authentication challenge.
+2. The short-lived bearer session authorizes preparation and status polling.
+3. The claimant signs the exact EIP-712 forward request without receiving an
+   insurer credential or gas key.
+4. A completed assessment is rendered as a review-only cross-insurer match.
+5. The browser produces no unexpected console errors.
 
 ### `assessment-polling.spec.ts`
 

@@ -1,14 +1,15 @@
-"""Two-stage claim preparation and insurer authorization workflow.
+"""Two-stage public claim preparation and submitter authorization workflow.
 
 The service is the application-level coordinator used by FastAPI. A normal
 submission moves through these durable states::
 
     preparing -> prepared -> authorized -> signed -> broadcast -> confirmed
 
-``prepare`` authenticates the insurer, pins canonical claim bytes to IPFS, and
-returns EIP-712 data for the wallet. ``authorize`` verifies and stores the
-wallet signature. The later states are owned by the separate relayer, so this
-module never holds the payer key or broadcasts an Ethereum transaction.
+``prepare`` verifies claimant policy eligibility, obtains a one-time insurer
+permit, pins canonical claim bytes to IPFS, and returns EIP-712 data for the
+submitter wallet. ``authorize`` verifies and stores that wallet signature. The
+later states are owned by the separate relayer, so this module never holds the
+payer key or broadcasts an Ethereum transaction.
 
 Every externally visible retry is tied to a credential-scoped idempotency key.
 That lets a browser safely repeat an uncertain HTTP request while PostgreSQL
@@ -27,6 +28,7 @@ from uuid import UUID, uuid4
 
 from web3 import Web3
 
+from apps.backend.app.claimant_auth import ClaimantSession
 from apps.backend.app.gasless_blockchain import (
     GaslessBlockchainError,
     GaslessClaimsGateway,
@@ -38,6 +40,12 @@ from apps.backend.app.models import (
     EIP712TypedData,
     GaslessNetworkResponse,
     GaslessSubmissionResponse,
+)
+from apps.backend.app.policy_eligibility import (
+    ClaimantPrincipal,
+    ConfiguredPolicyEligibility,
+    PolicyEligibilityConfigurationError,
+    PolicyEligibilityError,
 )
 from apps.backend.app.service import IPFSStore, canonical_claim_bytes
 from apps.backend.app.submission_auth import (
@@ -66,7 +74,11 @@ class GaslessSubmissionServiceError(RuntimeError):
 
 
 class GaslessSubmissionAccessError(PermissionError):
-    """Raised when an insurer cannot access a submission identifier."""
+    """Raised when a principal cannot access a submission identifier."""
+
+
+class GaslessSubmissionEligibilityError(PermissionError):
+    """Raised when the claimant or incident is not eligible under the policy."""
 
 
 class GaslessSubmissionStateError(RuntimeError):
@@ -84,7 +96,7 @@ class GaslessSubmissionRateLimitError(RuntimeError):
 
 
 class GaslessSubmissionStore(Protocol):
-    """Persistence boundary required by the keyless HTTP workflow.
+    """Persistence boundary required by the transaction-keyless HTTP workflow.
 
     The concrete PostgreSQL adapter owns concurrency and state-transition rules;
     this protocol keeps orchestration independently testable without weakening
@@ -92,7 +104,7 @@ class GaslessSubmissionStore(Protocol):
     """
 
     def begin_preparation(self, **values) -> tuple[GaslessSubmissionRecord, bool]:
-        """Reserve or idempotently return one insurer preparation."""
+        """Reserve or idempotently return one claim preparation."""
 
         ...
 
@@ -114,9 +126,21 @@ class GaslessSubmissionStore(Protocol):
         ...
 
     def authorize(self, submission_id: UUID, **values) -> GaslessSubmissionRecord:
-        """Durably record a verified insurer signature exactly once."""
+        """Durably record a verified submitter signature exactly once."""
 
         ...
+
+
+class SubmissionOwner(Protocol):
+    """Stable ownership values required after claim preparation.
+
+    A bearer token is intentionally absent from this interface. Outbox rows are
+    owned by the stable, keyed subject identifier carried inside the token, so
+    session renewal does not orphan an in-flight sponsored transaction.
+    """
+
+    credential_id: str
+    signer_address: str
 
 
 def _positive_int(settings: Mapping[str, str], name: str, default: int) -> int:
@@ -147,7 +171,7 @@ def _strict_bool(settings: Mapping[str, str], name: str, default: str) -> bool:
 class GaslessClaimSubmissionService:
     """Coordinate IPFS, EIP-712, idempotency, and sponsorship without a payer key.
 
-    The API phase prepares content and validates insurer intent. It never signs
+    The API phase prepares content and validates submitter intent. It never signs
     an Ethereum transaction; the isolated relayer consumes only records that
     reach the durable ``authorized`` state. Methods in this class orchestrate
     adapters, while concurrency, quota counting, and compare-and-set state
@@ -165,6 +189,7 @@ class GaslessClaimSubmissionService:
         insurer_minute_limit: int,
         client_minute_limit: int,
         allow_rate_limit_bypass: bool,
+        eligibility: ConfiguredPolicyEligibility | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         new_submission_id: Callable[[], UUID] = uuid4,
     ) -> None:
@@ -187,6 +212,7 @@ class GaslessClaimSubmissionService:
         self.insurer_minute_limit = insurer_minute_limit
         self.client_minute_limit = client_minute_limit
         self.allow_rate_limit_bypass = allow_rate_limit_bypass
+        self.eligibility = eligibility
         self.clock = clock
         self.new_submission_id = new_submission_id
 
@@ -218,6 +244,11 @@ class GaslessClaimSubmissionService:
                 "PINATA_JWT is required for gasless claim preparation"
             )
         try:
+            eligibility = (
+                ConfiguredPolicyEligibility.from_mapping(settings)
+                if settings.get("POLICY_ELIGIBILITY_RECORDS_JSON", "").strip()
+                else None
+            )
             return cls(
                 ipfs=IPFSClient(
                     pinata_jwt=pinata_jwt,
@@ -232,7 +263,13 @@ class GaslessClaimSubmissionService:
                 authorization=ClaimAuthorizationSigner.from_mapping(settings),
                 fingerprint_key=raw_fingerprint_key.encode("utf-8"),
                 insurer_minute_limit=_positive_int(
-                    settings, "INSURER_RATE_LIMIT_PER_MINUTE", 5
+                    settings,
+                    "CLAIMANT_RATE_LIMIT_PER_MINUTE",
+                    _positive_int(
+                        settings,
+                        "INSURER_RATE_LIMIT_PER_MINUTE",
+                        5,
+                    ),
                 ),
                 client_minute_limit=_positive_int(
                     settings, "IP_RATE_LIMIT_PER_MINUTE", 20
@@ -240,8 +277,14 @@ class GaslessClaimSubmissionService:
                 allow_rate_limit_bypass=_strict_bool(
                     settings, "ALLOW_RATE_LIMIT_BYPASS", "false"
                 ),
+                eligibility=eligibility,
             )
-        except (IPFSError, GaslessBlockchainError, PostgresStorageError) as exc:
+        except (
+            IPFSError,
+            GaslessBlockchainError,
+            PolicyEligibilityConfigurationError,
+            PostgresStorageError,
+        ) as exc:
             raise GaslessSubmissionServiceError(str(exc)) from exc
 
     @classmethod
@@ -280,7 +323,7 @@ class GaslessClaimSubmissionService:
     def prepare(
         self,
         claim: ClaimSubmission,
-        principal: InsurerPrincipal,
+        actor: InsurerPrincipal | ClaimantSession,
         *,
         idempotency_key: str,
         client_ip: str,
@@ -290,9 +333,25 @@ class GaslessClaimSubmissionService:
         ``begin_preparation`` makes the request idempotent and enforces durable
         quotas before a paid Pinata operation. The exact canonical payload is
         uploaded, downloaded, byte-compared, hashed, and encoded into the one
-        forward request the insurer may authorize. A matching retry returns the
+        forward request the verified submitter may authorize. A matching retry returns the
         existing record instead of repeating side effects.
         """
+
+        if isinstance(actor, ClaimantSession):
+            if self.eligibility is None:
+                raise GaslessSubmissionServiceError(
+                    "Public policy eligibility is not configured"
+                )
+            try:
+                principal: InsurerPrincipal | ClaimantPrincipal = (
+                    self.eligibility.verify(claim, actor)
+                )
+            except PolicyEligibilityError as exc:
+                raise GaslessSubmissionEligibilityError(str(exc)) from exc
+        else:
+            # Retained for controlled migration of already-issued insurer
+            # credentials. The public frontend never receives this path.
+            principal = actor
 
         now = self.clock()
         if now.tzinfo is None:
@@ -300,8 +359,14 @@ class GaslessClaimSubmissionService:
                 "Gasless submission clock must be timezone-aware"
             )
         try:
-            signer = self.chain.validate_signer(principal.signer_address)
+            signer = self.chain.validate_principal(principal)
             submission_id = self.new_submission_id()
+            is_public = isinstance(principal, ClaimantPrincipal)
+            permit_issuer_address = (
+                self.chain.permit_issuer_address(principal)
+                if is_public
+                else None
+            )
             record, created = self.store.begin_preparation(
                 submission_id=submission_id,
                 credential_id=principal.credential_id,
@@ -324,6 +389,18 @@ class GaslessClaimSubmissionService:
                     self.allow_rate_limit_bypass and principal.rate_limit_exempt
                 ),
                 now=now,
+                submission_kind="public" if is_public else "insurer",
+                claimant_address=(
+                    principal.claimant_address if is_public else None
+                ),
+                insurer_address=(
+                    principal.insurer_address if is_public else None
+                ),
+                claimant_commitment=(
+                    principal.claimant_commitment if is_public else None
+                ),
+                policy_id=principal.policy_id if is_public else None,
+                permit_issuer_address=permit_issuer_address,
             )
         except GaslessSubmissionLimitError as exc:
             raise GaslessSubmissionRateLimitError(
@@ -350,10 +427,16 @@ class GaslessClaimSubmissionService:
                     "IPFS round-trip returned bytes different from the uploaded claim"
                 )
             claim_hash = Web3.keccak(payload)
+            permit_id = Web3.keccak(
+                text=f"claim-permit:{record.submission_id}"
+            ).hex()
+            if not permit_id.startswith("0x"):
+                permit_id = f"0x{permit_id}"
             request = self.chain.prepare_request(
-                signer_address=signer,
+                principal=principal,
                 claim_hash=claim_hash,
                 data_pointer=data_pointer,
+                permit_id=(permit_id if isinstance(principal, ClaimantPrincipal) else None),
             )
             record = self.store.mark_prepared(
                 record.submission_id,
@@ -392,9 +475,9 @@ class GaslessClaimSubmissionService:
         self,
         submission_id: UUID,
         signature: str,
-        principal: InsurerPrincipal,
+        principal: SubmissionOwner,
     ) -> GaslessSubmissionResponse:
-        """Verify insurer intent and atomically expose the request to the relayer.
+        """Verify submitter intent and atomically expose the request to the relayer.
 
         Credential ownership and signer address are checked before the deployed
         forwarder verifies EIP-712 domain, calldata, nonce, and deadline. Only
@@ -410,7 +493,7 @@ class GaslessClaimSubmissionService:
             )
             if record.signer_address.lower() != principal.signer_address.lower():
                 raise GaslessSubmissionAccessError(
-                    "Gasless submission does not belong to this insurer signer"
+                    "Gasless submission does not belong to this claimant session"
                 )
             if record.state == "prepared":
                 self.chain.verify_signature(record, signature)
@@ -435,7 +518,7 @@ class GaslessClaimSubmissionService:
     def status(
         self,
         submission_id: UUID,
-        principal: InsurerPrincipal,
+        principal: SubmissionOwner,
     ) -> GaslessSubmissionResponse:
         """Return credential-scoped durable progress from PostgreSQL.
 

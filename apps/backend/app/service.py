@@ -24,6 +24,7 @@ from apps.backend.app.models import (
     ClaimSubmission,
     ClaimSubmissionResponse,
 )
+from apps.backend.app.policy_eligibility import ClaimantPrincipal
 from apps.backend.app.submission_auth import (
     ClaimAuthorizationSigner,
     InsurerPrincipal,
@@ -99,7 +100,7 @@ class ClaimsIndexReader(Protocol):
 
 def canonical_claim_bytes(
     claim: ClaimSubmission,
-    principal: InsurerPrincipal,
+    principal: InsurerPrincipal | ClaimantPrincipal,
     authorization: ClaimAuthorizationSigner,
 ) -> bytes:
     """Create the one authorized byte representation used by IPFS and Sepolia.

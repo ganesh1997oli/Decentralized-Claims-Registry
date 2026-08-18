@@ -1,5 +1,5 @@
-// Claim intake keeps the insurer credential in component memory and emits only
-// a server-validated public receipt to the rest of the application.
+// Public intake keeps wallet-session proofs inside the submission coordinator
+// and emits only a server-validated receipt to the rest of the application.
 import {
   useEffect,
   useRef,
@@ -60,14 +60,11 @@ type ClaimFormProps = {
 /**
  * Owns the complete claim-intake workflow.
  *
- * Keeping the credential and validation inside this component gives callers a
+ * Keeping validation and retry identity inside this component gives callers a
  * deliberately narrow interface: they only receive a server-validated receipt.
  */
 export function ClaimForm({ onSubmitted }: ClaimFormProps) {
   const [form, setForm] = useState<FormValues>(initialForm)
-  // Credentials deliberately live in memory only; never move this state into
-  // localStorage, query parameters, analytics, or application logs.
-  const [insurerApiKey, setInsurerApiKey] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [progress, setProgress] = useState<SubmissionProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -99,7 +96,7 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     // Perform fast browser validation before any sponsored/IPFS side effect. The
-    // API repeats authoritative schema, credential, quota, and role validation.
+    // API repeats authoritative schema, policy, quota, and role validation.
     event.preventDefault()
     setError(null)
 
@@ -107,10 +104,6 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
     const policyPremiumUsd = Number(form.policyPremiumUsd)
     const vehicleAge = Number(form.vehicleAge)
 
-    if (insurerApiKey.trim().length < 24) {
-      setError('Enter the API credential issued for the selected insurer.')
-      return
-    }
     if (!Number.isFinite(claimAmountUsd) || claimAmountUsd <= 0) {
       setError('Enter a claim amount greater than $0.00.')
       return
@@ -153,7 +146,6 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
       idempotencyKey.current ??= crypto.randomUUID()
       const receipt = await submitGaslessClaim({
         claim: payload,
-        insurerApiKey: insurerApiKey.trim(),
         idempotencyKey: idempotencyKey.current,
         signal: controller.signal,
         onProgress: setProgress,
@@ -177,10 +169,9 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
   }
 
   function resetForm() {
-    // Reset secrets and retry identity together; neither should leak into the
-    // next synthetic claim prepared from this browser tab.
+    // Rotate retry identity so the next edited claim cannot accidentally resume
+    // an earlier durable submission.
     setForm(initialForm())
-    setInsurerApiKey('')
     setProgress(null)
     setError(null)
     idempotencyKey.current = null
@@ -229,35 +220,9 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
                     ))}
                   </select>
                   <span className="field-help" id="insurer-id-help">
-                    The API credential must belong to this insurer. FastAPI rejects
-                    a user-selected label that does not match the authenticated
-                    principal.
-                  </span>
-                </div>
-
-                <div className="field-group sm:col-span-2">
-                  <label className="field-label" htmlFor="insurer-api-key">
-                    Insurer API credential
-                  </label>
-                  <input
-                    id="insurer-api-key"
-                    className="field-control font-mono"
-                    type="password"
-                    value={insurerApiKey}
-                    onChange={(event) => {
-                      idempotencyKey.current = null
-                      setInsurerApiKey(event.target.value)
-                    }}
-                    required
-                    minLength={24}
-                    maxLength={256}
-                    autoComplete="off"
-                    spellCheck={false}
-                    aria-describedby="insurer-api-key-help"
-                  />
-                  <span className="field-help" id="insurer-api-key-help">
-                    Enter the synthetic insurer credential at runtime. It is sent
-                    only in the request header and is never saved in browser storage.
+                    Select the organization that issued the policy. FastAPI checks
+                    this selection against the verified policy record before it
+                    prepares a sponsored transaction.
                   </span>
                 </div>
 
@@ -478,7 +443,7 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
 
               <div className="rounded-2xl border border-coral/25 bg-coral-pale p-4 text-sm leading-6 text-ink">
                 <strong className="font-bold">Evidence is intentionally disabled.</strong>{' '}
-                This prototype uses public, unencrypted IPFS. Photos and documents
+                This application currently uses public, unencrypted IPFS. Photos and documents
                 will be added only after encrypted storage is implemented.
               </div>
 
@@ -493,8 +458,9 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
 
               <div className="flex flex-col gap-4 border-t border-ink/8 pt-6 sm:flex-row sm:items-center sm:justify-between">
                 <p className="max-w-md text-xs leading-5 text-slate">
-                  Your insurer wallet signs the exact claim request; it never pays gas.
-                  A restricted relayer sponsors only that verified contract call.
+                  Connect your wallet to prove who is submitting. The service verifies
+                  policy eligibility, and your wallet authorizes only the exact claim
+                  call; a restricted relayer pays the network fee.
                 </p>
                 <button
                   type="submit"

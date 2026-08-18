@@ -87,6 +87,8 @@ def test_checked_in_migrations_own_processing_and_index_tables():
         "004",
         "005",
         "006",
+        "007",
+        "008",
     ]
     assert "CREATE TABLE IF NOT EXISTS claim_assessments" in migrations[0].sql
     assert "CREATE TABLE IF NOT EXISTS claim_incident_fingerprints" in migrations[0].sql
@@ -107,6 +109,9 @@ def test_checked_in_migrations_own_processing_and_index_tables():
         "outcome IN ('ConfirmedFraud', 'Legitimate', 'Inconclusive')"
         in migrations[5].sql
     )
+    assert "CREATE TABLE claimant_auth_challenges" in migrations[6].sql
+    assert "claimant_commitment" in migrations[7].sql
+    assert "permit_issuer_address" in migrations[7].sql
 
 
 def test_upgrade_locks_applies_and_records_each_pending_migration():

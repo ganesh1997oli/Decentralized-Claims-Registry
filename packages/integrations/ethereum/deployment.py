@@ -38,6 +38,17 @@ REQUIRED_FUNCTIONS = frozenset(
 )
 REQUIRED_EVENTS = frozenset({"ClaimAssessed", "ClaimSubmitted"})
 GASLESS_REGISTRY_FUNCTIONS = frozenset({"isAssessorFor", "trustedForwarder"})
+PUBLIC_INTAKE_REGISTRY_FUNCTIONS = frozenset(
+    {
+        "PERMIT_ISSUER_ROLE",
+        "claimPermitDigest",
+        "getClaimParties",
+        "isClaimPermitUsed",
+        "isPermitIssuerFor",
+        "submitClaimWithPermit",
+    }
+)
+PUBLIC_INTAKE_REGISTRY_EVENTS = frozenset({"ClaimPartiesRecorded"})
 FORWARDER_REQUIRED_FUNCTIONS = frozenset(
     {"eip712Domain", "execute", "nonces", "verify"}
 )
@@ -69,6 +80,26 @@ class ClaimsDeployment:
 
         return self.forwarder_address is not None and bool(self.forwarder_abi)
 
+    @property
+    def supports_public_intake(self) -> bool:
+        """Return whether the registry implements permit-backed public claims."""
+
+        functions = {
+            str(entry.get("name"))
+            for entry in self.abi
+            if entry.get("type") == "function"
+        }
+        events = {
+            str(entry.get("name"))
+            for entry in self.abi
+            if entry.get("type") == "event"
+        }
+        return (
+            self.supports_gasless
+            and PUBLIC_INTAKE_REGISTRY_FUNCTIONS <= functions
+            and PUBLIC_INTAKE_REGISTRY_EVENTS <= events
+        )
+
     def require_gasless(self) -> None:
         """Fail closed before sponsorship when a legacy deployment is selected."""
 
@@ -76,6 +107,17 @@ class ClaimsDeployment:
             raise DeploymentConfigurationError(
                 f"Deployment {self.deployment_id!r} does not include the "
                 "ERC-2771 ClaimsForwarder; deploy and select the gasless module"
+            )
+
+    def require_public_intake(self) -> None:
+        """Fail closed when a writer selects a pre-permit deployment."""
+
+        self.require_gasless()
+        if not self.supports_public_intake:
+            raise DeploymentConfigurationError(
+                f"Deployment {self.deployment_id!r} does not implement "
+                "insurer-permitted public claim intake; deploy and select the "
+                "current ClaimsRegistry interface"
             )
 
 
@@ -89,8 +131,9 @@ def load_claims_deployment(
     deployment_id = settings.get("CLAIMS_DEPLOYMENT_ID", "").strip()
     if not deployment_id:
         raise DeploymentConfigurationError(
-            "CLAIMS_DEPLOYMENT_ID is required; use 'sepolia-gasless-v1' for "
-            "sponsored writes or 'sepolia-security-audit-v1' for legacy reads"
+            "CLAIMS_DEPLOYMENT_ID is required; select a deployment containing "
+            "the public-intake registry and forwarder for writes, or "
+            "'sepolia-security-audit-v1' for legacy reads"
         )
     if not _SAFE_DEPLOYMENT_ID.fullmatch(deployment_id) or ".." in deployment_id:
         raise DeploymentConfigurationError(

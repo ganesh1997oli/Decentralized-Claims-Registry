@@ -1,4 +1,4 @@
-// Persist only the latest public receipt. Claim fields and insurer credentials
+// Persist only the latest public receipt. Claim fields and claimant sessions
 // intentionally never cross this browser-storage boundary.
 import { isClaimReceipt, type ClaimReceipt } from './api.ts'
 

@@ -23,8 +23,22 @@ GaslessSubmissionState = Literal[
 
 
 @dataclass(frozen=True)
+class ClaimantAuthChallengeRecord:
+    """One short-lived, single-use wallet-authentication challenge."""
+
+    challenge_id: UUID
+    wallet_address: str
+    nonce: str
+    message: str
+    client_fingerprint: str
+    issued_at: datetime
+    expires_at: datetime
+    consumed_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class GaslessSubmissionRecord:
-    """Durable state of one idempotent insurer-authorized relay request.
+    """Durable state of one idempotent, wallet-authorized relay request.
 
     One record is the current view of the state machine. Raw transaction fields
     appear only after signing, receipt fields only after confirmation, and
@@ -42,6 +56,12 @@ class GaslessSubmissionRecord:
     idempotency_key_hash: str
     client_fingerprint: str
     state: GaslessSubmissionState
+    submission_kind: Literal["insurer", "public"] = "insurer"
+    claimant_address: str | None = None
+    insurer_address: str | None = None
+    claimant_commitment: str | None = None
+    policy_id: str | None = None
+    permit_issuer_address: str | None = None
     request_fingerprint: str = ""
     claim_hash: str | None = None
     data_pointer: str | None = None
@@ -98,6 +118,12 @@ def gasless_submission_from_row(
         idempotency_key_hash=str(row["idempotency_key_hash"]),
         client_fingerprint=str(row["client_fingerprint"]),
         state=str(row["state"]),  # type: ignore[arg-type]
+        submission_kind=str(row.get("submission_kind", "insurer")),  # type: ignore[arg-type]
+        claimant_address=row.get("claimant_address"),
+        insurer_address=row.get("insurer_address"),
+        claimant_commitment=row.get("claimant_commitment"),
+        policy_id=row.get("policy_id"),
+        permit_issuer_address=row.get("permit_issuer_address"),
         request_fingerprint=str(row["request_fingerprint"]),
         claim_hash=row.get("claim_hash"),
         data_pointer=row.get("data_pointer"),

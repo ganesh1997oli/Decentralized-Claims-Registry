@@ -14,6 +14,7 @@ export async function installMockWallet(page: Page): Promise<void> {
         request: async ({ method }: { method: string }) => {
           if (method === 'eth_requestAccounts') return [address]
           if (method === 'wallet_switchEthereumChain') return null
+          if (method === 'personal_sign') return walletSignature
           if (method === 'eth_signTypedData_v4') return walletSignature
           throw new Error(`Unexpected wallet method ${method}`)
         },
@@ -21,6 +22,23 @@ export async function installMockWallet(page: Page): Promise<void> {
     },
     { address: GASLESS_SIGNER, walletSignature: signature },
   )
+}
+
+export function claimantChallenge() {
+  return {
+    challenge_id: '22222222-2222-4222-8222-222222222222',
+    message: '127.0.0.1:4173 wants you to verify this claimant session',
+    expires_at: '2030-01-01T00:05:00Z',
+  }
+}
+
+export function claimantSession() {
+  return {
+    access_token: `v1.${'a'.repeat(40)}.${'b'.repeat(43)}`,
+    token_type: 'bearer',
+    expires_at: '2030-01-01T00:15:00Z',
+    claimant_address: GASLESS_SIGNER,
+  }
 }
 
 export function gaslessNetwork() {

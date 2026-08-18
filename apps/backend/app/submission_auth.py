@@ -1,9 +1,10 @@
-"""Authenticate synthetic insurers and attest gateway-authorized claim documents.
+"""Verify gateway attestations and support historical insurer submissions.
 
-The browser supplies an insurer API key, but the application stores only its
-SHA-256 digest.  This module turns that credential into an authoritative
-``InsurerPrincipal``, applies the research gateway's abuse limits, and signs the
-exact claim document that the worker later verifies.
+Schema-v5 claim documents used digest-only insurer API credentials. Those
+classes remain here so existing stored documents can still be verified during
+migration. Public HTTP routes do not accept insurer credentials: they use the
+wallet session and policy-eligibility boundaries in ``claimant_auth`` and
+``policy_eligibility`` before issuing a schema-v6 authorization.
 """
 
 from __future__ import annotations
@@ -23,9 +24,11 @@ from typing import Any
 from web3 import Web3
 
 from apps.backend.app.models import ClaimSubmission, StoredClaimDocument
+from apps.backend.app.policy_eligibility import ClaimantPrincipal
 from packages.observability import get_event_logger
 
 AUTHORIZATION_VERSION = "insurer-principal-wallet-hmac-sha256-v2"
+PUBLIC_AUTHORIZATION_VERSION = "claimant-policy-permit-hmac-sha256-v3"
 SUBMIT_CLAIM_OPERATION = "submit_claim"
 _MINIMUM_API_KEY_LENGTH = 24
 _MINIMUM_AUTHORIZATION_KEY_BYTES = 32
@@ -267,10 +270,10 @@ class SubmissionBoundary:
         self._ip_rate_limit = ip_rate_limit_per_minute
         self._allow_rate_limit_bypass = allow_rate_limit_bypass
         self._clock = clock
-        # The prototype intentionally holds rolling-window and daily counters
-        # in one API process. The lock keeps the check-and-reserve operation
-        # atomic when concurrent requests arrive in that process; it does not
-        # coordinate multiple workers or survive a restart.
+        # These counters protect the historical schema-v5 credential path in a
+        # single process. The lock makes check-and-reserve atomic locally; the
+        # public intake path uses durable PostgreSQL challenge and sponsorship
+        # reservations instead.
         self._lock = threading.Lock()
         self._ip_attempts: dict[str, deque[datetime]] = defaultdict(deque)
         self._insurer_attempts: dict[str, deque[datetime]] = defaultdict(deque)
@@ -284,7 +287,7 @@ class SubmissionBoundary:
 
     @property
     def configured_principals(self) -> tuple[InsurerPrincipal, ...]:
-        """Expose immutable, keyless identities for deployment readiness checks."""
+        """Expose immutable historical identities for migration checks."""
 
         return tuple(credential.principal for credential in self._credentials)
 
@@ -517,7 +520,7 @@ def _canonical_json(document: Mapping[str, Any]) -> bytes:
 
 
 class ClaimAuthorizationSigner:
-    """Sign and verify the insurer identity embedded in an IPFS claim document."""
+    """Attest the parties and eligibility embedded in an IPFS claim document."""
 
     def __init__(self, key: bytes) -> None:
         """Require enough HMAC key material before signing public IPFS bytes."""
@@ -564,12 +567,34 @@ class ClaimAuthorizationSigner:
             },
         }
 
+    @staticmethod
+    def _unsigned_public_document(
+        claim: ClaimSubmission,
+        principal: ClaimantPrincipal,
+    ) -> dict[str, Any]:
+        """Build the schema-v6 document for a policy-eligible public claimant."""
+
+        return {
+            "schemaVersion": 6,
+            **claim.model_dump(by_alias=True, mode="json"),
+            "submissionAuthorization": {
+                "version": PUBLIC_AUTHORIZATION_VERSION,
+                "subjectId": principal.subject_id,
+                "signerAddress": principal.submitter_address,
+                "claimantAddress": principal.claimant_address,
+                "claimantCommitment": principal.claimant_commitment,
+                "insurerId": principal.insurer_id,
+                "insurerAddress": principal.insurer_address,
+                "policyId": principal.policy_id,
+            },
+        }
+
     def authorized_claim_bytes(
         self,
         claim: ClaimSubmission,
-        principal: InsurerPrincipal,
+        principal: InsurerPrincipal | ClaimantPrincipal,
     ) -> bytes:
-        """Bind the authenticated insurer and wallet to canonical claim bytes.
+        """Bind the verified claim parties to canonical claim bytes.
 
         The HMAC is an internal API-to-worker attestation, not the EIP-712 wallet
         authorization. The worker verifies both this identity binding and the
@@ -580,11 +605,14 @@ class ClaimAuthorizationSigner:
             raise SubmissionAuthorizationError(
                 "Claim insurer does not match the authenticated principal"
             )
-        unsigned = self._unsigned_document(
-            claim,
-            credential_id=principal.credential_id,
-            signer_address=principal.signer_address,
-        )
+        if isinstance(principal, ClaimantPrincipal):
+            unsigned = self._unsigned_public_document(claim, principal)
+        else:
+            unsigned = self._unsigned_document(
+                claim,
+                credential_id=principal.credential_id,
+                signer_address=principal.signer_address,
+            )
         signature = hmac.new(self._key, _canonical_json(unsigned), hashlib.sha256)
         authorized = {
             **unsigned,
@@ -595,15 +623,53 @@ class ClaimAuthorizationSigner:
         }
         return _canonical_json(authorized)
 
-    def verify_claim(self, claim: StoredClaimDocument) -> InsurerPrincipal:
-        """Verify the embedded gateway HMAC and recover its insurer principal."""
+    def verify_claim(
+        self,
+        claim: StoredClaimDocument,
+    ) -> InsurerPrincipal | ClaimantPrincipal:
+        """Verify the gateway HMAC and recover its versioned claim parties."""
 
         authorization = claim.submission_authorization
-        unsigned = self._unsigned_document(
-            claim,
-            credential_id=authorization.credential_id,
-            signer_address=authorization.signer_address,
-        )
+        if authorization.version == PUBLIC_AUTHORIZATION_VERSION:
+            assert authorization.subject_id is not None
+            assert authorization.claimant_address is not None
+            assert authorization.claimant_commitment is not None
+            assert authorization.insurer_id is not None
+            assert authorization.insurer_address is not None
+            assert authorization.policy_id is not None
+            principal: InsurerPrincipal | ClaimantPrincipal = ClaimantPrincipal(
+                subject_id=authorization.subject_id,
+                claimant_address=Web3.to_checksum_address(
+                    authorization.claimant_address
+                ),
+                submitter_address=Web3.to_checksum_address(
+                    authorization.signer_address
+                ),
+                claimant_commitment=authorization.claimant_commitment,
+                insurer_id=authorization.insurer_id,
+                insurer_address=Web3.to_checksum_address(
+                    authorization.insurer_address
+                ),
+                policy_id=authorization.policy_id,
+                daily_quota=0,
+            )
+            unsigned = self._unsigned_public_document(claim, principal)
+        else:
+            assert authorization.credential_id is not None
+            principal = InsurerPrincipal(
+                insurer_id=claim.insurer_id,
+                credential_id=authorization.credential_id,
+                signer_address=Web3.to_checksum_address(
+                    authorization.signer_address
+                ),
+                permitted_operations=frozenset({SUBMIT_CLAIM_OPERATION}),
+                daily_quota=0,
+            )
+            unsigned = self._unsigned_document(
+                claim,
+                credential_id=authorization.credential_id,
+                signer_address=authorization.signer_address,
+            )
         expected = hmac.new(
             self._key,
             _canonical_json(unsigned),
@@ -611,15 +677,13 @@ class ClaimAuthorizationSigner:
         ).hexdigest()
         if not hmac.compare_digest(expected, authorization.signature):
             raise ClaimAuthorizationVerificationError(
-                "Claim document was not authorized by the insurer gateway"
+                "Claim document was not authorized by the claims gateway"
             )
-        return InsurerPrincipal(
-            insurer_id=claim.insurer_id,
-            credential_id=authorization.credential_id,
-            signer_address=Web3.to_checksum_address(authorization.signer_address),
-            permitted_operations=frozenset({SUBMIT_CLAIM_OPERATION}),
-            daily_quota=0,
-        )
+        if not hmac.compare_digest(principal.insurer_id, claim.insurer_id):
+            raise ClaimAuthorizationVerificationError(
+                "Authorized insurer identity does not match the claim"
+            )
+        return principal
 
 
 class ClaimRequestSizeLimitMiddleware:

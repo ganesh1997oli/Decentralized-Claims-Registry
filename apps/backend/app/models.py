@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MotorClaimType = Literal["collision", "theft", "fire", "flood"]
 VehicleType = Literal[
@@ -73,32 +73,140 @@ class ClaimSubmission(BaseModel):
     evidence: list[str] = Field(default_factory=list, max_length=20)
 
 
+class ClaimantChallengeRequest(BaseModel):
+    """Wallet selected by a person starting a public claim session."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    wallet_address: str = Field(
+        pattern=r"^0x[0-9a-fA-F]{40}$",
+        alias="walletAddress",
+    )
+
+
+class ClaimantChallengeResponse(BaseModel):
+    """Human-readable, short-lived message the claimant wallet must sign."""
+
+    challenge_id: UUID
+    message: str
+    expires_at: datetime
+
+
+class ClaimantSessionRequest(BaseModel):
+    """Signature that consumes one previously issued wallet challenge."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_id: UUID
+    signature: str = Field(pattern=r"^0x[0-9a-fA-F]{130}$")
+
+
+class ClaimantSessionResponse(BaseModel):
+    """Short-lived bearer session returned after wallet ownership is proven."""
+
+    access_token: str = Field(min_length=32)
+    token_type: Literal["bearer"] = "bearer"
+    expires_at: datetime
+    claimant_address: str = Field(pattern=r"^0x[0-9a-fA-F]{40}$")
+
+
 class SubmissionAuthorization(BaseModel):
     """Gateway attestation proving which credential authorized a claim."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    version: Literal["insurer-principal-wallet-hmac-sha256-v2"]
-    credential_id: str = Field(
+    version: Literal[
+        "insurer-principal-wallet-hmac-sha256-v2",
+        "claimant-policy-permit-hmac-sha256-v3",
+    ]
+    credential_id: str | None = Field(
+        default=None,
         min_length=1,
         max_length=100,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
         alias="credentialId",
+    )
+    subject_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        alias="subjectId",
     )
     signature: str = Field(pattern=r"^[0-9a-f]{64}$")
     signer_address: str = Field(
         pattern=r"^0x[0-9a-fA-F]{40}$",
         alias="signerAddress",
     )
+    claimant_address: str | None = Field(
+        default=None,
+        pattern=r"^0x[0-9a-fA-F]{40}$",
+        alias="claimantAddress",
+    )
+    claimant_commitment: str | None = Field(
+        default=None,
+        pattern=r"^0x[0-9a-fA-F]{64}$",
+        alias="claimantCommitment",
+    )
+    insurer_id: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=64,
+        pattern=r"^[a-z0-9][a-z0-9-]*[a-z0-9]$",
+        alias="insurerId",
+    )
+    insurer_address: str | None = Field(
+        default=None,
+        pattern=r"^0x[0-9a-fA-F]{40}$",
+        alias="insurerAddress",
+    )
+    policy_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        alias="policyId",
+    )
+
+    @model_validator(mode="after")
+    def validate_versioned_identity(self) -> SubmissionAuthorization:
+        """Require exactly the identity vocabulary declared by the version."""
+
+        public_fields = (
+            self.subject_id,
+            self.claimant_address,
+            self.claimant_commitment,
+            self.insurer_id,
+            self.insurer_address,
+            self.policy_id,
+        )
+        if self.version.endswith("-v2"):
+            if self.credential_id is None or any(value is not None for value in public_fields):
+                raise ValueError("Legacy insurer authorization fields are inconsistent")
+        elif self.credential_id is not None or any(value is None for value in public_fields):
+            raise ValueError("Public claimant authorization fields are incomplete")
+        return self
 
 
 class StoredClaimDocument(ClaimSubmission):
     """The versioned claim document downloaded from IPFS by workers."""
 
-    schema_version: Literal[5] = Field(alias="schemaVersion")
+    schema_version: Literal[5, 6] = Field(alias="schemaVersion")
     submission_authorization: SubmissionAuthorization = Field(
         alias="submissionAuthorization"
     )
+
+    @model_validator(mode="after")
+    def validate_schema_authorization_version(self) -> StoredClaimDocument:
+        if self.schema_version == 5 and not self.submission_authorization.version.endswith(
+            "-v2"
+        ):
+            raise ValueError("Schema version 5 requires insurer authorization v2")
+        if self.schema_version == 6 and not self.submission_authorization.version.endswith(
+            "-v3"
+        ):
+            raise ValueError("Schema version 6 requires public claimant authorization v3")
+        return self
 
 
 class ClaimSubmissionResponse(BaseModel):
@@ -146,7 +254,7 @@ class EIP712DomainData(BaseModel):
 
 
 class EIP712ForwardRequestMessage(BaseModel):
-    """Exact ERC2771Forwarder request values covered by the insurer signature."""
+    """Exact ERC2771Forwarder values covered by the submitter signature."""
 
     from_address: str = Field(
         pattern=r"^0x[0-9a-fA-F]{40}$",
@@ -172,7 +280,7 @@ class EIP712TypedData(BaseModel):
 
 
 class GaslessAuthorizationRequest(BaseModel):
-    """Insurer wallet signature authorizing a prepared forward request."""
+    """Submitter wallet signature authorizing a prepared forward request."""
 
     model_config = ConfigDict(extra="forbid")
 

@@ -1,9 +1,11 @@
 // Browser-side coordinator for a durable sponsored submission. The workflow is
 // intentionally split into prepare -> sign -> authorize -> poll. Retrying an
 // uncertain network request reuses the same server record; it never asks the
-// insurer wallet or the relayer to create an untracked second transaction.
+// claimant wallet or relayer to create an untracked second transaction.
 import {
   authorizeGaslessClaim,
+  createClaimantChallenge,
+  createClaimantSession,
   getGaslessNetwork,
   getGaslessSubmission,
   prepareGaslessClaim,
@@ -14,6 +16,7 @@ import {
 import {
   browserWallet,
   connectWallet,
+  signClaimantChallenge,
   signForwardRequest,
   switchWalletChain,
   type EthereumProvider,
@@ -22,7 +25,8 @@ import {
 export type SubmissionProgress =
   | 'Connecting wallet'
   | 'Switching network'
-  | 'Preparing claim'
+  | 'Verifying wallet ownership'
+  | 'Checking policy eligibility'
   | 'Awaiting wallet signature'
   | 'Queued for sponsorship'
   | 'Broadcasting transaction'
@@ -58,7 +62,6 @@ export class GaslessSubmissionTerminalError extends Error {
 
 type SubmitGaslessClaimOptions = {
   claim: ClaimPayload
-  insurerApiKey: string
   idempotencyKey: string
   signal?: AbortSignal
   onProgress?: (progress: SubmissionProgress) => void
@@ -92,7 +95,7 @@ function assertPreparedRequest(
     submission.signer_address.toLowerCase() !== signer.toLowerCase() ||
     typedData.message.from.toLowerCase() !== signer.toLowerCase()
   ) {
-    throw new Error('The connected wallet does not match the insurer credential.')
+    throw new Error('The prepared request does not match the verified wallet.')
   }
   if (
     typedData.domain.chainId !== submission.chain_id ||
@@ -127,7 +130,7 @@ function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
 
 /** Maps internal outbox states to the smaller progress vocabulary shown in UI. */
 function progressFor(submission: GaslessSubmission): SubmissionProgress {
-  // Collapse durable backend states into language meaningful to an insurer;
+  // Collapse durable backend states into language meaningful to a claimant;
   // detailed state and error codes remain available in API responses and logs.
   if (submission.state === 'authorized') return 'Queued for sponsorship'
   if (submission.state === 'signed') return 'Broadcasting transaction'
@@ -143,7 +146,7 @@ function progressFor(submission: GaslessSubmission): SubmissionProgress {
  */
 async function pollUntilConfirmed(
   initial: GaslessSubmission,
-  insurerApiKey: string,
+  accessToken: string,
   signal: AbortSignal | undefined,
   onProgress: ((progress: SubmissionProgress) => void) | undefined,
 ): Promise<ClaimReceipt> {
@@ -169,7 +172,7 @@ async function pollUntilConfirmed(
     try {
       submission = await getGaslessSubmission(
         submission.submission_id,
-        insurerApiKey,
+        accessToken,
         signal,
       )
       transientFailures = 0
@@ -188,22 +191,21 @@ async function pollUntilConfirmed(
 /**
  * Executes the complete non-custodial, gas-sponsored browser workflow.
  *
- * The insurer credential authenticates the organization, while the connected
- * wallet proves authorization over the exact EIP-712 request. FastAPI stores
- * that proof durably, and the separate relayer pays for and monitors the chain
- * transaction. The returned promise resolves only after confirmation.
+ * A readable one-time signature proves wallet ownership. FastAPI verifies the
+ * policy, obtains an insurer-scoped permit for the exact claim, and returns the
+ * only EIP-712 call that wallet may authorize. The separate relayer then pays
+ * for and monitors the transaction.
  */
 export async function submitGaslessClaim({
   claim,
-  insurerApiKey,
   idempotencyKey,
   signal,
   onProgress,
   provider = browserWallet(),
 }: SubmitGaslessClaimOptions): Promise<ClaimReceipt> {
-  // Orchestrate discovery -> preparation -> wallet authorization -> polling.
-  // The browser never receives the relayer key, and FastAPI never receives the
-  // insurer wallet key. Each side sees only the data required for its role.
+  // Orchestrate discovery -> claimant session -> eligibility -> authorization
+  // -> polling. FastAPI receives cryptographic proofs, never a private key, and
+  // the browser never receives permit-issuer or relayer signing keys.
   onProgress?.('Connecting wallet')
   const network = await getGaslessNetwork(signal)
   const signer = await connectWallet(provider)
@@ -211,11 +213,26 @@ export async function submitGaslessClaim({
   onProgress?.('Switching network')
   await switchWalletChain(network.chain_id, provider)
 
-  onProgress?.('Preparing claim')
+  onProgress?.('Verifying wallet ownership')
+  const challenge = await createClaimantChallenge(signer, signal)
+  const challengeSignature = await signClaimantChallenge(
+    signer,
+    challenge.message,
+    provider,
+  )
+  const session = await createClaimantSession(
+    challenge.challenge_id,
+    challengeSignature,
+    signal,
+  )
+  if (session.claimant_address.toLowerCase() !== signer.toLowerCase()) {
+    throw new Error('The claimant session does not match the connected wallet.')
+  }
+
+  onProgress?.('Checking policy eligibility')
   let prepared = await prepareGaslessClaim(
     claim,
-    insurerApiKey,
-    signer,
+    session.access_token,
     idempotencyKey,
     signal,
   )
@@ -233,12 +250,17 @@ export async function submitGaslessClaim({
     await wait(Math.min(10_000, Math.max(500, prepared.poll_after_ms)), signal)
     prepared = await getGaslessSubmission(
       prepared.submission_id,
-      insurerApiKey,
+      session.access_token,
       signal,
     )
   }
   if (prepared.state !== 'prepared') {
-    return pollUntilConfirmed(prepared, insurerApiKey, signal, onProgress)
+    return pollUntilConfirmed(
+      prepared,
+      session.access_token,
+      signal,
+      onProgress,
+    )
   }
   assertPreparedRequest(prepared, signer)
 
@@ -250,19 +272,24 @@ export async function submitGaslessClaim({
     authorized = await authorizeGaslessClaim(
       prepared.submission_id,
       signature,
-      insurerApiKey,
+      session.access_token,
       signal,
     )
   } catch (authorizationError) {
     // The POST may have reached FastAPI before the connection failed. Read the
-    // durable state before asking the insurer to sign or submit anything again.
+    // durable state before asking the claimant to sign or submit anything again.
     const recovered = await getGaslessSubmission(
       prepared.submission_id,
-      insurerApiKey,
+      session.access_token,
       signal,
     )
     if (recovered.state === 'prepared') throw authorizationError
     authorized = recovered
   }
-  return pollUntilConfirmed(authorized, insurerApiKey, signal, onProgress)
+  return pollUntilConfirmed(
+    authorized,
+    session.access_token,
+    signal,
+    onProgress,
+  )
 }

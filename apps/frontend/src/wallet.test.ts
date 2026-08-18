@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { EIP712TypedData } from './api.ts'
 import {
   connectWallet,
+  signClaimantChallenge,
   signForwardRequest,
   switchWalletChain,
   type EthereumProvider,
@@ -37,6 +38,18 @@ function provider(results: unknown[]): EthereumProvider & { request: ReturnType<
 }
 
 describe('browser wallet boundary', () => {
+  it('encodes and signs the exact readable claimant challenge', async () => {
+    const wallet = provider([SIGNATURE])
+
+    await expect(
+      signClaimantChallenge(ADDRESS, 'Verify claim access', wallet),
+    ).resolves.toBe(SIGNATURE)
+    expect(wallet.request).toHaveBeenCalledWith({
+      method: 'personal_sign',
+      params: ['0x56657269667920636c61696d20616363657373', ADDRESS],
+    })
+  })
+
   it('connects, switches to Sepolia, and signs the exact typed data', async () => {
     const wallet = provider([[ADDRESS], null, SIGNATURE])
 

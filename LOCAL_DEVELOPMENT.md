@@ -17,8 +17,8 @@ independent processes:
 | ------------------- | -------------------------------------------------------------- | ---------------- |
 | PostgreSQL          | Durable gasless outbox, index, assessments and checkpoints     | Yes              |
 | Kafka               | Carries verified claim references to the scoring worker        | Yes              |
-| FastAPI             | Authenticates insurers, prepares EIP-712 data and serves reads | Yes              |
-| React/Vite          | Browser UI and insurer-wallet signature flow                   | Yes              |
+| FastAPI             | Verifies claimant sessions/policies, issues permits and prepares EIP-712 data | Yes |
+| React/Vite          | Browser UI and claimant-wallet signature flow                  | Yes              |
 | Gasless relayer     | Pays Sepolia gas for authorized requests                       | Yes              |
 | Blockchain listener | Converts confirmed contract logs into the local index          | Yes              |
 | Scoring worker      | Verifies, enriches and scores claims, then writes assessment   | Yes              |
@@ -28,7 +28,7 @@ relayer, listener, or worker tries to use them.
 
 ```mermaid
 flowchart LR
-    Browser["Browser + insurer wallet"] --> API["FastAPI"]
+    Browser["Browser + claimant wallet"] --> API["FastAPI"]
     API --> IPFS[("Public IPFS")]
     API --> DB[("PostgreSQL outbox")]
     Relayer["Relayer"] --> DB
@@ -51,7 +51,8 @@ Install:
 - an EIP-1193 browser wallet such as MetaMask;
 - a Sepolia RPC URL;
 - a Pinata JWT; and
-- fictional Sepolia wallets for insurer, assessor, relayer, and offline admin
+- fictional Sepolia wallets for insurer, permit issuer, claimant, assessor,
+  relayer, and offline admin
   roles.
 
 Check the local tools:
@@ -107,25 +108,32 @@ secrets:
 test -f .env.local || cp .env.example .env.local
 ```
 
-The checked-in gasless Sepolia artifact currently identifies:
+The current public-intake Sepolia artifact is checked in alongside the previous
+gasless deployment:
 
 | Item                      | Value                                        |
 | ------------------------- | -------------------------------------------- |
-| Deployment ID             | `sepolia-gasless-v1`                         |
-| Registry                  | `0x5A7A3e22843397f998823D0d58aBd2E1f4b2A300` |
-| Forwarder                 | `0x0e68Ac27a344f454373604Eec3144c427661E5F0` |
-| Registry deployment block | `11426492`                                   |
+| Deployment ID             | `sepolia-public-intake-v1`                   |
+| Registry                  | `0xb64BaB321e0Fb19b2295f8182D5A37bAf85F7dff` |
+| Forwarder                 | `0xeff61937C6a11236D87863e763c13cd7083f0BD0` |
+| Registry deployment block | `11516697`                                   |
 | Chain ID                  | `11155111` (Sepolia)                         |
+
+The checked-in artifact proves addresses and ABI, but it does not include local
+secrets. Public writes still require the scoped permit-issuer key, eligible test
+policy, claimant wallet, assessor, relayer, Pinata token, and HMAC settings.
 
 At minimum, review these settings in `.env.local`:
 
 | Setting                                  | What to provide                                                 |
 | ---------------------------------------- | --------------------------------------------------------------- |
 | `SEPOLIA_RPC_URL`                        | A working Sepolia HTTP RPC endpoint                             |
-| `CLAIMS_DEPLOYMENT_ID`                   | `sepolia-gasless-v1` for the artifact above                     |
-| `LISTENER_START_BLOCK`                   | `11426492` for the artifact above                               |
+| `CLAIMS_DEPLOYMENT_ID`                   | `sepolia-public-intake-v1`                                     |
+| `LISTENER_START_BLOCK`                   | `11516697`                                                     |
 | `PINATA_JWT`                             | Pinata upload token used only by FastAPI                        |
-| `INSURER_CREDENTIALS_JSON`               | Digest-only API credentials bound to on-chain submitter wallets |
+| `CLAIMANT_SESSION_SIGNING_KEY` and related claimant keys | Independent random wallet-session secrets       |
+| `POLICY_ELIGIBILITY_RECORDS_JSON`        | Digest-only policy records for the controlled adapter           |
+| `CLAIM_PERMIT_ISSUERS_JSON`              | Insurer IDs and absolute owner-only permit-key paths            |
 | `SEPOLIA_ASSESSOR_PRIVATE_KEY`           | Assessor wallet scoped to the chosen insurer                    |
 | `SEPOLIA_RELAYER_PRIVATE_KEY` or `_FILE` | Dedicated funded wallet with no registry role                   |
 | `CLAIM_AUTHORIZATION_KEY`                | Random shared API/worker HMAC secret                            |
@@ -134,37 +142,31 @@ At minimum, review these settings in `.env.local`:
 | `INDEXER_OPERATIONS_API_KEY_SHA256`      | Digest of the read-only dashboard key                           |
 | `ASSESSOR_OUTCOME_CREDENTIALS_JSON`      | Human reviewer references and digest-only API credentials       |
 
-### Insurer credential and wallet binding
+### Public claimant, policy, and permit binding
 
-An insurer credential is deliberately bound to one wallet address. All of the
-following must describe the same fictional insurer:
+Anyone can request a wallet challenge, but a sponsored claim is prepared only
+when all of the following describe one configured fictional policy:
 
 1. `insurerId` selected in the form;
-2. the API key's `insurerId` in `INSURER_CREDENTIALS_JSON`;
-3. the credential's `signerAddress`;
-4. the account connected in the browser wallet; and
-5. an address for which the selected registry returns `isSubmitter(address) = true`.
+2. the policy record's `insurerId` and `insurerAddress`;
+3. the connected wallet in `authorizedSubmitterAddresses`;
+4. the incident date, type and amount within configured coverage; and
+5. a permit issuer for which the registry returns
+   `isPermitIssuerFor(issuer, insurerAddress) = true`.
 
-The current gasless deployment was created with
-`0xCa07685b14F806c1E7AD4541330B4Ad24F6581Bd` as its initial submitter. For the
-shortest first run, configure only the `northstar-mutual` local credential with
-that public signer address, connect its test wallet in the browser, and use the
-local-only raw API key documented in the backend README. Additional fictional
-insurers require an admin transaction granting each signer the submitter role
-and an assessor scope before FastAPI readiness will pass.
+The sample record uses `synthetic-policy-42` and a keyed digest generated from
+`POLICY_REFERENCE_LOOKUP_KEY`. Change the claimant/submitter addresses to a test
+wallet you control, provision the insurer and issuer roles in the new contract,
+and replace the placeholder absolute permit-key path. Readiness fails closed
+until these bindings match the live registry.
 
-Generate a new insurer credential record when you do not want the documented
-local example:
+The legacy insurer-credential generator is not used by public routes. For
+deployment and configuration details, use:
 
-```bash
-apps/backend/.venv/bin/python \
-  apps/backend/scripts/generate_insurer_credential.py \
-  northstar-mutual northstar-local-v2 0xYOUR_INSURER_SIGNER \
-  --daily-quota 25
-```
+[Public claim intake](docs/PUBLIC_CLAIM_INTAKE.md)
 
-Keep the printed raw API key in a password manager. Put only the JSON record,
-which contains its SHA-256 digest, in `INSURER_CREDENTIALS_JSON`.
+Keep permit, relayer, assessor, HMAC, and operations secrets independent. Never
+put any of them in a `VITE_` setting or browser storage.
 
 ### Operations dashboard credential
 
@@ -264,8 +266,8 @@ the repository root, and load `.env.local` before the command.
 cd <folder_directory>Decentralized-Claims-Registry
 set -a; source .env.local; set +a
 
-# FastAPI must remain keyless. Remove wallet keys inherited from the shared
-# local convenience file before starting this process.
+# FastAPI must remain free of transaction-paying and assessor keys. Remove
+# unrelated wallet keys inherited from the shared convenience file.
 unset SEPOLIA_DEPLOYER_PRIVATE_KEY
 unset SEPOLIA_ASSESSOR_PRIVATE_KEY
 unset SEPOLIA_RELAYER_PRIVATE_KEY
@@ -279,7 +281,8 @@ apps/backend/.venv/bin/python -m uvicorn \
 ```
 
 Expected result: Uvicorn listens on `http://127.0.0.1:8000`. The API does not
-need an Ethereum transaction key; it prepares data that the insurer wallet signs.
+need an Ethereum transaction key; it prepares data that the claimant or
+authorized representative wallet signs.
 
 ### Terminal B — React frontend
 
@@ -302,7 +305,7 @@ apps/backend/.venv/bin/python -m apps.relayer.gasless_relayer
 
 Expected result: `gasless.relayer_started` includes the relayer, registry, and
 forwarder addresses. The relayer account must have Sepolia ETH and must not be
-an admin, submitter, or assessor.
+an admin, submitter, permit issuer, or assessor.
 
 ### Terminal D — confirmed-block listener/indexer
 
@@ -355,7 +358,7 @@ curl --fail --silent http://127.0.0.1:8000/claims/gasless/config \
 ```
 
 Readiness should report every check as `ok`. The gasless config must show chain
-`11155111` and the registry/forwarder addresses listed above.
+`11155111` and the newly deployed registry/forwarder addresses.
 
 Other useful pages:
 
@@ -367,17 +370,17 @@ Other useful pages:
 ## 8. Submit and follow a fictional claim
 
 1. Open the claims application.
-2. Select the fictional insurer matching your configured API credential.
-3. Paste its raw API key into the password field.
-4. Submit the pre-filled synthetic claim.
-5. Approve the wallet connection and Sepolia network-switch request.
-6. Review and sign the EIP-712 message. This is a signature, not a gas payment.
+2. Select the insurer and enter a policy reference present in the configured adapter.
+3. Submit the pre-filled synthetic claim.
+4. Approve wallet connection and the Sepolia network-switch request.
+5. Sign the readable one-time claimant challenge.
+6. Review and sign the EIP-712 request. This is a signature, not a gas payment.
 7. Leave the page open while it polls the durable submission status.
 
 A healthy sequence looks like:
 
 ```text
-Browser:  Connecting wallet -> Preparing claim -> Awaiting wallet signature
+Browser:  Connecting wallet -> Verifying wallet ownership -> Checking policy eligibility -> Awaiting wallet signature
 API:      preparing -> prepared -> authorized
 Relayer:  signed -> broadcast -> confirmed
 Listener: ipfs.verified -> kafka.claim_published
@@ -387,7 +390,7 @@ Browser:  anchor receipt -> assessment details -> indexed claim state
 
 Closing the browser does not cancel an already authorized submission. PostgreSQL
 keeps the outbox state and the relayer continues. The current UI deliberately
-does not persist credentials or submission IDs, so a full page close does not
+does not persist bearer sessions or submission IDs, so a full page close does not
 automatically restore its progress display. For manual recovery, keep the
 `submission_id` from the prepare response and query its authenticated FastAPI
 status endpoint; otherwise use the relayer logs and PostgreSQL operations data.
@@ -396,7 +399,7 @@ status endpoint; otherwise use the relayer logs and PostgreSQL operations data.
 
 Open `/operations`, enter the raw operations key, and confirm:
 
-- deployment `sepolia-gasless-v1`;
+- your new public-intake deployment ID;
 - Sepolia chain ID `11155111`;
 - registry address `0x5A7A...A300`;
 - the checkpoint reaches the confirmed head;
@@ -418,11 +421,11 @@ database checkpoint and records the result; it does not rewrite projection rows.
 | Symptom                                                     | Likely cause                                              | What to do                                                                          |
 | ----------------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `No module named pytest`, `uvicorn`, or `prometheus_client` | Wrong Python environment                                  | Use `apps/backend/.venv/bin/python -m ...` exactly                                  |
-| `LISTENER_START_BLOCK is required`                          | Missing or unloaded environment                           | Set `11426492`, source `.env.local`, restart listener                               |
-| Readiness: insurer authentication unavailable               | Invalid JSON/digest/duplicate signer                      | Validate `INSURER_CREDENTIALS_JSON`; keep signer addresses unique                   |
-| Readiness: gasless deployment unavailable                   | Wrong RPC, artifact, trusted forwarder, or submitter role | Check `CLAIMS_DEPLOYMENT_ID`, RPC chain, bytecode, and every configured signer role |
+| `LISTENER_START_BLOCK is required`                          | New deployment block not recorded                        | Set the exact registry deployment block, source `.env.local`, restart listener      |
+| Readiness: claimant authentication unavailable              | Missing keys, bad URI/domain, or pending migration        | Validate claimant settings and apply every PostgreSQL migration                     |
+| Readiness: gasless deployment unavailable                   | Old artifact, wrong RPC, forwarder, insurer, or issuer scope | Check the public ABI and every live role binding                                 |
 | Readiness: PostgreSQL unavailable                           | Container stopped or migration pending                    | Check Compose, then run migration `upgrade` and `check`                             |
-| Submission says wallet does not match                       | Connected wallet differs from credential signer           | Switch the browser wallet account or correct the credential record                  |
+| Policy could not be verified                                | Wallet/reference/coverage does not match configured policy | Correct the fictional policy record or connect its authorized wallet                |
 | Listener repeatedly logs Kafka publication failure          | Deployment-specific topic is missing                      | Run the topic-creation command in step 5                                            |
 | Worker cannot load model                                    | Training artifact missing/checksum mismatch               | Run step 4 again and keep `XGBOOST_MODEL_DIR` unchanged                             |
 | Operations API key is invalid                               | Digest entered in UI, old API process, or wrong raw key   | Enter the raw key and restart FastAPI after digest changes                          |

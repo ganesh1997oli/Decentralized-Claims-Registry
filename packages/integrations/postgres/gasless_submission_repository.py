@@ -29,8 +29,8 @@ from .database import PostgresDatabase, PostgresStorageError
 from .records import GaslessSubmissionRecord, gasless_submission_from_row
 
 ACTIVE_STATES = ("preparing", "prepared", "authorized", "signed", "broadcast")
-# An API replica that dies during IPFS/RPC preparation must not reserve an
-# insurer's forwarder nonce forever. Only the unsigned ``preparing`` lease is
+# An API replica that dies during IPFS/RPC preparation must not reserve a
+# submitter's forwarder nonce forever. Only the unsigned ``preparing`` lease is
 # reclaimed; signed or broadcast records need receipt reconciliation instead.
 PREPARATION_LEASE = timedelta(minutes=10)
 
@@ -116,6 +116,12 @@ class PostgresGaslessSubmissionRepository:
         daily_quota: int,
         bypass_limits: bool,
         now: datetime,
+        submission_kind: str = "insurer",
+        claimant_address: str | None = None,
+        insurer_address: str | None = None,
+        claimant_commitment: str | None = None,
+        policy_id: str | None = None,
+        permit_issuer_address: str | None = None,
     ) -> tuple[GaslessSubmissionRecord, bool]:
         """Create one preparation or return the matching idempotent record.
 
@@ -163,7 +169,7 @@ class PostgresGaslessSubmissionRepository:
                     now - PREPARATION_LEASE,
                 ),
             )
-            # Expired unsigned requests no longer reserve the insurer's forwarder
+            # Expired unsigned requests no longer reserve the submitter's forwarder
             # nonce. Signed/broadcast transactions remain active until reconciled.
             cursor.execute(
                 """
@@ -214,7 +220,7 @@ class PostgresGaslessSubmissionRepository:
             )
             if cursor.fetchone() is not None:
                 raise GaslessSubmissionConflictError(
-                    "This insurer signer already has an active gasless submission"
+                    "This wallet already has an active gasless submission"
                 )
 
             if not bypass_limits:
@@ -238,7 +244,7 @@ class PostgresGaslessSubmissionRepository:
                 counts = cursor.fetchone() or {}
                 if int(counts.get("insurer_minute", 0)) >= insurer_minute_limit:
                     raise GaslessSubmissionLimitError(
-                        "This insurer has reached its sponsored per-minute limit",
+                        "This claimant has reached the sponsored per-minute limit",
                         retry_after=60,
                     )
                 if int(counts.get("client_minute", 0)) >= client_minute_limit:
@@ -258,7 +264,7 @@ class PostgresGaslessSubmissionRepository:
                 if int(daily.get("daily_usage", 0)) >= daily_quota:
                     tomorrow = day_start + timedelta(days=1)
                     raise GaslessSubmissionLimitError(
-                        "This insurer has reached its sponsored daily quota",
+                        "This claimant has reached the sponsored daily quota",
                         retry_after=int((tomorrow - now).total_seconds()),
                     )
 
@@ -268,11 +274,14 @@ class PostgresGaslessSubmissionRepository:
                     submission_id, credential_id, insurer_id, signer_address,
                     chain_id, contract_address, forwarder_address,
                     idempotency_key_hash, request_fingerprint,
-                    client_fingerprint, state,
+                    client_fingerprint, state, submission_kind,
+                    claimant_address, insurer_address, claimant_commitment,
+                    policy_id, permit_issuer_address,
                     created_at, updated_at
                 ) VALUES (
                     %s, %s, %s, %s, %s, lower(%s), lower(%s), %s, %s, %s,
-                    'preparing', %s, %s
+                    'preparing', %s, lower(%s), lower(%s), %s, %s, lower(%s),
+                    %s, %s
                 )
                 RETURNING *
                 """,
@@ -287,6 +296,12 @@ class PostgresGaslessSubmissionRepository:
                     idempotency_key_hash,
                     request_fingerprint,
                     client_fingerprint,
+                    submission_kind,
+                    claimant_address,
+                    insurer_address,
+                    claimant_commitment,
+                    policy_id,
+                    permit_issuer_address,
                     now,
                     now,
                 ),
@@ -304,7 +319,7 @@ class PostgresGaslessSubmissionRepository:
         forward_gas: int,
         deadline: int,
     ) -> GaslessSubmissionRecord:
-        """Commit the complete insurer-signable request and release its lease.
+        """Commit the complete submitter-signable request and release its lease.
 
         Updating only ``preparing`` makes this a compare-and-set transition.
         Missing or concurrently changed rows fail instead of overwriting a later
