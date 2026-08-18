@@ -90,6 +90,30 @@ export type AssessorOutcomeInput = {
   notes: string | null
 }
 
+export type GovernanceSession = {
+  governance_reference: string
+  insurer_address: string
+}
+
+export type CoverageDecisionStatus = 'Approved' | 'Rejected'
+
+export type CoverageDecisionProposal = {
+  decision_id: string
+  claim_id: number
+  decision_status: CoverageDecisionStatus
+  decision_hash: string
+  decision_maker_address: string
+  proposed_by: string
+  human_outcome_id: string
+  human_outcome_revision: number
+  created_at: string
+  confirmed_transaction_hash: string | null
+  confirmed_at: string | null
+  chain_id: number
+  contract_address: string
+  transaction_data: string
+}
+
 export type ClaimStatus =
   | 'Submitted'
   | 'UnderReview'
@@ -135,7 +159,7 @@ export type ClaimStatusCounts = {
 export type ClaimIndexEvent = {
   event_id: string
   claim_id: number
-  event_type: 'ClaimSubmitted' | 'ClaimAssessed'
+  event_type: 'ClaimSubmitted' | 'ClaimAssessed' | 'ClaimDecided'
   block_number: number
   transaction_hash: string
   log_index: number
@@ -500,6 +524,38 @@ function isAssessorOutcome(value: unknown): value is AssessorOutcome {
   )
 }
 
+function isGovernanceSession(value: unknown): value is GovernanceSession {
+  return (
+    isRecord(value) &&
+    typeof value.governance_reference === 'string' &&
+    isAddress(value.insurer_address)
+  )
+}
+
+function isCoverageDecisionProposal(
+  value: unknown,
+): value is CoverageDecisionProposal {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.decision_id === 'string' &&
+    typeof value.claim_id === 'number' &&
+    (value.decision_status === 'Approved' || value.decision_status === 'Rejected') &&
+    typeof value.decision_hash === 'string' &&
+    isAddress(value.decision_maker_address) &&
+    typeof value.proposed_by === 'string' &&
+    typeof value.human_outcome_id === 'string' &&
+    typeof value.human_outcome_revision === 'number' &&
+    isTimestamp(value.created_at) &&
+    (value.confirmed_transaction_hash === null ||
+      typeof value.confirmed_transaction_hash === 'string') &&
+    (value.confirmed_at === null || isTimestamp(value.confirmed_at)) &&
+    typeof value.chain_id === 'number' &&
+    isAddress(value.contract_address) &&
+    typeof value.transaction_data === 'string' &&
+    /^0x[0-9a-fA-F]+$/.test(value.transaction_data)
+  )
+}
+
 function isClaimSummary(value: unknown): value is ClaimSummary {
   // A claim summary is public projected state. Restrict status to the known domain
   // vocabulary while validating every value rendered in the dashboard table.
@@ -579,7 +635,8 @@ function isClaimIndexEvent(value: unknown): value is ClaimIndexEvent {
     typeof value.event_id === 'string' &&
     typeof value.claim_id === 'number' &&
     (value.event_type === 'ClaimSubmitted' ||
-      value.event_type === 'ClaimAssessed') &&
+      value.event_type === 'ClaimAssessed' ||
+      value.event_type === 'ClaimDecided') &&
     typeof value.block_number === 'number' &&
     typeof value.transaction_hash === 'string' &&
     typeof value.log_index === 'number' &&
@@ -992,6 +1049,63 @@ export async function recordAssessorOutcome(
   if (!response.ok) throw new Error(errorMessage(body, response.status))
   if (!isAssessorOutcome(body)) {
     throw new Error('The claims API returned an unexpected assessor outcome')
+  }
+  return body
+}
+
+/** Authenticates the proposal-maker boundary; wallet authority is checked later. */
+export async function getGovernanceSession(
+  governanceApiKey: string,
+  signal?: AbortSignal,
+): Promise<GovernanceSession> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/governance/session`, {
+      headers: { 'X-Governance-API-Key': governanceApiKey },
+      signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error('Could not reach the coverage-governance service.')
+  }
+  const body: unknown = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isGovernanceSession(body)) {
+    throw new Error('The claims API returned an unexpected governance session')
+  }
+  return body
+}
+
+/** Persists an audited proposal and returns exact calldata for the checker wallet. */
+export async function prepareCoverageDecision(
+  claimId: number,
+  decisionStatus: CoverageDecisionStatus,
+  decisionMakerAddress: string,
+  governanceApiKey: string,
+  signal?: AbortSignal,
+): Promise<CoverageDecisionProposal> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/governance/claims/${claimId}/decision`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Governance-API-Key': governanceApiKey,
+      },
+      body: JSON.stringify({
+        decision_status: decisionStatus,
+        decision_maker_address: decisionMakerAddress,
+      }),
+      signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new Error('Could not prepare the coverage decision.')
+  }
+  const body: unknown = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(errorMessage(body, response.status))
+  if (!isCoverageDecisionProposal(body)) {
+    throw new Error('The claims API returned an unexpected decision proposal')
   }
   return body
 }

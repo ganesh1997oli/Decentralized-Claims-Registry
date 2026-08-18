@@ -28,6 +28,8 @@ describe("ClaimsRegistry", async function () {
       assessor,
       otherInsurer,
       otherAssessor,
+      decisionMaker,
+      otherDecisionMaker,
       claimant,
       representative,
       relayer,
@@ -38,6 +40,7 @@ describe("ClaimsRegistry", async function () {
       insurer.account.address,
       permitIssuer.account.address,
       assessor.account.address,
+      decisionMaker.account.address,
       forwarder.address,
       0,
     ]);
@@ -50,6 +53,8 @@ describe("ClaimsRegistry", async function () {
       assessor,
       otherInsurer,
       otherAssessor,
+      decisionMaker,
+      otherDecisionMaker,
       claimant,
       representative,
       relayer,
@@ -483,8 +488,9 @@ describe("ClaimsRegistry", async function () {
     });
   });
 
-  it("enforces monotonic lifecycle transitions", async function () {
-    const { registry, insurer, assessor } = await deployFixture();
+  it("separates model screening from the terminal coverage decision", async function () {
+    const { registry, insurer, assessor, decisionMaker } =
+      await deployFixture();
     await registry.write.submitClaim([claimHash, dataPointer], {
       account: insurer.account,
     });
@@ -492,20 +498,37 @@ describe("ClaimsRegistry", async function () {
     await registry.write.assessClaim([0n, Status.UnderReview, 4200], {
       account: assessor.account,
     });
-    await registry.write.assessClaim([0n, Status.Approved, 4200], {
-      account: assessor.account,
-    });
-
     await viem.assertions.revertWithCustomError(
-      registry.write.assessClaim([0n, Status.Rejected, 4200], {
+      registry.write.assessClaim([0n, Status.Approved, 4200], {
         account: assessor.account,
       }),
       registry,
       "InvalidStatusTransition",
     );
+
+    const decisionHash = keccak256(toHex("decision:claim-0:approved:v1"));
+    await registry.write.decideClaim(
+      [0n, Status.Approved, decisionHash],
+      { account: decisionMaker.account },
+    );
+    const storedDecision = await registry.read.getClaimDecision([0n]);
+    assert.equal(storedDecision[0], decisionHash);
+    assert.equal(
+      storedDecision[1],
+      getAddress(decisionMaker.account.address),
+    );
+
+    await viem.assertions.revertWithCustomError(
+      registry.write.decideClaim(
+        [0n, Status.Rejected, decisionHash],
+        { account: decisionMaker.account },
+      ),
+      registry,
+      "InvalidStatusTransition",
+    );
   });
 
-  it("does not allow the model score to be rewritten", async function () {
+  it("does not allow the one-time model screening to be rewritten", async function () {
     const { registry, insurer, assessor } = await deployFixture();
     await registry.write.submitClaim([claimHash, dataPointer], {
       account: insurer.account,
@@ -515,11 +538,48 @@ describe("ClaimsRegistry", async function () {
     });
 
     await viem.assertions.revertWithCustomError(
-      registry.write.assessClaim([0n, Status.Rejected, 100], {
+      registry.write.assessClaim([0n, Status.UnderReview, 100], {
         account: assessor.account,
       }),
       registry,
-      "FraudScoreCannotChange",
+      "InvalidStatusTransition",
+    );
+  });
+
+  it("scopes decision makers to their insurer", async function () {
+    const {
+      registry,
+      admin,
+      insurer,
+      assessor,
+      otherInsurer,
+      otherDecisionMaker,
+    } = await deployFixture();
+    await registry.write.setSubmitter([otherInsurer.account.address, true], {
+      account: admin.account,
+    });
+    await registry.write.setDecisionMaker(
+      [
+        otherDecisionMaker.account.address,
+        otherInsurer.account.address,
+        true,
+      ],
+      { account: admin.account },
+    );
+    await registry.write.submitClaim([claimHash, dataPointer], {
+      account: insurer.account,
+    });
+    await registry.write.assessClaim([0n, Status.UnderReview, 4200], {
+      account: assessor.account,
+    });
+
+    await viem.assertions.revertWithCustomError(
+      registry.write.decideClaim(
+        [0n, Status.Rejected, keccak256(toHex("decision:rejected"))],
+        { account: otherDecisionMaker.account },
+      ),
+      registry,
+      "DecisionMakerScopeMismatch",
     );
   });
 

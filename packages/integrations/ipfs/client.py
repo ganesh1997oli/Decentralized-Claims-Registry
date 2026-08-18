@@ -2,8 +2,9 @@
 
 Pinata handles the upload, while an HTTP gateway handles reads. Callers work
 with ``ipfs://`` pointers so the stored reference is not tied to one gateway.
-The bytes are public and unencrypted in this prototype; a CID must never be
-treated as an access-control secret.
+The bytes and CID are public. Current writers pass a versioned encrypted claim
+envelope, but this transport deliberately does not inspect or enforce payload
+format. A CID must never be treated as an access-control secret.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ class InvalidIPFSPointer(IPFSError):
 
 
 class IPFSClient:
-    """Upload public bytes and safely resolve the resulting IPFS pointer."""
+    """Upload public opaque bytes and safely resolve their IPFS pointer."""
 
     def __init__(
         self,

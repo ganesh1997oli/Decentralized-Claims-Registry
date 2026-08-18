@@ -1,7 +1,9 @@
-// Deploy the registry with four intentionally separate roles. A permit issuer
+// Deploy the registry with five intentionally separate roles. A permit issuer
 // may attest policy eligibility but cannot submit legacy claims, assess claims,
-// administer roles, or pay relay gas. The one-day default-admin delay makes an
-// accidental transfer recoverable before acceptance.
+// make coverage decisions, administer roles, or pay relay gas. A dedicated
+// decision-maker account is the only business role allowed to approve or reject
+// a screened claim. The one-day default-admin delay makes an accidental transfer
+// recoverable before acceptance.
 import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
 
 export default buildModule("ClaimsRegistryModule", (m) => {
@@ -9,6 +11,7 @@ export default buildModule("ClaimsRegistryModule", (m) => {
     const initialSubmitter = m.getParameter("initialSubmitter");
     const initialPermitIssuer = m.getParameter("initialPermitIssuer");
     const initialAssessor = m.getParameter("initialAssessor");
+    const initialDecisionMaker = m.getParameter("initialDecisionMaker");
     const adminTransferDelay = m.getParameter(
         "adminTransferDelaySeconds",
         86_400n,
@@ -19,6 +22,7 @@ export default buildModule("ClaimsRegistryModule", (m) => {
         initialSubmitter,
         initialPermitIssuer,
         initialAssessor,
+        initialDecisionMaker,
         claimsForwarder,
         adminTransferDelay,
     ]);

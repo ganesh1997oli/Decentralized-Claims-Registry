@@ -16,6 +16,10 @@ from .claimant_auth_repository import (
     ClaimantAuthChallengeRateLimitError,
     PostgresClaimantAuthChallengeRepository,
 )
+from .coverage_decision_repository import (
+    CoverageDecisionConflictError,
+    PostgresCoverageDecisionRepository,
+)
 from .database import (
     PostgresConfigurationError,
     PostgresDatabase,
@@ -50,6 +54,8 @@ from .records import (
     ClaimIndexOperationsSnapshot,
     ClaimIndexReconciliationRecord,
     ClaimIndexStatus,
+    CoverageDecisionProposalRecord,
+    CoverageDecisionStatus,
     GaslessSubmissionRecord,
     GaslessSubmissionState,
     HumanFraudOutcome,
@@ -75,6 +81,9 @@ __all__ = [
     "ClaimantAuthChallengeError",
     "ClaimantAuthChallengeRateLimitError",
     "ClaimantAuthChallengeRecord",
+    "CoverageDecisionConflictError",
+    "CoverageDecisionProposalRecord",
+    "CoverageDecisionStatus",
     "DuplicateCheck",
     "DuplicateMatch",
     "GaslessSubmissionConflictError",
@@ -92,6 +101,7 @@ __all__ = [
     "PostgresClaimIndexRepository",
     "PostgresClaimantAuthChallengeRepository",
     "PostgresConfigurationError",
+    "PostgresCoverageDecisionRepository",
     "PostgresDatabase",
     "PostgresDuplicateRepository",
     "PostgresFeatureRepository",

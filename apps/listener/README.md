@@ -11,7 +11,7 @@ again before scoring publication.
 flowchart TD
     Head["Latest Sepolia block"] --> Safe["Hold back confirmation blocks"]
     Safe --> Range["Read next bounded block range"]
-    Range --> Order["Sort submission and assessment logs in chain order"]
+    Range --> Order["Sort submission, assessment and decision logs in chain order"]
     Order --> Type{"Event type"}
     Type -->|"ClaimSubmitted"| Index["Upsert public claim + append audit event"]
     Index -->|"PostgreSQL failure"| Retry["Keep old checkpoint and retry"]
@@ -21,8 +21,11 @@ flowchart TD
     Hash -->|"Temporary RPC / IPFS / Kafka failure"| Retry
     Hash -->|"Invalid pointer or permanent mismatch"| Dead["Append dead-letter JSONL"]
     Type -->|"ClaimAssessed"| Update["Append audit event + update claim state"]
+    Type -->|"ClaimDecided"| Decide["Append event + confirm decision proposal"]
     Update -->|"PostgreSQL failure"| Retry
+    Decide -->|"Database failure or hash mismatch"| Retry
     Update --> Observe["Record lifecycle log and metric"]
+    Decide --> Observe
     Kafka --> Save["Save PostgreSQL range checkpoint"]
     Dead --> Save
     Observe --> Save
@@ -32,7 +35,7 @@ The deployment-scoped PostgreSQL checkpoint moves only after every event in the
 range has either succeeded or been durably quarantined. A restart therefore
 replays work rather than skipping an uncertain block. Event IDs and projection
 upserts are idempotent, and chain-position checks prevent an older replay from
-regressing a newer assessment.
+regressing a newer assessment or terminal decision.
 
 ## Files
 
@@ -78,6 +81,7 @@ listener.checkpoint_loaded
 ipfs.verified
 kafka.claim_published
 claim.assessed
+claim.decided
 ```
 
 ## Configuration
@@ -108,8 +112,9 @@ temporary increase against the selected provider, and reduce it again if
 checkpoint, so it is retried rather than skipped.
 
 The normal listener needs no wallet, Pinata upload token, insurer credential,
-or claim-authorization key. It has only public chain/IPFS read access and Kafka
-publication access.
+claim-authorization key, or claim-decryption key. It verifies public encrypted
+envelope bytes and has only chain/IPFS read access plus Kafka publication and
+PostgreSQL projection access.
 
 ## First run, backfill, and reconciliation
 
@@ -146,6 +151,17 @@ and duration to `claim_index_reconciliations`, allowing the authenticated
 
 Do not discard the dead-letter file without reviewing why its immutable events
 were rejected.
+
+### Governance mismatch incident
+
+`ClaimDecided` is fail-closed: the event's hash must equal the prior
+`coverage_decision_proposals` row for that deployment-scoped claim. A missing
+proposal, changed hash, or second confirmation transaction raises a PostgreSQL
+projection error and leaves the block checkpoint unchanged. Treat this as a
+decision-wallet or database-integrity incident; do not edit the hash merely to
+make the listener advance. Preserve the database and chain evidence, revoke the
+decision wallet if compromise is suspected, and resolve the business/audit
+record through an explicitly reviewed migration before replaying the range.
 
 ## Legacy terminal-only diagnostic
 

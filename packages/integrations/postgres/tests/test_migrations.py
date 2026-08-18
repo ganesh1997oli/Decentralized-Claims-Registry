@@ -89,6 +89,7 @@ def test_checked_in_migrations_own_processing_and_index_tables():
         "006",
         "007",
         "008",
+        "009",
     ]
     assert "CREATE TABLE IF NOT EXISTS claim_assessments" in migrations[0].sql
     assert "CREATE TABLE IF NOT EXISTS claim_incident_fingerprints" in migrations[0].sql
@@ -112,6 +113,8 @@ def test_checked_in_migrations_own_processing_and_index_tables():
     assert "CREATE TABLE claimant_auth_challenges" in migrations[6].sql
     assert "claimant_commitment" in migrations[7].sql
     assert "permit_issuer_address" in migrations[7].sql
+    assert "CREATE TABLE coverage_decision_proposals" in migrations[8].sql
+    assert "'ClaimDecided'" in migrations[8].sql
 
 
 def test_upgrade_locks_applies_and_records_each_pending_migration():

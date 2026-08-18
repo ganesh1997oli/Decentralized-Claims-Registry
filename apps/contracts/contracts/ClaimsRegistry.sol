@@ -25,6 +25,8 @@ contract ClaimsRegistry is
 {
     bytes32 public constant SUBMITTER_ROLE = keccak256("SUBMITTER_ROLE");
     bytes32 public constant ASSESSOR_ROLE = keccak256("ASSESSOR_ROLE");
+    bytes32 public constant DECISION_MAKER_ROLE =
+        keccak256("DECISION_MAKER_ROLE");
     bytes32 public constant PERMIT_ISSUER_ROLE =
         keccak256("PERMIT_ISSUER_ROLE");
     bytes32 public constant CLAIM_PERMIT_TYPEHASH =
@@ -73,15 +75,32 @@ contract ClaimsRegistry is
         uint48 deadline;
     }
 
+    /// @dev Coverage decisions are deliberately stored separately from model
+    ///      screening. This makes the authority boundary visible in both state
+    ///      and events: an assessor contributes a fraud signal, while an
+    ///      insurer-scoped decision maker accepts accountability for the final
+    ///      coverage outcome and its immutable off-chain audit-record hash.
+    struct CoverageDecision {
+        bytes32 decisionHash;
+        address decidedBy;
+        uint64 decidedAt;
+    }
+
     uint256 public claimCount;
     mapping(uint256 claimId => Claim claim) private _claims;
     mapping(address assessor => mapping(address insurer => bool authorized))
         private _assessorScopes;
     mapping(address assessor => uint256 scopeCount) private _assessorScopeCount;
+    mapping(address decisionMaker => mapping(address insurer => bool authorized))
+        private _decisionMakerScopes;
+    mapping(address decisionMaker => uint256 scopeCount)
+        private _decisionMakerScopeCount;
     mapping(address issuer => mapping(address insurer => bool authorized))
         private _permitIssuerScopes;
     mapping(address issuer => uint256 scopeCount) private _permitIssuerScopeCount;
     mapping(bytes32 permitId => bool used) private _usedClaimPermits;
+    mapping(uint256 claimId => CoverageDecision decision)
+        private _coverageDecisions;
 
     event ClaimSubmitted(
         uint256 indexed claimId,
@@ -105,6 +124,14 @@ contract ClaimsRegistry is
         uint16 fraudScore,
         uint256 timestamp
     );
+    event ClaimDecided(
+        uint256 indexed claimId,
+        Status indexed newStatus,
+        address indexed decisionMaker,
+        bytes32 decisionHash,
+        uint16 fraudScore,
+        uint256 timestamp
+    );
     event SubmitterUpdated(address indexed submitter, bool authorized);
     event AssessorUpdated(
         address indexed assessor,
@@ -116,6 +143,11 @@ contract ClaimsRegistry is
         address indexed insurer,
         bool authorized
     );
+    event DecisionMakerUpdated(
+        address indexed decisionMaker,
+        address indexed insurer,
+        bool authorized
+    );
 
     error ZeroAddress();
     error EmptyClaimHash();
@@ -124,11 +156,15 @@ contract ClaimsRegistry is
     error UnknownClaim(uint256 claimId);
     error InvalidFraudScore(uint16 fraudScore);
     error InvalidStatusTransition(Status currentStatus, Status requestedStatus);
-    error FraudScoreCannotChange(uint16 currentScore, uint16 suppliedScore);
     error AssessorScopeMismatch(address assessor, address insurer);
+    error DecisionMakerScopeMismatch(address decisionMaker, address insurer);
     error AssessorScopeNotConfigured(address assessor, address insurer);
     error PermitIssuerScopeNotConfigured(
         address permitIssuer,
+        address insurer
+    );
+    error DecisionMakerScopeNotConfigured(
+        address decisionMaker,
         address insurer
     );
     error InsurerNotAuthorized(address insurer);
@@ -139,6 +175,7 @@ contract ClaimsRegistry is
     error ClaimPermitUnauthorized(address permitIssuer, address insurer);
     error ClaimPermitSubmitterMismatch(address expected, address actual);
     error ClaimPermitPointerMismatch();
+    error EmptyDecisionHash();
     error RoleSeparationRequired(address account);
     error UseRoleConfigurationFunction(bytes32 role);
 
@@ -147,6 +184,7 @@ contract ClaimsRegistry is
     /// @param initialSubmitter Insurer service account permitted to submit.
     /// @param initialPermitIssuer Eligibility signer scoped to initialSubmitter.
     /// @param initialAssessor Scoring account scoped to initialSubmitter.
+    /// @param initialDecisionMaker Coverage authority scoped to initialSubmitter.
     /// @param trustedForwarder Immutable ERC-2771 forwarder that verifies
     ///        submitter signatures before restoring their execution context.
     /// @param adminTransferDelay Delay in seconds before an admin transfer can
@@ -156,6 +194,7 @@ contract ClaimsRegistry is
         address initialSubmitter,
         address initialPermitIssuer,
         address initialAssessor,
+        address initialDecisionMaker,
         address trustedForwarder,
         uint48 adminTransferDelay
     )
@@ -167,6 +206,7 @@ contract ClaimsRegistry is
             initialSubmitter == address(0) ||
             initialPermitIssuer == address(0) ||
             initialAssessor == address(0) ||
+            initialDecisionMaker == address(0) ||
             trustedForwarder == address(0)
         ) {
             revert ZeroAddress();
@@ -174,14 +214,18 @@ contract ClaimsRegistry is
         if (
             initialAdmin == initialSubmitter ||
             initialAdmin == initialPermitIssuer ||
-            initialAdmin == initialAssessor
+            initialAdmin == initialAssessor ||
+            initialAdmin == initialDecisionMaker
         ) {
             revert RoleSeparationRequired(initialAdmin);
         }
         if (
             initialSubmitter == initialPermitIssuer ||
             initialSubmitter == initialAssessor ||
-            initialPermitIssuer == initialAssessor
+            initialSubmitter == initialDecisionMaker ||
+            initialPermitIssuer == initialAssessor ||
+            initialPermitIssuer == initialDecisionMaker ||
+            initialAssessor == initialDecisionMaker
         ) {
             revert RoleSeparationRequired(initialPermitIssuer);
         }
@@ -189,10 +233,13 @@ contract ClaimsRegistry is
         _grantRole(SUBMITTER_ROLE, initialSubmitter);
         _grantRole(PERMIT_ISSUER_ROLE, initialPermitIssuer);
         _grantRole(ASSESSOR_ROLE, initialAssessor);
+        _grantRole(DECISION_MAKER_ROLE, initialDecisionMaker);
         _permitIssuerScopes[initialPermitIssuer][initialSubmitter] = true;
         _permitIssuerScopeCount[initialPermitIssuer] = 1;
         _assessorScopes[initialAssessor][initialSubmitter] = true;
         _assessorScopeCount[initialAssessor] = 1;
+        _decisionMakerScopes[initialDecisionMaker][initialSubmitter] = true;
+        _decisionMakerScopeCount[initialDecisionMaker] = 1;
 
         emit SubmitterUpdated(initialSubmitter, true);
         emit PermitIssuerUpdated(
@@ -201,6 +248,11 @@ contract ClaimsRegistry is
             true
         );
         emit AssessorUpdated(initialAssessor, initialSubmitter, true);
+        emit DecisionMakerUpdated(
+            initialDecisionMaker,
+            initialSubmitter,
+            true
+        );
     }
 
     /// @notice Record an insurer-operated claim during the public-intake migration.
@@ -208,7 +260,7 @@ contract ClaimsRegistry is
     ///      trusted-forwarder calls. New claimant-facing integrations should use
     ///      `submitClaimWithPermit`, which separates all claim parties.
     /// @param claimHash Keccak-256 hash of the canonical off-chain claim bytes.
-    /// @param dataPointer Public `ipfs://<CID>` location of those exact bytes.
+    /// @param dataPointer Public `ipfs://<CID>` location of the encrypted envelope.
     /// @return claimId Monotonic identifier assigned to the new claim anchor.
     function submitClaim(
         bytes32 claimHash,
@@ -294,11 +346,13 @@ contract ClaimsRegistry is
         );
     }
 
-    /// @notice Advance a claim through its allowed lifecycle.
-    /// @dev The first assessment fixes the fraud score. Later status changes
-    ///      must carry the same score, preserving the original model output.
-    /// @param claimId Existing claim whose public assessment state will change.
-    /// @param newStatus Allowed next state in the explicit lifecycle graph.
+    /// @notice Record the model screening result for a newly submitted claim.
+    /// @dev Assessors intentionally cannot approve or reject coverage. Their
+    ///      sole authority is to publish an immutable fraud score and move the
+    ///      claim into UnderReview or Flagged. A separately scoped decision
+    ///      maker must perform the terminal coverage transition.
+    /// @param claimId Submitted claim whose screening result will be recorded.
+    /// @param newStatus UnderReview or Flagged, based on the screening policy.
     /// @param fraudScore Model score in basis points from 0 through 10,000.
     function assessClaim(
         uint256 claimId,
@@ -312,14 +366,8 @@ contract ClaimsRegistry is
             revert AssessorScopeMismatch(assessor, claim.insurer);
         }
         if (fraudScore > 10000) revert InvalidFraudScore(fraudScore);
-        if (!_isAllowedTransition(claim.status, newStatus)) {
+        if (!_isAllowedAssessmentTransition(claim.status, newStatus)) {
             revert InvalidStatusTransition(claim.status, newStatus);
-        }
-        if (
-            claim.status != Status.Submitted &&
-            fraudScore != claim.fraudScore
-        ) {
-            revert FraudScoreCannotChange(claim.fraudScore, fraudScore);
         }
 
         claim.status = newStatus;
@@ -335,13 +383,59 @@ contract ClaimsRegistry is
         );
     }
 
+    /// @notice Record the insurer's terminal coverage decision.
+    /// @dev `decisionHash` binds the on-chain outcome to an immutable,
+    ///      controlled decision audit record held off-chain. The contract does
+    ///      not interpret that private record; it enforces that screening
+    ///      happened, that the caller is authorized for this insurer, and that
+    ///      only a coverage authority can choose Approved or Rejected.
+    /// @param claimId Screened claim whose coverage outcome is being finalized.
+    /// @param newStatus Approved or Rejected.
+    /// @param decisionHash Keccak-256 hash of the canonical decision record.
+    function decideClaim(
+        uint256 claimId,
+        Status newStatus,
+        bytes32 decisionHash
+    ) external onlyRole(DECISION_MAKER_ROLE) {
+        Claim storage claim = _claims[claimId];
+        address decisionMaker = _msgSender();
+        if (!claim.exists) revert UnknownClaim(claimId);
+        if (!_decisionMakerScopes[decisionMaker][claim.insurer]) {
+            revert DecisionMakerScopeMismatch(
+                decisionMaker,
+                claim.insurer
+            );
+        }
+        if (decisionHash == bytes32(0)) revert EmptyDecisionHash();
+        if (!_isAllowedDecisionTransition(claim.status, newStatus)) {
+            revert InvalidStatusTransition(claim.status, newStatus);
+        }
+
+        claim.status = newStatus;
+        claim.updatedAt = uint64(block.timestamp);
+        _coverageDecisions[claimId] = CoverageDecision({
+            decisionHash: decisionHash,
+            decidedBy: decisionMaker,
+            decidedAt: uint64(block.timestamp)
+        });
+
+        emit ClaimDecided(
+            claimId,
+            newStatus,
+            decisionMaker,
+            decisionHash,
+            claim.fraudScore,
+            block.timestamp
+        );
+    }
+
     /// @notice Return the current compact public record for one claim.
     /// @dev Reverts for an unknown ID rather than returning an all-zero struct,
     ///      so indexers can distinguish missing data from a legitimate value.
     /// @param claimId Identifier assigned by `submitClaim`.
     /// @return claimant Person represented by this claim. For legacy
     ///         insurer-operated records this remains the insurer address.
-    /// @return claimHash Permanent hash of the canonical off-chain bytes.
+    /// @return claimHash Permanent hash of the canonical encrypted envelope.
     /// @return dataPointer Public IPFS pointer supplied at submission.
     /// @return status Current lifecycle state.
     /// @return fraudScore Immutable first-assessment score in basis points.
@@ -395,6 +489,29 @@ contract ClaimsRegistry is
             claim.insurer,
             claim.submittedBy,
             claim.claimantCommitment
+        );
+    }
+
+    /// @notice Return the immutable terminal decision audit anchor.
+    /// @dev Before a terminal decision all fields are zero. Callers should use
+    ///      the claim status to distinguish an undecided record.
+    function getClaimDecision(
+        uint256 claimId
+    )
+        external
+        view
+        returns (
+            bytes32 decisionHash,
+            address decidedBy,
+            uint64 decidedAt
+        )
+    {
+        if (!_claims[claimId].exists) revert UnknownClaim(claimId);
+        CoverageDecision storage decision = _coverageDecisions[claimId];
+        return (
+            decision.decisionHash,
+            decision.decidedBy,
+            decision.decidedAt
         );
     }
 
@@ -452,6 +569,21 @@ contract ClaimsRegistry is
             _assessorScopes[assessor][insurer];
     }
 
+    /// @notice Report whether an account has at least one decision scope.
+    function isDecisionMaker(address account) external view returns (bool) {
+        return hasRole(DECISION_MAKER_ROLE, account);
+    }
+
+    /// @notice Report whether an account may finalize one insurer's claims.
+    function isDecisionMakerFor(
+        address decisionMaker,
+        address insurer
+    ) external view returns (bool) {
+        return
+            hasRole(DECISION_MAKER_ROLE, decisionMaker) &&
+            _decisionMakerScopes[decisionMaker][insurer];
+    }
+
     /// @notice Report whether an account may attest eligibility for one insurer.
     /// @dev The global role and exact insurer scope are both required. Revoking
     ///      the insurer's submitter authorization also disables new permits
@@ -481,7 +613,8 @@ contract ClaimsRegistry is
             if (
                 submitter == defaultAdmin() ||
                 hasRole(ASSESSOR_ROLE, submitter) ||
-                hasRole(PERMIT_ISSUER_ROLE, submitter)
+                hasRole(PERMIT_ISSUER_ROLE, submitter) ||
+                hasRole(DECISION_MAKER_ROLE, submitter)
             ) {
                 revert RoleSeparationRequired(submitter);
             }
@@ -512,7 +645,8 @@ contract ClaimsRegistry is
             if (
                 permitIssuer == defaultAdmin() ||
                 hasRole(SUBMITTER_ROLE, permitIssuer) ||
-                hasRole(ASSESSOR_ROLE, permitIssuer)
+                hasRole(ASSESSOR_ROLE, permitIssuer) ||
+                hasRole(DECISION_MAKER_ROLE, permitIssuer)
             ) {
                 revert RoleSeparationRequired(permitIssuer);
             }
@@ -563,7 +697,8 @@ contract ClaimsRegistry is
             if (
                 assessor == defaultAdmin() ||
                 hasRole(SUBMITTER_ROLE, assessor) ||
-                hasRole(PERMIT_ISSUER_ROLE, assessor)
+                hasRole(PERMIT_ISSUER_ROLE, assessor) ||
+                hasRole(DECISION_MAKER_ROLE, assessor)
             ) {
                 revert RoleSeparationRequired(assessor);
             }
@@ -588,6 +723,55 @@ contract ClaimsRegistry is
         emit AssessorUpdated(assessor, insurer, authorized);
     }
 
+    /// @notice Grant or revoke terminal coverage authority for one insurer.
+    /// @dev The role follows least privilege: it exists only while at least one
+    ///      explicit insurer scope exists. Decision makers cannot also submit,
+    ///      issue eligibility permits, screen fraud, or administer the registry.
+    function setDecisionMaker(
+        address decisionMaker,
+        address insurer,
+        bool authorized
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (decisionMaker == address(0) || insurer == address(0)) {
+            revert ZeroAddress();
+        }
+        if (authorized) {
+            if (!hasRole(SUBMITTER_ROLE, insurer)) {
+                revert InsurerNotAuthorized(insurer);
+            }
+            if (
+                decisionMaker == defaultAdmin() ||
+                hasRole(SUBMITTER_ROLE, decisionMaker) ||
+                hasRole(PERMIT_ISSUER_ROLE, decisionMaker) ||
+                hasRole(ASSESSOR_ROLE, decisionMaker)
+            ) {
+                revert RoleSeparationRequired(decisionMaker);
+            }
+            if (!_decisionMakerScopes[decisionMaker][insurer]) {
+                _decisionMakerScopes[decisionMaker][insurer] = true;
+                unchecked {
+                    ++_decisionMakerScopeCount[decisionMaker];
+                }
+                _grantRole(DECISION_MAKER_ROLE, decisionMaker);
+            }
+        } else {
+            if (!_decisionMakerScopes[decisionMaker][insurer]) {
+                revert DecisionMakerScopeNotConfigured(
+                    decisionMaker,
+                    insurer
+                );
+            }
+            delete _decisionMakerScopes[decisionMaker][insurer];
+            uint256 remainingScopes =
+                _decisionMakerScopeCount[decisionMaker] - 1;
+            _decisionMakerScopeCount[decisionMaker] = remainingScopes;
+            if (remainingScopes == 0) {
+                _revokeRole(DECISION_MAKER_ROLE, decisionMaker);
+            }
+        }
+        emit DecisionMakerUpdated(decisionMaker, insurer, authorized);
+    }
+
     /// @notice Start OpenZeppelin's delayed two-step admin transfer.
     /// @dev The proposed admin cannot already be a submitter or assessor. The
     ///      inherited delay and explicit acceptance reduce accidental or
@@ -601,7 +785,8 @@ contract ClaimsRegistry is
             (
                 hasRole(SUBMITTER_ROLE, newAdmin) ||
                 hasRole(ASSESSOR_ROLE, newAdmin) ||
-                hasRole(PERMIT_ISSUER_ROLE, newAdmin)
+                hasRole(PERMIT_ISSUER_ROLE, newAdmin) ||
+                hasRole(DECISION_MAKER_ROLE, newAdmin)
             )
         ) {
             revert RoleSeparationRequired(newAdmin);
@@ -617,7 +802,8 @@ contract ClaimsRegistry is
         if (
             hasRole(SUBMITTER_ROLE, sender) ||
             hasRole(ASSESSOR_ROLE, sender) ||
-            hasRole(PERMIT_ISSUER_ROLE, sender)
+            hasRole(PERMIT_ISSUER_ROLE, sender) ||
+            hasRole(DECISION_MAKER_ROLE, sender)
         ) {
             revert RoleSeparationRequired(sender);
         }
@@ -665,7 +851,8 @@ contract ClaimsRegistry is
         if (
             role == SUBMITTER_ROLE ||
             role == ASSESSOR_ROLE ||
-            role == PERMIT_ISSUER_ROLE
+            role == PERMIT_ISSUER_ROLE ||
+            role == DECISION_MAKER_ROLE
         ) {
             revert UseRoleConfigurationFunction(role);
         }
@@ -680,7 +867,8 @@ contract ClaimsRegistry is
         if (
             role == SUBMITTER_ROLE ||
             role == ASSESSOR_ROLE ||
-            role == PERMIT_ISSUER_ROLE
+            role == PERMIT_ISSUER_ROLE ||
+            role == DECISION_MAKER_ROLE
         ) {
             revert UseRoleConfigurationFunction(role);
         }
@@ -761,31 +949,39 @@ contract ClaimsRegistry is
             );
     }
 
-    /// @dev Final states deliberately have no outgoing transitions.
-    function _isAllowedTransition(
+    /// @dev Screening is a one-time contribution. It cannot be rewritten by an
+    ///      assessor after another party has reviewed the model output.
+    function _isAllowedAssessmentTransition(
         Status currentStatus,
         Status requestedStatus
     ) private pure returns (bool) {
-        if (currentStatus == Status.Submitted) {
-            return
+        return
+            currentStatus == Status.Submitted &&
+            (
                 requestedStatus == Status.UnderReview ||
-                requestedStatus == Status.Flagged;
-        }
-        if (currentStatus == Status.UnderReview) {
-            return
-                requestedStatus == Status.Approved ||
-                requestedStatus == Status.Rejected ||
-                requestedStatus == Status.Flagged;
-        }
-        if (currentStatus == Status.Flagged) {
-            return
-                requestedStatus == Status.Approved ||
-                requestedStatus == Status.Rejected;
-        }
-        return false;
+                requestedStatus == Status.Flagged
+            );
     }
 
-    /// @dev This deployment stores a bare IPFS CID only. Requiring an
+    /// @dev Only reviewed claims can reach a terminal coverage state. Terminal
+    ///      states deliberately have no outgoing transitions.
+    function _isAllowedDecisionTransition(
+        Status currentStatus,
+        Status requestedStatus
+    ) private pure returns (bool) {
+        bool isScreened =
+            currentStatus == Status.UnderReview ||
+            currentStatus == Status.Flagged;
+        bool isTerminal =
+            requestedStatus == Status.Approved ||
+            requestedStatus == Status.Rejected;
+        return isScreened && isTerminal;
+    }
+
+    /// @dev This deployment stores a bare IPFS CID only. The application layer
+    ///      must ensure it identifies an authenticated encrypted envelope;
+    ///      Solidity can validate the pointer syntax and content hash, but it
+    ///      cannot prove that arbitrary bytes were encrypted. Requiring an
     ///      alphanumeric target prevents malformed paths, query strings and
     ///      unsupported URL schemes from becoming permanent poison events.
     function _validateDataPointer(string calldata dataPointer) private pure {

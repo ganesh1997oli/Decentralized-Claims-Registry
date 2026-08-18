@@ -42,6 +42,11 @@ from packages.integrations.postgres import (
     PostgresRepositories,
     PostgresStorageError,
 )
+from packages.integrations.privacy import (
+    ClaimEnvelopeCipher,
+    ClaimEnvelopeConfigurationError,
+    ClaimEnvelopeError,
+)
 
 
 class ClaimSubmissionServiceError(RuntimeError):
@@ -57,6 +62,15 @@ class IPFSStore(Protocol):
 
     def upload_bytes(self, payload: bytes, *, filename: str, content_type: str) -> str:
         """Upload exact bytes and return their content identifier."""
+
+        ...
+
+
+class ClaimDocumentPrivacy(Protocol):
+    """Turn authorised canonical bytes into the only form allowed on IPFS."""
+
+    def seal(self, plaintext: bytes) -> bytes:
+        """Return an authenticated encrypted envelope without retaining plaintext."""
 
         ...
 
@@ -236,6 +250,7 @@ class ClaimSubmissionService:
         ipfs: IPFSStore,
         registry: ClaimsRegistryWriter,
         authorization: ClaimAuthorizationSigner,
+        privacy: ClaimDocumentPrivacy,
     ) -> None:
         """Bind upload, contract-write, and authorization adapters.
 
@@ -246,6 +261,7 @@ class ClaimSubmissionService:
         self.ipfs = ipfs
         self.registry = registry
         self.authorization = authorization
+        self.privacy = privacy
 
     @classmethod
     def from_env(cls) -> ClaimSubmissionService:
@@ -262,11 +278,13 @@ class ClaimSubmissionService:
                     private_key_env="SEPOLIA_SUBMITTER_PRIVATE_KEY"
                 ),
                 authorization=ClaimAuthorizationSigner.from_env(),
+                privacy=ClaimEnvelopeCipher.from_env(),
             )
         except (
             IPFSError,
             BlockchainSubmissionError,
             SubmissionAuthConfigurationError,
+            ClaimEnvelopeConfigurationError,
             ValueError,
         ) as exc:
             raise ClaimSubmissionServiceError(str(exc)) from exc
@@ -284,13 +302,15 @@ class ClaimSubmissionService:
         is represented by ``assessment=None``.
         """
 
-        # These exact bytes are uploaded to IPFS and hashed for the contract.
-        payload = canonical_claim_bytes(claim, principal, self.authorization)
+        # Canonical plaintext exists only inside this request. The public CID and
+        # on-chain hash commit to the authenticated encrypted envelope instead.
+        plaintext = canonical_claim_bytes(claim, principal, self.authorization)
         try:
+            payload = self.privacy.seal(plaintext)
             cid = self.ipfs.upload_bytes(
                 payload,
-                filename=f"{claim.claim_reference}.json",
-                content_type="application/json",
+                filename=f"{claim.claim_reference}.claim-envelope.json",
+                content_type="application/vnd.claims-registry.envelope+json",
             )
             data_pointer = f"ipfs://{cid}"
 
@@ -307,7 +327,7 @@ class ClaimSubmissionService:
             chain_result = self.registry.submit_claim(claim_hash, data_pointer)
         except ClaimSubmissionServiceError:
             raise
-        except (IPFSError, BlockchainSubmissionError) as exc:
+        except (IPFSError, BlockchainSubmissionError, ClaimEnvelopeError) as exc:
             raise ClaimSubmissionServiceError(str(exc)) from exc
         except Exception as exc:
             raise ClaimSubmissionServiceError(

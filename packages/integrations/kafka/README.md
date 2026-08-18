@@ -7,10 +7,10 @@ model work. Messages contain blockchain and IPFS references—not the full claim
 
 ```mermaid
 flowchart LR
-    Chain["Confirmed ClaimSubmitted"] --> Listener["Listener verifies IPFS hash"]
+    Chain["Confirmed ClaimSubmitted"] --> Listener["Listener verifies encrypted-envelope hash"]
     Listener --> Topic[("deployment-specific claims topic")]
     Topic --> Worker["Scoring worker"]
-    Worker --> Verify["Reverify hash + signed insurer authorization"]
+    Worker --> Verify["Reverify hash + unwrap and decrypt + verify authorization"]
     Verify --> Valid{"Immutable input valid?"}
     Valid -->|Yes| Duplicate["Cross-insurer duplicate check"]
     Valid -->|No| DeadLetter[("Durable dead-letter file")]
@@ -143,10 +143,10 @@ apps/backend/.venv/bin/python \
 apps/backend/.venv/bin/python -m apps.listener.claims_listener
 ```
 
-The worker needs the assessor wallet, IPFS gateway, PostgreSQL, model artifact,
-`CLAIM_AUTHORIZATION_KEY`, and `DUPLICATE_FINGERPRINT_KEY`. It does not receive
-claimant bearer tokens, permit-issuer keys, submitter wallet keys, or the Pinata
-JWT.
+The worker needs the assessor wallet, IPFS gateway, claim-envelope decryption
+configuration, PostgreSQL, model artifact, `CLAIM_AUTHORIZATION_KEY`, and
+`DUPLICATE_FINGERPRINT_KEY`. It does not receive claimant bearer tokens,
+permit-issuer keys, submitter wallet keys, or the Pinata JWT.
 
 Do not run `consumer.py` with the scorer's group ID: consumers in one Kafka
 group divide partitions and would take messages away from the scoring worker.

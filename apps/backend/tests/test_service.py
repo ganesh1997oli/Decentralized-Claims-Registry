@@ -52,8 +52,8 @@ class FakeIPFS:
 
     def upload_bytes(self, payload, *, filename, content_type):
         self.payload = payload
-        assert filename == "synthetic-claim-api-1.json"
-        assert content_type == "application/json"
+        assert filename == "synthetic-claim-api-1.claim-envelope.json"
+        assert content_type == "application/vnd.claims-registry.envelope+json"
         return "bafy-test"
 
     def download_pointer(self, pointer, *, attempts=3):
@@ -107,6 +107,13 @@ class FakeRegistry:
         )
 
 
+class TestPrivacy:
+    """Visible marker keeps orchestration tests independent from AES randomness."""
+
+    def seal(self, plaintext):
+        return b"encrypted:" + plaintext
+
+
 def test_canonical_serialization_is_stable():
     first = canonical_claim_bytes(claim_model(), PRINCIPAL, AUTHORIZATION)
     second = canonical_claim_bytes(claim_model(), PRINCIPAL, AUTHORIZATION)
@@ -125,6 +132,7 @@ def test_service_uploads_verifies_and_submits_exact_payload():
         ipfs=ipfs,
         registry=registry,
         authorization=AUTHORIZATION,
+        privacy=TestPrivacy(),
     )
 
     result = service.submit(claim_model(), PRINCIPAL)
@@ -143,6 +151,7 @@ def test_service_refuses_to_anchor_corrupt_ipfs_round_trip():
         ipfs=FakeIPFS(corrupt_download=True),
         registry=registry,
         authorization=AUTHORIZATION,
+        privacy=TestPrivacy(),
     )
 
     try:

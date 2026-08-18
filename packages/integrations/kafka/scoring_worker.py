@@ -39,6 +39,7 @@ from packages.integrations.postgres import (
     ClaimFeatureSnapshot,
     PostgresRepositories,
 )
+from packages.integrations.privacy import ClaimEnvelopeCipher, ClaimEnvelopeError
 from packages.model.contracts import FraudScore
 from packages.model.xgboost_scorer import XGBoostFraudScorer
 from packages.observability import (
@@ -227,6 +228,15 @@ class ClaimReader(Protocol):
 
     def download_pointer(self, pointer: str, *, attempts: int = 3) -> bytes:
         """Download an IPFS pointer with bounded dependency retries."""
+
+        ...
+
+
+class ClaimDocumentPrivacy(Protocol):
+    """Open authenticated claim envelopes inside the authorised worker only."""
+
+    def open(self, payload: bytes) -> bytes:
+        """Return canonical plaintext or raise without leaking claim fields."""
 
         ...
 
@@ -440,6 +450,7 @@ class ClaimScoringHandler:
         repository: AssessmentStore,
         registry: AssessmentRegistry,
         authorization: ClaimAuthorizationVerifier,
+        privacy: ClaimDocumentPrivacy,
     ) -> None:
         """Inject every external boundary in the event-to-assessment pipeline."""
 
@@ -450,6 +461,7 @@ class ClaimScoringHandler:
         self.repository = repository
         self.registry = registry
         self.authorization = authorization
+        self.privacy = privacy
 
     def __call__(self, event: ClaimSubmittedEvent) -> None:
         """Verify, enrich, score, and idempotently write one confirmed claim.
@@ -474,10 +486,17 @@ class ClaimScoringHandler:
 
         payload = self.ipfs.download_pointer(event.data_pointer)
         verify_claim_payload(event, payload)
-        # Parse only after the hash check. This prevents a different document at
-        # the same external URL from ever reaching feature extraction.
+        # Sepolia commits to the encrypted envelope. Decrypt only after that
+        # public integrity check, and never include plaintext or provider errors
+        # in the dead-letter record.
         try:
-            claim = StoredClaimDocument.model_validate_json(payload)
+            plaintext = self.privacy.open(payload)
+            claim = StoredClaimDocument.model_validate_json(plaintext)
+        except ClaimEnvelopeError as exc:
+            raise PermanentClaimProcessingError(
+                "invalid_claim_envelope",
+                "Claim document could not be authenticated and decrypted",
+            ) from exc
         except ValidationError as exc:
             # The bytes and their hash are already permanent on Sepolia. A
             # missing field, invalid type, unsupported schema version, or broken
@@ -626,6 +645,7 @@ def main() -> None:
         repository=repositories.assessments,
         registry=registry,
         authorization=ClaimAuthorizationSigner.from_env(),
+        privacy=ClaimEnvelopeCipher.from_env(),
     )
     monitored_handler = MonitoredClaimHandler(handler, metrics)
     dead_letter_file = scoring_dead_letter_path(

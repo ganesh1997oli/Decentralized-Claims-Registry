@@ -9,6 +9,16 @@ export default defineConfig({
     profiles: {
       default: {
         version: "0.8.28",
+        // The registry inherits audited access-control, EIP-712 and ERC-2771
+        // implementations. Compile every profile with the same production
+        // optimizer so tests exercise deployable bytecode rather than a larger,
+        // non-deployable debug variant.
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 200,
+          },
+        },
       },
       production: {
         version: "0.8.28",

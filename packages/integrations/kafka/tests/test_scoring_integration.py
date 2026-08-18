@@ -35,6 +35,11 @@ class PayloadStore:
         return self.payloads[pointer]
 
 
+class TestPrivacy:
+    def open(self, payload: bytes) -> bytes:
+        return payload
+
+
 class DeterministicScorer:
     def score(self, _claim) -> FraudScore:
         return FraudScore(
@@ -154,6 +159,7 @@ def test_broker_events_are_scored_and_matched_across_insurers(
         repository=postgres_repository.assessments,
         registry=registry,
         authorization=AUTHORIZATION,
+        privacy=TestPrivacy(),
     )
     publisher = KafkaClaimEventPublisher(kafka_settings)
     consumer = KafkaClaimEventConsumer(kafka_settings)

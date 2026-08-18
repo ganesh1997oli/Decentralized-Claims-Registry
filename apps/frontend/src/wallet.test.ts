@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { EIP712TypedData } from './api.ts'
+import type { CoverageDecisionProposal, EIP712TypedData } from './api.ts'
 import {
   connectWallet,
+  sendCoverageDecisionTransaction,
   signClaimantChallenge,
   signForwardRequest,
   switchWalletChain,
@@ -10,6 +11,7 @@ import {
 
 const ADDRESS = '0x1111111111111111111111111111111111111111'
 const SIGNATURE = `0x${'ab'.repeat(65)}`
+const TRANSACTION_HASH = `0x${'cd'.repeat(32)}`
 const TYPED_DATA: EIP712TypedData = {
   types: {
     EIP712Domain: [{ name: 'name', type: 'string' }],
@@ -31,6 +33,23 @@ const TYPED_DATA: EIP712TypedData = {
     deadline: '2000000000',
     data: '0x1234',
   },
+}
+
+const DECISION_PROPOSAL: CoverageDecisionProposal = {
+  decision_id: '11111111-1111-4111-8111-111111111111',
+  claim_id: 7,
+  decision_status: 'Approved',
+  decision_hash: `0x${'12'.repeat(32)}`,
+  decision_maker_address: ADDRESS,
+  proposed_by: 'northstar-governance-1',
+  human_outcome_id: '22222222-2222-4222-8222-222222222222',
+  human_outcome_revision: 2,
+  created_at: '2026-08-18T19:30:00Z',
+  confirmed_transaction_hash: null,
+  confirmed_at: null,
+  chain_id: 11155111,
+  contract_address: '0x2222222222222222222222222222222222222222',
+  transaction_data: '0x1234',
 }
 
 function provider(results: unknown[]): EthereumProvider & { request: ReturnType<typeof vi.fn> } {
@@ -82,6 +101,47 @@ describe('browser wallet boundary', () => {
     }
 
     await expect(connectWallet(wallet)).rejects.toThrow('wallet request was rejected')
+  })
+
+  it('switches chain and sends only the audited governance calldata', async () => {
+    const wallet = provider([null, TRANSACTION_HASH])
+
+    await expect(
+      sendCoverageDecisionTransaction(DECISION_PROPOSAL, wallet),
+    ).resolves.toBe(TRANSACTION_HASH)
+    expect(wallet.request.mock.calls).toEqual([
+      [
+        {
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: '0xaa36a7' }],
+        },
+      ],
+      [
+        {
+          method: 'eth_sendTransaction',
+          params: [
+            {
+              from: ADDRESS,
+              to: DECISION_PROPOSAL.contract_address,
+              data: DECISION_PROPOSAL.transaction_data,
+              value: '0x0',
+            },
+          ],
+        },
+      ],
+    ])
+  })
+
+  it('rejects malformed governance calldata before opening the wallet', async () => {
+    const wallet = provider([])
+
+    await expect(
+      sendCoverageDecisionTransaction(
+        { ...DECISION_PROPOSAL, transaction_data: 'not-calldata' },
+        wallet,
+      ),
+    ).rejects.toThrow('invalid transaction fields')
+    expect(wallet.request).not.toHaveBeenCalled()
   })
 
   it('rejects malformed accounts and signatures returned by an extension', async () => {

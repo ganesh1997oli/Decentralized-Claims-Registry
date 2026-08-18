@@ -152,7 +152,9 @@ review-only duplicate experience without contacting Sepolia.
 
 ## Safety limits
 
-- Evidence upload is intentionally absent while IPFS is public and unencrypted.
+- Evidence upload is intentionally absent. Claim JSON now uses an encrypted
+  envelope, but arbitrary files still need malware scanning, file validation,
+  retention and an authenticated viewing service.
 - The dashboard uses a confirmed-event PostgreSQL projection. It reports the
   indexed-through block and can temporarily lag the chain.
 - A duplicate match and XGBoost score are review signals only.

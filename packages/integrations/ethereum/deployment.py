@@ -49,6 +49,10 @@ PUBLIC_INTAKE_REGISTRY_FUNCTIONS = frozenset(
     }
 )
 PUBLIC_INTAKE_REGISTRY_EVENTS = frozenset({"ClaimPartiesRecorded"})
+GOVERNANCE_REGISTRY_FUNCTIONS = frozenset(
+    {"decideClaim", "getClaimDecision", "isDecisionMakerFor"}
+)
+GOVERNANCE_REGISTRY_EVENTS = frozenset({"ClaimDecided"})
 FORWARDER_REQUIRED_FUNCTIONS = frozenset(
     {"eip712Domain", "execute", "nonces", "verify"}
 )
@@ -118,6 +122,35 @@ class ClaimsDeployment:
                 f"Deployment {self.deployment_id!r} does not implement "
                 "insurer-permitted public claim intake; deploy and select the "
                 "current ClaimsRegistry interface"
+            )
+
+    @property
+    def supports_governance(self) -> bool:
+        """Return whether screening and coverage authority are separated."""
+
+        functions = {
+            str(entry.get("name"))
+            for entry in self.abi
+            if entry.get("type") == "function"
+        }
+        events = {
+            str(entry.get("name"))
+            for entry in self.abi
+            if entry.get("type") == "event"
+        }
+        return (
+            GOVERNANCE_REGISTRY_FUNCTIONS <= functions
+            and GOVERNANCE_REGISTRY_EVENTS <= events
+        )
+
+    def require_governance(self) -> None:
+        """Fail closed before preparing a terminal coverage transaction."""
+
+        if not self.supports_governance:
+            raise DeploymentConfigurationError(
+                f"Deployment {self.deployment_id!r} does not separate fraud "
+                "screening from insurer coverage decisions; deploy and select "
+                "the current ClaimsRegistry interface"
             )
 
 

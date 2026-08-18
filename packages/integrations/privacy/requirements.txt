@@ -1,0 +1,2 @@
+cryptography>=45,<47
+google-cloud-kms>=3.5,<4.0

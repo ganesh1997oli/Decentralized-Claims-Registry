@@ -14,18 +14,21 @@ flowchart LR
     Admin["Default admin"] -->|"setSubmitter"| Submitter["Insurer submitter"]
     Admin -->|"setPermitIssuer scoped to insurer"| Issuer["Eligibility permit issuer"]
     Admin -->|"setAssessor scoped to insurer"| Assessor["Scoring assessor"]
+    Admin -->|"setDecisionMaker scoped to insurer"| DecisionMaker["Coverage decision maker"]
     Claimant["Claimant / representative"] -->|"sign ForwardRequest"| Forwarder["ClaimsForwarder"]
     Issuer -->|"sign exact ClaimPermit"| Claim["Claim anchor"]
     Relayer["Unprivileged relayer"] -->|"pays gas"| Forwarder
     Forwarder -->|"submitClaimWithPermit as signer"| Claim
     Assessor -->|"assessClaim only for its insurer"| Claim
+    DecisionMaker -->|"decideClaim only for its insurer"| Claim
     Admin -. "delayed two-step transfer" .-> NewAdmin["New admin"]
 ```
 
-Admin, submitter, permit issuer, and assessor must be different addresses.
-Scoped roles can be changed only through `setSubmitter`, `setPermitIssuer`, and
-`setAssessor`; generic role calls are blocked so they cannot bypass separation
-or insurer-scope checks.
+Admin, submitter, permit issuer, scoring assessor, and coverage decision maker
+must be different addresses. Scoped roles can be changed only through
+`setSubmitter`, `setPermitIssuer`, `setAssessor`, and `setDecisionMaker`;
+generic role calls are blocked so they cannot bypass separation or
+insurer-scope checks.
 
 ## Claim lifecycle
 
@@ -34,15 +37,18 @@ stateDiagram-v2
     [*] --> Submitted
     Submitted --> UnderReview
     Submitted --> Flagged
-    UnderReview --> Approved
-    UnderReview --> Rejected
-    UnderReview --> Flagged
-    Flagged --> Approved
-    Flagged --> Rejected
+    UnderReview --> Approved: decision maker
+    UnderReview --> Rejected: decision maker
+    Flagged --> Approved: decision maker
+    Flagged --> Rejected: decision maker
 ```
 
-- The first assessment fixes a score between `0` and `10,000`.
-- Later lifecycle updates must carry the same score.
+- The one permitted scoring assessment fixes a score between `0` and `10,000`
+  and moves only from `Submitted` to `UnderReview` or `Flagged`.
+- A scoring assessor cannot approve or reject a claim.
+- A separate insurer-scoped decision maker can move a screened claim to
+  `Approved` or `Rejected`, recording a non-zero hash of the off-chain decision
+  proposal.
 - `Approved` and `Rejected` are final.
 - An assessor can update only claims created by an insurer in its explicit
   many-to-many scope. Removing one scope does not revoke its other scopes.
@@ -58,12 +64,15 @@ stateDiagram-v2
 | `claimPermitDigest(permit)` | Return the canonical EIP-712 permit digest |
 | `isClaimPermitUsed(id)` | Check one-time permit consumption |
 | `verifyClaimData(id, bytes)` | Compare supplied bytes with the saved Keccak-256 hash |
-| `assessClaim(id, status, score)` | Apply an allowed transition from the scoped assessor |
-| `isSubmitter` / `isAssessor` | Preflight a service wallet's role |
+| `assessClaim(id, status, score)` | Record the one model-screening transition from the scoped assessor |
+| `decideClaim(id, status, decisionHash)` | Finalize an already screened claim from the scoped decision maker |
+| `getClaimDecision(id)` | Read the decision hash, maker and timestamp for a finalized claim |
+| `isSubmitter` / `isAssessor` / `isDecisionMaker` | Preflight a service wallet's role |
 | `isAssessorFor` | Read one assessor/insurer scope |
+| `isDecisionMakerFor` | Read one decision-maker/insurer scope |
 | `isPermitIssuerFor` | Read one permit-issuer/insurer scope |
 | `trustedForwarder` | Read the immutable ERC-2771 forwarder |
-| `setSubmitter` / `setPermitIssuer` / `setAssessor` | Administer scoped service roles |
+| `setSubmitter` / `setPermitIssuer` / `setAssessor` / `setDecisionMaker` | Administer scoped service roles |
 
 Pointers must be a bare alphanumeric `ipfs://CID` no longer than 128 bytes.
 Paths, query strings, and other schemes are rejected before they become
@@ -105,7 +114,7 @@ Terminal B:
 ```bash
 cd apps/contracts
 cp ignition/parameters/sepolia.json.example /tmp/claims-local.json
-# Replace the four role placeholders with different local Hardhat accounts.
+# Replace the five role placeholders with different local Hardhat accounts.
 npm exec -- hardhat ignition deploy ignition/modules/Claimsregistry.ts \
   --parameters /tmp/claims-local.json \
   --network localhost
@@ -123,7 +132,7 @@ npm exec -- hardhat keystore set SEPOLIA_RPC_URL
 npm exec -- hardhat keystore set SEPOLIA_DEPLOYER_PRIVATE_KEY
 
 cp ignition/parameters/sepolia.json.example ignition/parameters/sepolia.json
-# Replace every address; admin, submitter, permit issuer and assessor must be distinct.
+# Replace every address; all five role addresses must be distinct.
 npm exec -- hardhat ignition deploy ignition/modules/Claimsregistry.ts \
   --parameters ignition/parameters/sepolia.json \
   --network sepolia
@@ -132,13 +141,15 @@ npm exec -- hardhat ignition deploy ignition/modules/Claimsregistry.ts \
 The deployer/admin key is not an application runtime secret. The eligibility
 service receives only an insurer-scoped, non-paying permit key, the scoring
 worker receives only an assessor key, and the relayer receives an unprivileged
-gas-paying key. FastAPI never receives claimant or transaction-paying keys.
+gas-paying key. The browser governance console uses a separate scoped decision
+wallet. FastAPI never receives claimant or transaction-paying keys.
 
 ## Sepolia deployment artifacts
 
-The currently checked-in gasless deployment predates permit-backed public intake
-and is therefore read-only for the new writer. Deploy this branch first and save
-its Ignition artifacts under a new ID such as `sepolia-public-intake-v1`.
+The currently checked-in public-intake deployment predates governed coverage
+decisions. It remains readable and supports existing intake, but the governance
+API deliberately rejects it. Deploy this branch first and save its Ignition
+artifacts under a new deployment ID before enabling `/governance`.
 
 The previous gasless research deployment is:
 
@@ -177,10 +188,10 @@ and administration rules and must not be selected by current runtimes.
 ## Security boundary
 
 OpenZeppelin supplies the access-control primitives, but the complete custom
-contract has not received an independent professional audit. The pointer is
-public, the contract cannot encrypt or delete IPFS content, role wallets still
-need operational protection, and Sepolia provides testnet—not production—
-assurance.
+contract has not received an independent professional audit. The pointer and
+encrypted bytes are public, the contract cannot delete IPFS content or protect
+off-chain wrapping keys, role wallets still need operational protection, and
+Sepolia provides testnet—not production—assurance.
 
 See the [security review](#solidity-security-review) for implemented findings and remaining
 risks, the [production gasless runbook](../relayer/README.md#production-gasless-claim-transactions),
@@ -234,8 +245,9 @@ role-reuse attempts, delayed administration transfer, and fraud-score fuzzing.
 
 ### Residual risks and limitations
 
-- IPFS payloads and pointers remain public and unencrypted. Only fictional,
-  synthetic research data is permitted.
+- IPFS pointers and encrypted envelopes remain public. Confidentiality depends
+  on the independently operated wrapping-key system and only fictional,
+  synthetic research data is permitted in this repository.
 - A compromised default administrator can immediately change submitter and
   assessor roles. A production design should use a multisignature account or
   timelock and managed signing infrastructure.

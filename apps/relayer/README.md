@@ -126,8 +126,8 @@ relayer never receives a registry role.
 
 > This makes the transaction path suitable for production hardening. It does
 > not make the complete current application production-ready for real insurance
-> data: it still uses Sepolia and public, unencrypted IPFS, and the custom
-> contract needs an independent audit before mainnet use.
+> data: it still uses Sepolia, exposes permanent public encrypted-IPFS anchors,
+> and the custom contract needs an independent audit before mainnet use.
 
 ### Trust and process boundaries
 

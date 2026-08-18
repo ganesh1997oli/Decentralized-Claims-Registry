@@ -15,8 +15,10 @@ contract ClaimsRegistryTest is Test {
   uint256 permitIssuerKey = 0xA11CE;
   address permitIssuer = vm.addr(permitIssuerKey);
   address assessor = makeAddr("assessor");
+  address decisionMaker = makeAddr("decisionMaker");
   address otherInsurer = makeAddr("otherInsurer");
   address otherAssessor = makeAddr("otherAssessor");
+  address otherDecisionMaker = makeAddr("otherDecisionMaker");
   address claimant = makeAddr("claimant");
 
   bytes32 constant CLAIM_HASH = keccak256("policy-42:incident-2026-07-13");
@@ -38,6 +40,14 @@ contract ClaimsRegistryTest is Test {
     uint16 fraudScore,
     uint256 timestamp
   );
+  event ClaimDecided(
+    uint256 indexed claimId,
+    ClaimsRegistry.Status indexed newStatus,
+    address indexed decisionMaker,
+    bytes32 decisionHash,
+    uint16 fraudScore,
+    uint256 timestamp
+  );
 
   function setUp() public {
     forwarder = new ClaimsForwarder();
@@ -46,6 +56,7 @@ contract ClaimsRegistryTest is Test {
       insurer,
       permitIssuer,
       assessor,
+      decisionMaker,
       address(forwarder),
       0
     );
@@ -296,37 +307,95 @@ contract ClaimsRegistryTest is Test {
     assertTrue(registry.isAssessorFor(assessor, otherInsurer));
   }
 
-  function test_LifecycleIsMonotonicAndScoreIsImmutable() public {
+  function test_ScreeningAndCoverageDecisionUseSeparateAuthorities() public {
     vm.prank(insurer);
     registry.submitClaim(CLAIM_HASH, DATA_POINTER);
     vm.prank(assessor);
     registry.assessClaim(0, ClaimsRegistry.Status.UnderReview, 4200);
+
+    bytes32 decisionHash = keccak256("claim-0-approved-v1");
+    vm.prank(decisionMaker);
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.InvalidStatusTransition.selector,
+        ClaimsRegistry.Status.UnderReview,
+        ClaimsRegistry.Status.Flagged
+      )
+    );
+    registry.decideClaim(
+      0,
+      ClaimsRegistry.Status.Flagged,
+      decisionHash
+    );
 
     vm.prank(assessor);
     vm.expectRevert(
       abi.encodeWithSelector(
         ClaimsRegistry.InvalidStatusTransition.selector,
         ClaimsRegistry.Status.UnderReview,
-        ClaimsRegistry.Status.Submitted
-      )
-    );
-    registry.assessClaim(0, ClaimsRegistry.Status.Submitted, 4200);
-
-    vm.prank(assessor);
-    vm.expectRevert(
-      abi.encodeWithSelector(
-        ClaimsRegistry.FraudScoreCannotChange.selector,
-        4200,
-        5000
+        ClaimsRegistry.Status.Approved
       )
     );
     registry.assessClaim(0, ClaimsRegistry.Status.Approved, 5000);
 
-    vm.prank(assessor);
-    registry.assessClaim(0, ClaimsRegistry.Status.Approved, 4200);
-    vm.prank(assessor);
+    vm.warp(3_000_000);
+    vm.expectEmit(true, true, true, true);
+    emit ClaimDecided(
+      0,
+      ClaimsRegistry.Status.Approved,
+      decisionMaker,
+      decisionHash,
+      4200,
+      3_000_000
+    );
+    vm.prank(decisionMaker);
+    registry.decideClaim(
+      0,
+      ClaimsRegistry.Status.Approved,
+      decisionHash
+    );
+
+    (
+      bytes32 storedHash,
+      address storedDecisionMaker,
+      uint64 decidedAt
+    ) = registry.getClaimDecision(0);
+    assertEq(storedHash, decisionHash);
+    assertEq(storedDecisionMaker, decisionMaker);
+    assertEq(decidedAt, 3_000_000);
+
+    vm.prank(decisionMaker);
     vm.expectRevert();
-    registry.assessClaim(0, ClaimsRegistry.Status.Rejected, 4200);
+    registry.decideClaim(
+      0,
+      ClaimsRegistry.Status.Rejected,
+      decisionHash
+    );
+  }
+
+  function test_RevertWhen_DecisionMakerBelongsToAnotherInsurer() public {
+    vm.startPrank(admin);
+    registry.setSubmitter(otherInsurer, true);
+    registry.setDecisionMaker(otherDecisionMaker, otherInsurer, true);
+    vm.stopPrank();
+    vm.prank(insurer);
+    registry.submitClaim(CLAIM_HASH, DATA_POINTER);
+    vm.prank(assessor);
+    registry.assessClaim(0, ClaimsRegistry.Status.UnderReview, 4200);
+
+    vm.prank(otherDecisionMaker);
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        ClaimsRegistry.DecisionMakerScopeMismatch.selector,
+        otherDecisionMaker,
+        insurer
+      )
+    );
+    registry.decideClaim(
+      0,
+      ClaimsRegistry.Status.Rejected,
+      keccak256("rejected")
+    );
   }
 
   function test_RevertWhen_UnknownClaim() public {

@@ -3,17 +3,17 @@
 A research application that anchors a synthetic insurance claim on Ethereum,
 screens it off-chain, and leaves a compact result that anyone can verify.
 
-> **Use fictional data only.** Claim JSON is uploaded to public, unencrypted
-> IPFS. Sepolia transactions and pointers are public. The model is trained on a
-> synthetic dataset and must never be used to approve, reject, or investigate a
-> real claim.
+> **Use fictional data only.** Claim documents are encrypted before they are
+> uploaded to public IPFS, but CIDs, Sepolia transactions, lifecycle states and
+> timing remain public. This repository has not completed the organisational,
+> legal, key-custody or independent security assurance needed for real claims.
 
 ## One claim, end to end
 
 ```mermaid
 flowchart LR
     Browser["React browser"] -->|"wallet proof + claim + policy"| API["FastAPI"]
-    API -->|"verified schema-v6 JSON"| IPFS[("Public IPFS")]
+    API -->|"AES-256-GCM claim envelope"| IPFS[("Public IPFS")]
     API -->|"scoped one-time insurer permit"| Permit["Permit signer"]
     API -->|"exact EIP-712 request"| Browser
     Browser -->|"claimant submitter signature"| API
@@ -24,10 +24,12 @@ flowchart LR
     Listener -->|"idempotent claim projection"| Postgres[("PostgreSQL")]
     Listener -->|"verified reference event"| Kafka[("Kafka")]
     Kafka --> Worker["Scoring worker"]
-    IPFS -->|"same bytes"| Worker
+    IPFS -->|"hash verify, then decrypt"| Worker
     Worker -->|"features, duplicate check, score, SHAP"| Postgres
     Worker -->|"status + score"| Chain
     Assessor["Human assessor console"] -->|"private fraud outcome revision"| Postgres
+    Governance["Insurer governance console"] -->|"audited decision proposal"| Postgres
+    Governance -->|"separate decision wallet"| Chain
     Postgres -->|"assessment details"| API
     Postgres -->|"authenticated human outcome"| API
     Postgres -->|"confirmed indexed claims"| API
@@ -44,11 +46,11 @@ the submission request open. See the
 
 | Place      | Stored                                                                                                                                                 | Deliberately not stored                                      |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
-| Browser    | Form state and short claimant session in memory; latest public receipt in local storage                                                                 | Wallet keys, Pinata JWT, HMAC keys, saved bearer sessions    |
-| IPFS       | Authorized schema-v6 synthetic claim JSON                                                                                                              | Encryption or access control                                 |
-| Sepolia    | Claim ID, claimant, insurer, submitter, claimant commitment, hash, CID, status, score, timestamps                                                      | Full claim, SHAP reasons, private fingerprints               |
+| Browser    | Form state and short claimant session in memory; latest public receipt in local storage                                                                 | Wallet keys, Pinata JWT, encryption master keys, HMAC keys, saved bearer sessions |
+| IPFS       | Versioned AES-256-GCM envelope containing the authorized schema-v6 claim; wrapped per-claim data key                                                 | Plaintext claim data or key-encryption keys                  |
+| Sepolia    | Claim ID, claimant, insurer, submitter, claimant commitment, encrypted-envelope hash, CID, status, score, decision hash, timestamps                   | Full claim, decision rationale, SHAP reasons, private fingerprints |
 | Kafka      | Versioned blockchain and IPFS references                                                                                                               | Full claim payload                                           |
-| PostgreSQL | Gasless idempotency/outbox/transaction attempts; confirmed public index and event history; versioned features, keyed fingerprints, score, SHAP reasons; private human-outcome revisions | HMAC keys, raw policy reference, description, evidence |
+| PostgreSQL | Gasless idempotency/outbox/transaction attempts; confirmed public index and event history; features, keyed fingerprints, score and SHAP reasons; private human-outcome revisions; append-only coverage-decision proposals | Encryption/HMAC keys, raw policy reference, description, evidence |
 
 ## Trust and replay boundaries
 
@@ -63,8 +65,9 @@ sequenceDiagram
     participant W as Worker
     participant P as PostgreSQL
 
-    A->>I: Upload exact canonical bytes
-    A->>I: Download and compare bytes
+    A->>A: Encrypt canonical claim with a fresh data key
+    A->>I: Upload exact envelope bytes
+    A->>I: Download and compare envelope bytes
     A->>P: Persist wallet-authorized request
     R->>P: Persist signed raw transaction before broadcast
     R->>E: Execute exact request and pay gas
@@ -72,7 +75,8 @@ sequenceDiagram
     L->>P: Append event and update claim projection
     L->>I: Download and verify on-chain hash
     L->>K: Publish deterministic event ID
-    W->>I: Reverify hash and gateway authorization
+    W->>I: Reverify envelope hash
+    W->>W: Unwrap data key and authenticate/decrypt claim
     W->>P: Save immutable feature snapshot and score
     W->>E: Write UnderReview or Flagged
     W->>P: Mark chain write complete
@@ -87,6 +91,10 @@ sequenceDiagram
   replay safely instead of silently skipping a claim.
 - Completed scores are reused on replay; the worker does not silently rescore a
   claim with a newer model.
+- Human fraud conclusions remain private PostgreSQL evidence. A separately
+  authenticated insurer operator prepares a coverage decision, and a distinct
+  scoped wallet must explicitly sign the final `Approved` or `Rejected`
+  transaction.
 
 ## Repository map
 
@@ -138,17 +146,19 @@ On macOS, install XGBoost's OpenMP runtime once with `brew install libomp`.
 Using the explicit `apps/backend/.venv/bin/python` path avoids accidentally
 running the root virtual environment or a system Python without dependencies.
 
-### 2. Deploy and configure public intake
+### 2. Deploy and configure public intake and governance
 
 ```bash
 test -f .env.local || cp .env.example .env.local
 ```
 
 Review `.env.local`; do not merely source it unchanged. The previous
-`sepolia-gasless-v1` contract lacks permits and is intentionally rejected for
-writes. Deploy this branch, record its block, save its Ignition artifacts under
-a new deployment ID, provision policy and owner-only permit-key settings, then
-follow the [public-intake guide](docs/README.md).
+`sepolia-public-intake-v1` predates the governed coverage-decision interface.
+Deploy this branch, record its block, save its Ignition artifacts under a new
+deployment ID, provision all five distinct contract roles, and configure claim
+encryption before accepting writes. The application can read the old artifact,
+but `/governance` fails closed until the selected artifact supports
+`decideClaim`, `isDecisionMakerFor`, and `ClaimDecided`.
 
 Build the reviewed synthetic model artifact:
 
@@ -225,11 +235,15 @@ curl --fail --silent http://127.0.0.1:8000/claims/gasless/config \
   | apps/backend/.venv/bin/python -m json.tool
 ```
 
-Readiness should report every dependency as `ok`. Open:
+Readiness should report every dependency as `ok`. It intentionally reports
+`coverage_governance` unavailable while an older deployment artifact is selected.
+Open:
 
 - claims application: <http://127.0.0.1:5173>
 - API documentation: <http://127.0.0.1:8000/docs>
 - indexer operations: <http://127.0.0.1:5173/operations>
+- human fraud review: <http://127.0.0.1:5173/assessor>
+- insurer coverage governance: <http://127.0.0.1:5173/governance>
 - Kafka UI: <http://127.0.0.1:8081>
 
 In the claims page, connect a claimant or authorized representative wallet and
@@ -254,13 +268,12 @@ that digest.
 ```mermaid
 stateDiagram-v2
     [*] --> Submitted
-    Submitted --> UnderReview: score below threshold
-    Submitted --> Flagged: score at or above threshold
-    UnderReview --> Approved: future human review
-    UnderReview --> Rejected: future human review
-    UnderReview --> Flagged: later review
-    Flagged --> Approved: future human review
-    Flagged --> Rejected: future human review
+    Submitted --> UnderReview: scoped scoring assessor
+    Submitted --> Flagged: scoped scoring assessor
+    UnderReview --> Approved: scoped decision maker
+    UnderReview --> Rejected: scoped decision maker
+    Flagged --> Approved: scoped decision maker
+    Flagged --> Rejected: scoped decision maker
 ```
 
 The worker can create only `UnderReview` or `Flagged`. It never infers
@@ -270,10 +283,13 @@ The worker can create only `UnderReview` or `Flagged`. It never infers
 The separate `/assessor` console records one of `ConfirmedFraud`, `Legitimate`,
 or `Inconclusive` in PostgreSQL after model screening. Corrections append a new
 revision instead of overwriting history. These human outcomes do not change the
-contract status: `Approved`/`Rejected` remain business lifecycle decisions and
-are never converted automatically into fraud labels. `Inconclusive` is excluded
-from binary-label eligibility, and the application performs no automatic model
-retraining.
+contract status: `Approved`/`Rejected` remain business coverage decisions and
+are never converted automatically into fraud labels. The `/governance` console
+requires a digest-only insurer-scoped API credential to prepare an append-only
+proposal and a different `DECISION_MAKER_ROLE` wallet to broadcast it. The
+listener confirms the proposal only after the `ClaimDecided` log reaches the
+configured confirmation depth. `Inconclusive` cannot support a binary decision,
+and the application performs no automatic model retraining.
 
 ## Sepolia deployments
 
@@ -319,7 +335,9 @@ TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
 
 ## Limits that matter
 
-- IPFS content is public and unencrypted.
+- Encrypted IPFS envelopes are public and permanent; confidentiality depends on
+  protecting and rotating the external wrapping key. Production mode rejects
+  local keys and requires Google Cloud KMS.
 - Valid sponsorship quotas are durable in PostgreSQL; early/invalid-credential
   abuse counters remain process-local and should be enforced at the edge in a
   multi-instance production deployment.
@@ -327,14 +345,15 @@ TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
   by the configured confirmation depth.
 - Exact incident fingerprints produce review candidates, not proof of fraud.
 - The synthetic model is an integration artifact, not a validated decision model.
-- Insurers sign through browser test wallets; relayer and assessor keys are
-  process-level testnet signers, not managed signing infrastructure.
+- Insurers sign through browser test wallets; relayer, assessor and decision
+  wallets are testnet identities, not managed signing infrastructure.
 - Local and GCP Compose files use one Kafka broker and one PostgreSQL instance.
 
-Before real claim data, the design would still need encryption before IPFS,
-managed keys and signing, enterprise identity, malware and evidence controls,
-managed replicated infrastructure, explicit deep-reorganization recovery,
-retention rules, and a validated and monitored model.
+Before real claim data, the implementation would still need enterprise identity
+and access reviews, HSM/managed signing for every chain role, independent
+security and smart-contract audits, malware and evidence controls, managed
+replicated infrastructure, explicit deep-reorganization recovery, retention
+and key-destruction policy, and a validated and monitored model.
 
 ## Focused guides
 
@@ -353,6 +372,7 @@ retention rules, and a validated and monitored model.
 | Training and SHAP                                 | [Model](packages/model/README.md)                                                              |
 | Notebook workflow                                 | [Notebooks](packages/model/notebooks/README.md)                                                |
 | Public file storage                               | [IPFS](packages/integrations/ipfs/README.md)                                                   |
+| Claim-envelope encryption                        | [Privacy](packages/integrations/privacy/README.md)                                             |
 | Event delivery and replay                         | [Kafka](packages/integrations/kafka/README.md)                                                 |
 | Feature and assessment storage                    | [PostgreSQL](packages/integrations/postgres/README.md)                                         |
 | Single-VM deployment                              | [Google Cloud](infrastructure/gcp/README.md)                                                   |

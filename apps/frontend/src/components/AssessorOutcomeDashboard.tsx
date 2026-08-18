@@ -368,7 +368,7 @@ export function AssessorOutcomeDashboard() {
                   rel="noreferrer"
                   className="rounded-full border border-ink/10 bg-white px-4 py-2 text-xs font-bold text-teal"
                 >
-                  Review IPFS evidence ↗
+                  Verify encrypted IPFS anchor ↗
                 </a>
               </div>
             </div>
@@ -475,4 +475,3 @@ export function AssessorOutcomeDashboard() {
     </div>
   )
 }
-

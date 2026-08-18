@@ -2,8 +2,8 @@
 
 This guide starts the complete gasless claims workflow on a local macOS or Linux
 machine. “Local” describes where the application processes run. Claim anchors
-still use the public Sepolia test network, and claim JSON still goes to public
-IPFS through Pinata.
+still use the public Sepolia test network, and encrypted claim envelopes still
+go to public IPFS through Pinata.
 
 > Use fictional data and test wallets only. Never paste a mainnet wallet key,
 > real policy information, or personal evidence into this application.
@@ -15,7 +15,7 @@ independent processes:
 
 | Process             | Why it exists                                                  | Keep it running? |
 | ------------------- | -------------------------------------------------------------- | ---------------- |
-| PostgreSQL          | Durable gasless outbox, index, assessments and checkpoints     | Yes              |
+| PostgreSQL          | Durable gasless outbox, index, assessments, governance proposals and checkpoints | Yes |
 | Kafka               | Carries verified claim references to the scoring worker        | Yes              |
 | FastAPI             | Verifies claimant sessions/policies, issues permits and prepares EIP-712 data | Yes |
 | React/Vite          | Browser UI and claimant-wallet signature flow                  | Yes              |
@@ -29,7 +29,7 @@ relayer, listener, or worker tries to use them.
 ```mermaid
 flowchart LR
     Browser["Browser + claimant wallet"] --> API["FastAPI"]
-    API --> IPFS[("Public IPFS")]
+    API -->|"encrypted envelope"| IPFS[("Public IPFS")]
     API --> DB[("PostgreSQL outbox")]
     Relayer["Relayer"] --> DB
     Relayer --> Chain[("Sepolia")]
@@ -52,7 +52,7 @@ Install:
 - a Sepolia RPC URL;
 - a Pinata JWT; and
 - fictional Sepolia wallets for insurer, permit issuer, claimant, assessor,
-  relayer, and offline admin
+  relayer, coverage decision maker, and offline admin
   roles.
 
 Check the local tools:
@@ -123,6 +123,12 @@ The checked-in artifact proves addresses and ABI, but it does not include local
 secrets. Public writes still require the scoped permit-issuer key, eligible test
 policy, claimant wallet, assessor, relayer, Pinata token, and HMAC settings.
 
+That checked-in artifact predates `DECISION_MAKER_ROLE` and `ClaimDecided`.
+Existing intake and read paths can still use it, but the `/governance` route
+fails closed. To exercise the complete lifecycle, deploy this branch with five
+distinct role addresses, register the new artifact, update
+`CLAIMS_DEPLOYMENT_ID` and `LISTENER_START_BLOCK`, then run all migrations.
+
 At minimum, review these settings in `.env.local`:
 
 | Setting                                  | What to provide                                                 |
@@ -141,6 +147,8 @@ At minimum, review these settings in `.env.local`:
 | `GASLESS_REQUEST_FINGERPRINT_KEY`        | Separate random API idempotency HMAC secret                     |
 | `INDEXER_OPERATIONS_API_KEY_SHA256`      | Digest of the read-only dashboard key                           |
 | `ASSESSOR_OUTCOME_CREDENTIALS_JSON`      | Human reviewer references and digest-only API credentials       |
+| `GOVERNANCE_CREDENTIALS_JSON`            | Insurer-scoped proposal-maker references and digest-only credentials |
+| `CLAIM_ENCRYPTION_PROVIDER` and related settings | Local wrapping-key ring for development; GCP KMS for production |
 
 ### Public claimant, policy, and permit binding
 
@@ -203,6 +211,42 @@ Give the raw key only to the human reviewer and place the printed JSON record in
 the API environment. Restart FastAPI after changing this setting. The reviewer
 can record `ConfirmedFraud`, `Legitimate`, or `Inconclusive` only after model
 screening exists; the result stays off-chain and does not trigger retraining.
+
+### Coverage governance credential and wallet
+
+For the checked-in local example, open `/governance` and enter:
+
+```text
+local-governance-maker-key-change-before-hosting
+```
+
+This key only identifies the proposal maker. Connect a different test wallet
+that has `DECISION_MAKER_ROLE` for the claim's insurer before preparing a final
+decision. Generate a replacement proposal-maker credential with:
+
+```bash
+apps/backend/.venv/bin/python \
+  apps/backend/scripts/generate_governance_credential.py \
+  northstar-governance-1 0xYOUR_INSURER_WALLET
+```
+
+Store only the printed digest-bearing JSON entry in the API environment. The
+API validates the model screen, latest human conclusion, insurer scope and
+wallet role, then returns calldata. The connected wallet—not FastAPI—broadcasts
+the final transaction.
+
+### Claim encryption
+
+The default local settings encrypt every canonical claim with AES-256-GCM and
+wrap its random data key with the example `local-v1` key. Use it only for local
+fictional data. The API and scoring worker need identical encryption settings;
+the listener needs none because it verifies the public encrypted bytes only.
+
+For a hosted production environment set `DEPLOYMENT_ENVIRONMENT=production`,
+`CLAIM_ENCRYPTION_PROVIDER=gcp-kms`, and `CLAIM_ENCRYPTION_GCP_KMS_KEY` to a full
+CryptoKey resource. Production startup rejects the local adapter and legacy
+plaintext. Retain access to old key versions for the full claim-retention
+period when rotating keys.
 
 ## 4. Build the reviewed model artifact
 
