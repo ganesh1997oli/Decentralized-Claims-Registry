@@ -53,6 +53,11 @@ from packages.integrations.postgres import (
 
 FORWARDER_NAME = "ClaimsRegistryForwarder"
 FORWARDER_VERSION = "1"
+DEFAULT_FORWARD_GAS = 400_000
+MAX_FORWARD_GAS = 500_000
+DEFAULT_RELAY_TRANSACTION_GAS = 600_000
+MAX_RELAY_TRANSACTION_GAS = 750_000
+RELAY_ESTIMATE_BUFFER_PERCENT = 120
 
 
 class GaslessBlockchainError(RuntimeError):
@@ -231,7 +236,7 @@ class GaslessClaimsGateway:
             self.forwarder = connect_claims_forwarder(self.w3, deployment)
         except (DeploymentConfigurationError, DeploymentValidationError) as exc:
             raise GaslessBlockchainError(str(exc)) from exc
-        if forward_gas > 500_000:
+        if forward_gas > MAX_FORWARD_GAS:
             raise GaslessBlockchainError(
                 "GASLESS_FORWARD_GAS cannot exceed the 500000 sponsorship cap"
             )
@@ -276,7 +281,11 @@ class GaslessClaimsGateway:
         return cls(
             rpc_url=rpc_url,
             deployment=deployment,
-            forward_gas=_positive_int(settings, "GASLESS_FORWARD_GAS", 400_000),
+            forward_gas=_positive_int(
+                settings,
+                "GASLESS_FORWARD_GAS",
+                DEFAULT_FORWARD_GAS,
+            ),
             signature_ttl_seconds=_positive_int(
                 settings, "GASLESS_SIGNATURE_TTL_SECONDS", 600
             ),
@@ -514,6 +523,14 @@ class GaslessRelayChain(GaslessClaimsGateway):
             signature_ttl_seconds=signature_ttl_seconds,
             permit_issuer=None,
         )
+        if max_transaction_gas < forward_gas:
+            raise GaslessBlockchainError(
+                "GASLESS_MAX_TRANSACTION_GAS must cover GASLESS_FORWARD_GAS"
+            )
+        if max_transaction_gas > MAX_RELAY_TRANSACTION_GAS:
+            raise GaslessBlockchainError(
+                "GASLESS_MAX_TRANSACTION_GAS cannot exceed the 750000 relay cap"
+            )
         try:
             self.account = self.w3.eth.account.from_key(private_key)
         except Exception as exc:
@@ -544,7 +561,11 @@ class GaslessRelayChain(GaslessClaimsGateway):
             deployment = load_claims_deployment(settings)
         except DeploymentConfigurationError as exc:
             raise GaslessBlockchainError(str(exc)) from exc
-        forward_gas = _positive_int(settings, "GASLESS_FORWARD_GAS", 400_000)
+        forward_gas = _positive_int(
+            settings,
+            "GASLESS_FORWARD_GAS",
+            DEFAULT_FORWARD_GAS,
+        )
         signature_ttl_seconds = _positive_int(
             settings, "GASLESS_SIGNATURE_TTL_SECONDS", 600
         )
@@ -580,7 +601,9 @@ class GaslessRelayChain(GaslessClaimsGateway):
             forward_gas=forward_gas,
             signature_ttl_seconds=signature_ttl_seconds,
             max_transaction_gas=_positive_int(
-                settings, "GASLESS_MAX_TRANSACTION_GAS", 500_000
+                settings,
+                "GASLESS_MAX_TRANSACTION_GAS",
+                DEFAULT_RELAY_TRANSACTION_GAS,
             ),
             max_fee_per_gas_wei=Web3.to_wei(
                 _positive_int(settings, "GASLESS_MAX_FEE_GWEI", 100), "gwei"
@@ -735,7 +758,9 @@ class GaslessRelayChain(GaslessClaimsGateway):
             estimate = int(
                 execute.estimate_gas({"from": self.account.address, "value": 0})
             )
-            transaction_gas = (estimate * 120 + 99) // 100
+            transaction_gas = (
+                estimate * RELAY_ESTIMATE_BUFFER_PERCENT + 99
+            ) // 100
             if transaction_gas > self.max_transaction_gas:
                 raise GaslessBlockchainError(
                     "Relay transaction exceeds the configured gas cap"

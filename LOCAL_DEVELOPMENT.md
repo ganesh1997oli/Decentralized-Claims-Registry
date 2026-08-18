@@ -108,28 +108,28 @@ secrets:
 test -f .env.local || cp .env.example .env.local
 ```
 
-The checked-in gasless Sepolia artifact below is retained for history but lacks
-permit-backed public intake and is rejected for writes:
+The current public-intake Sepolia artifact is checked in alongside the previous
+gasless deployment:
 
 | Item                      | Value                                        |
 | ------------------------- | -------------------------------------------- |
-| Deployment ID             | `sepolia-gasless-v1`                         |
-| Registry                  | `0x5A7A3e22843397f998823D0d58aBd2E1f4b2A300` |
-| Forwarder                 | `0x0e68Ac27a344f454373604Eec3144c427661E5F0` |
-| Registry deployment block | `11426492`                                   |
+| Deployment ID             | `sepolia-public-intake-v1`                   |
+| Registry                  | `0xb64BaB321e0Fb19b2295f8182D5A37bAf85F7dff` |
+| Forwarder                 | `0xeff61937C6a11236D87863e763c13cd7083f0BD0` |
+| Registry deployment block | `11516697`                                   |
 | Chain ID                  | `11155111` (Sepolia)                         |
 
-Deploy this branch before running the public writer. Store the resulting
-Ignition directory under a new ID (for example `sepolia-public-intake-v1`) and
-record its exact registry block in `LISTENER_START_BLOCK`.
+The checked-in artifact proves addresses and ABI, but it does not include local
+secrets. Public writes still require the scoped permit-issuer key, eligible test
+policy, claimant wallet, assessor, relayer, Pinata token, and HMAC settings.
 
 At minimum, review these settings in `.env.local`:
 
 | Setting                                  | What to provide                                                 |
 | ---------------------------------------- | --------------------------------------------------------------- |
 | `SEPOLIA_RPC_URL`                        | A working Sepolia HTTP RPC endpoint                             |
-| `CLAIMS_DEPLOYMENT_ID`                   | New public-intake Ignition artifact ID                          |
-| `LISTENER_START_BLOCK`                   | Exact block of that registry deployment                        |
+| `CLAIMS_DEPLOYMENT_ID`                   | `sepolia-public-intake-v1`                                     |
+| `LISTENER_START_BLOCK`                   | `11516697`                                                     |
 | `PINATA_JWT`                             | Pinata upload token used only by FastAPI                        |
 | `CLAIMANT_SESSION_SIGNING_KEY` and related claimant keys | Independent random wallet-session secrets       |
 | `POLICY_ELIGIBILITY_RECORDS_JSON`        | Digest-only policy records for the controlled adapter           |

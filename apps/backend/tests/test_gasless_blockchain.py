@@ -209,7 +209,7 @@ def relay_chain(
     adapter.deployment = DEPLOYMENT
     adapter.forward_gas = 250_000
     adapter.signature_ttl_seconds = 600
-    adapter.max_transaction_gas = 500_000
+    adapter.max_transaction_gas = gasless.DEFAULT_RELAY_TRANSACTION_GAS
     adapter.max_fee_per_gas_wei = 100
     adapter.max_priority_fee_per_gas_wei = 10
     adapter.account = FakeAccount()
@@ -370,6 +370,21 @@ def test_relay_signer_builds_only_the_prevalidated_forwarder_transaction():
     }
 
 
+def test_relay_default_gas_cap_covers_public_permit_calldata():
+    """Keep the sponsored cap above the measured permit-call safety buffer."""
+
+    # The first live public-intake canary estimated 420,762 gas. The adapter
+    # deliberately adds 20% before signing, so the supported default must admit
+    # the resulting 504,915-gas transaction without weakening forward-call gas.
+    execute = FakeExecute(estimate=420_762)
+    adapter = relay_chain(execute=execute)
+
+    adapter.sign_relay(submission_record(), relayer_nonce=9)
+
+    assert execute.built is not None
+    assert execute.built["gas"] == 504_915
+
+
 def test_relay_signer_rejects_incomplete_wrong_target_and_excess_gas():
     adapter = relay_chain()
     with pytest.raises(GaslessBlockchainError, match="no submitter signature"):
@@ -377,7 +392,7 @@ def test_relay_signer_rejects_incomplete_wrong_target_and_excess_gas():
     with pytest.raises(GaslessBlockchainError, match="does not match"):
         adapter.prepare_relay_signer(submission_record(chain_id=1))
 
-    adapter = relay_chain(execute=FakeExecute(estimate=500_000))
+    adapter = relay_chain(execute=FakeExecute(estimate=600_000))
     with pytest.raises(GaslessBlockchainError, match="gas cap"):
         adapter.prepare_relay_signer(submission_record())
 

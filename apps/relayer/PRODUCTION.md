@@ -189,7 +189,7 @@ Recommended starting caps are intentionally conservative and must be load- and
 fee-tested for the target network:
 
 - forward request gas: 400,000; hard application maximum: 500,000;
-- relay transaction gas: 500,000;
+- relay transaction gas: 600,000; hard application maximum: 750,000;
 - signature TTL: 600 seconds; hard application maximum: 3,600 seconds;
 - stuck threshold: 120 seconds;
 - confirmations: 12;

@@ -279,13 +279,14 @@ retraining.
 
 | Purpose                       | Deployment ID               | Registry                                                                                            | Forwarder                                                                                         | Start block |
 | ----------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------- |
+| Permit-backed public intake   | `sepolia-public-intake-v1`  | [`0xb64B...7dff`](https://sepolia.etherscan.io/address/0xb64BaB321e0Fb19b2295f8182D5A37bAf85F7dff) | [`0xeff6...0BD0`](https://sepolia.etherscan.io/address/0xeff61937C6a11236D87863e763c13cd7083f0BD0) | `11516697` |
 | Previous gasless flow (no public permits) | `sepolia-gasless-v1` | [`0x5A7A...A300`](https://sepolia.etherscan.io/address/0x5A7A3e22843397f998823D0d58aBd2E1f4b2A300) | [`0x0e68...5F0`](https://sepolia.etherscan.io/address/0x0e68Ac27a344f454373604Eec3144c427661E5F0) | `11426492` |
 | Read-only legacy history      | `sepolia-security-audit-v1` | [`0x2AbA...B78cB`](https://sepolia.etherscan.io/address/0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB) | None                                                                                              | `11377814`  |
 
-Both use Sepolia chain ID `11155111`. Runtime selection is explicit through
+All use Sepolia chain ID `11155111`. Runtime selection is explicit through
 `CLAIMS_DEPLOYMENT_ID`; the listener checkpoint and projection are additionally
-scoped by chain and registry address. The gasless API fails closed if the legacy
-deployment is selected because it has no trusted forwarder.
+scoped by chain and registry address. Public writes fail closed unless the
+selected artifact contains the current permit-backed interface.
 
 ## Verification
 
