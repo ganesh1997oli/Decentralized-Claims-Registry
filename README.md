@@ -38,7 +38,7 @@ The split is intentional: policy eligibility and the insurer permit authorize
 the claim, the claimant or representative authorizes the exact call, and an
 isolated relayer only pays gas. Kafka handles slower screening without holding
 the submission request open. See the
-[public-intake design and provisioning guide](docs/PUBLIC_CLAIM_INTAKE.md).
+[public-intake design and provisioning guide](docs/README.md).
 
 ## What is stored where
 
@@ -148,7 +148,7 @@ Review `.env.local`; do not merely source it unchanged. The previous
 `sepolia-gasless-v1` contract lacks permits and is intentionally rejected for
 writes. Deploy this branch, record its block, save its Ignition artifacts under
 a new deployment ID, provision policy and owner-only permit-key settings, then
-follow the [public-intake guide](docs/PUBLIC_CLAIM_INTAKE.md).
+follow the [public-intake guide](docs/README.md).
 
 Build the reviewed synthetic model artifact:
 
@@ -338,24 +338,24 @@ retention rules, and a validated and monitored model.
 
 ## Focused guides
 
-| Area                                    | Guide                                                                  |
-| --------------------------------------- | ---------------------------------------------------------------------- |
-| Complete local startup                  | [Local development](LOCAL_DEVELOPMENT.md)                              |
-| FastAPI, claimant sessions, policies and permits | [Backend](apps/backend/BACKEND.md)                              |
-| Gasless relayer                         | [Relayer](apps/relayer/RELAYER.md)                                     |
-| Gasless security and operations         | [Production gasless runbook](apps/relayer/PRODUCTION.md)               |
-| Indexer monitoring and recovery         | [Indexer operations runbook](apps/listener/OPERATIONS.md)              |
-| Claim limits and controlled test bypass | [Rate-limit runbook](apps/backend/RATE_LIMITING.md)                    |
-| Cross-insurer duplicate screening       | [Duplicate screening](packages/duplicates/DUPLICATE_SCREENING.md)      |
-| Browser behaviour                       | [Frontend](apps/frontend/FRONTEND.md)                                  |
-| Block polling and recovery              | [Listener](apps/listener/LISTENER.md)                                  |
-| Roles and lifecycle rules               | [Smart contract](apps/contracts/SMART_CONTRACT.md)                     |
-| Training and SHAP                       | [Model](packages/model/MODEL.md)                                       |
-| Notebook workflow                       | [Notebooks](packages/model/notebooks/NOTEBOOKS.md)                     |
-| Public file storage                     | [IPFS](packages/integrations/ipfs/IPFS.md)                             |
-| Event delivery and replay               | [Kafka](packages/integrations/kafka/KAFKA.md)                          |
-| Feature and assessment storage          | [PostgreSQL](packages/integrations/postgres/POSTGRESQL.md)             |
-| Single-VM deployment                    | [Google Cloud](infrastructure/gcp/GCP_DEPLOYMENT.md)                   |
+| Area                                              | Guide                                                                                         |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Complete local startup                            | [Local development](LOCAL_DEVELOPMENT.md)                                                     |
+| FastAPI, claimant sessions, policies and permits  | [Backend](apps/backend/README.md)                                                              |
+| Gasless relayer                                   | [Relayer](apps/relayer/README.md)                                                              |
+| Gasless security and operations                   | [Production gasless runbook](apps/relayer/README.md#production-gasless-claim-transactions)    |
+| Indexer monitoring and recovery                   | [Indexer operations runbook](apps/listener/README.md#indexer-operations-runbook)              |
+| Claim limits and controlled test bypass           | [Rate-limit runbook](apps/backend/README.md#public-claim-intake-limits)                        |
+| Cross-insurer duplicate screening                 | [Duplicate screening](packages/duplicates/README.md)                                          |
+| Browser behaviour                                 | [Frontend](apps/frontend/README.md)                                                            |
+| Block polling and recovery                        | [Listener](apps/listener/README.md)                                                            |
+| Roles and lifecycle rules                         | [Smart contract](apps/contracts/README.md)                                                     |
+| Training and SHAP                                 | [Model](packages/model/README.md)                                                              |
+| Notebook workflow                                 | [Notebooks](packages/model/notebooks/README.md)                                                |
+| Public file storage                               | [IPFS](packages/integrations/ipfs/README.md)                                                   |
+| Event delivery and replay                         | [Kafka](packages/integrations/kafka/README.md)                                                 |
+| Feature and assessment storage                    | [PostgreSQL](packages/integrations/postgres/README.md)                                         |
+| Single-VM deployment                              | [Google Cloud](infrastructure/gcp/README.md)                                                   |
 
 Stop local infrastructure without deleting its volumes:
 

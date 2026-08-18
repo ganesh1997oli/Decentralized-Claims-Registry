@@ -185,5 +185,5 @@ The local single broker uses plaintext inside the development boundary. A
 production design still needs managed or replicated brokers, TLS/SASL,
 centralized dead-letter retention, alerting, and an approved replay workflow.
 
-See the [listener guide](../../../apps/listener/LISTENER.md) and the
-[PostgreSQL guide](../postgres/POSTGRESQL.md).
+See the [listener guide](../../../apps/listener/README.md) and the
+[PostgreSQL guide](../postgres/README.md).

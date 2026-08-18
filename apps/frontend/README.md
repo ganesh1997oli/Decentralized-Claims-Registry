@@ -158,5 +158,5 @@ review-only duplicate experience without contacting Sepolia.
 - A duplicate match and XGBoost score are review signals only.
 - Use only fictional policy, claimant, and incident information.
 
-See the [backend guide](../backend/BACKEND.md) for claimant, policy, and permit configuration and the
+See the [backend guide](../backend/README.md) for claimant, policy, and permit configuration and the
 [root runbook](../../README.md) for the complete process order.

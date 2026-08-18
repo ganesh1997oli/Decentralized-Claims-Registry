@@ -35,5 +35,5 @@ echo "Training the pinned research model and writing its checksum metadata..."
 "${compose[@]}" run --rm model-trainer
 
 echo
-echo "Model training completed. Review packages/model/RESULTS.md and the generated metadata"
+echo "Model training completed. Review packages/model/README.md#initial-xgboost-research-result and the generated metadata"
 echo "before treating this artifact as approved for a dissertation experiment."
