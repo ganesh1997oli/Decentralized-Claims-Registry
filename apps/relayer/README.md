@@ -8,6 +8,24 @@ persists a signed EOA transaction before broadcasting it, and confirms the exact
 It is intentionally not part of FastAPI. An HTTP retry must never allocate an
 Ethereum EOA nonce or gain access to the wallet that pays gas.
 
+## Quick mental model
+
+The relayer is a **restricted postage payer**. The claimant and insurer have
+already authorized the exact envelope; the relayer may pay to deliver it, but
+cannot change its contents or grant itself a registry role.
+
+| Boundary | Relayer responsibility |
+| --- | --- |
+| Reads | Only durable `authorized` submissions from the PostgreSQL outbox |
+| Verifies | Deployment, forwarder request, signatures, fee/gas caps, registry roles and matching receipt event |
+| Owns | One dedicated Sepolia gas-paying key and its durable nonce/attempt history |
+| Writes | Signed raw transaction before broadcast, attempt hashes, replacement fees and final receipt state |
+| Must not own | Claimant, permit-issuer, assessor or admin authority; IPFS upload; model scoring |
+
+Persisting the raw transaction before broadcast closes the most dangerous crash
+window: after a restart, the process can resend the same bytes instead of
+silently allocating a second nonce.
+
 ## State transition owned by the relayer
 
 ```mermaid

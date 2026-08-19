@@ -3,6 +3,24 @@
 This package checks whether the same incident has already been submitted by a
 different insurer. It creates a review signal, not a fraud decision.
 
+## Quick mental model
+
+This is closer to a **privacy-conscious exact-match alarm** than a similarity
+search. Two normalized synthetic incidents produce the same keyed fingerprint;
+the database can compare those fingerprints without storing another copy of
+the description or policy reference.
+
+| Boundary | Duplicate detector responsibility |
+| --- | --- |
+| Receives | Validated incident fields, insurer ID, deployment identity and a private HMAC key |
+| Produces | Versioned incident fingerprint and the IDs/insurers of exact cross-insurer matches |
+| Changes | Feature snapshot and human-review presentation only |
+| Does not change | Model probability, contract status, claim approval or human outcome |
+
+The word “duplicate” means “same selected fields after normalization.” It does
+not mean the two claims are fraudulent, identical in every detail, or submitted
+by the same person.
+
 ## Architecture
 
 ```mermaid

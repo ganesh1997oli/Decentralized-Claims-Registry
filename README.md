@@ -3,10 +3,21 @@
 A research application that anchors a synthetic insurance claim on Ethereum,
 screens it off-chain, and leaves a compact result that anyone can verify.
 
+In plain English: the project proves that a claim existed in a specific form,
+at a specific time, without putting the whole insurance workflow on-chain. The
+public chain provides a tamper-evident anchor; the API, database, event pipeline,
+and model do the work that is private, large, or too slow for a smart contract.
+
 > **Use fictional data only.** Claim JSON is uploaded to public, unencrypted
 > IPFS. Sepolia transactions and pointers are public. The model is trained on a
 > synthetic dataset and must never be used to approve, reject, or investigate a
 > real claim.
+
+![Claims Registry public claim intake](docs/images/frontend-claim-intake.jpg)
+
+_Public React claim intake. The page makes the storage boundary visible before
+a user signs anything: compact evidence goes to Sepolia, synthetic JSON goes to
+public IPFS, and secrets stay in server-side processes._
 
 ## One claim, end to end
 
@@ -107,6 +118,47 @@ packages/
 infrastructure/gcp/  Disposable single-VM research deployment
 ```
 
+## Component responsibilities
+
+The easiest way to understand the repository is to follow ownership. Each
+component has one primary job and deliberately does not absorb the keys or
+responsibilities of its neighbours.
+
+| Component | Plain-English job | Technical boundary | Guide |
+| --- | --- | --- | --- |
+| Frontend | Collect a fictional claim and explain what is happening | React UI, claimant wallet proof, EIP-712 signature, polling and public receipt display | [Frontend](apps/frontend/README.md) |
+| Backend | Check who may submit and prepare the exact sponsored call | FastAPI validation, short claimant sessions, policy eligibility, permit signing, canonical IPFS upload and durable preparation | [Backend](apps/backend/README.md) |
+| Relayer | Pay the testnet gas without gaining claim authority | PostgreSQL outbox, EOA nonce allocation, raw-transaction persistence, fee replacement and receipt confirmation | [Relayer](apps/relayer/README.md) |
+| Contracts | Enforce the public rules and retain the compact record | Solidity registry, EIP-712 permit verification, ERC-2771 sender recovery, role scopes and lifecycle transitions | [Contracts](apps/contracts/README.md) |
+| Listener | Turn confirmed chain history into replayable application data | Confirmation-aware log polling, IPFS re-verification, PostgreSQL projection and Kafka publication | [Listener](apps/listener/README.md) |
+| Kafka worker | Run slow screening outside the HTTP request | Versioned event validation, retry/quarantine policy, feature processing, scoring and chain write-back | [Kafka](packages/integrations/kafka/README.md) |
+| PostgreSQL | Remember off-chain state that must survive retries | Migrations, idempotency/outbox state, chain index, immutable features, assessments and human-outcome revisions | [PostgreSQL](packages/integrations/postgres/README.md) |
+| IPFS adapter | Store and retrieve the exact public claim bytes | Pinata upload, safe `ipfs://` parsing, gateway reads and byte-for-byte verification | [IPFS](packages/integrations/ipfs/README.md) |
+| Duplicate detector | Find exact normalized incidents across configured insurers | Versioned HMAC fingerprinting and human-review match signals | [Duplicates](packages/duplicates/README.md) |
+| Model | Produce a reproducible synthetic review signal | Leakage-controlled training, artifact verification, XGBoost inference and local SHAP reasons | [Model](packages/model/README.md) |
+| Observability | Make long-running processes diagnosable without leaking secrets | Structured JSON logs, bounded Prometheus labels and graceful shutdown | [Observability](packages/observability/README.md) |
+| GCP deployment | Run the research system as one reproducible cloud demonstration | Terraform, hardened single-VM Compose, monitoring and evidence collection | [GCP infrastructure](infrastructure/gcp/README.md) |
+
+The [`packages/integrations` index](packages/integrations/README.md) explains
+why Ethereum, IPFS, Kafka, and PostgreSQL are kept behind adapters instead of
+being called directly from every application process.
+
+## Small glossary
+
+| Term | Meaning in this project |
+| --- | --- |
+| Anchor | A compact on-chain record proving the hash and pointer accepted for a claim; it is not the full claim |
+| Canonical JSON | One deterministic byte representation, so every component calculates the same hash |
+| CID | IPFS content identifier used as the public location-independent pointer |
+| Claim permit | One-time, insurer-scoped EIP-712 authorization for an exact claim, claimant and deadline |
+| Forward request | The exact sponsored contract call signed by the claimant or authorized representative |
+| Gasless | The user signs but does not pay Sepolia gas; the restricted relayer pays to submit the unchanged call |
+| Confirmation depth | Number of newer blocks the listener waits before treating an event as sufficiently stable |
+| Projection | PostgreSQL's fast, rebuildable current view of confirmed contract events |
+| Idempotent | Safe to repeat after timeout or crash without creating a second logical result |
+| HMAC fingerprint | Keyed digest used for private equality checks; unlike a plain hash, it resists easy offline guessing |
+| SHAP reason | A model-specific explanation of which inputs moved one prediction; not proof of cause or fraud |
+
 ## Run the complete application locally
 
 The application has five long-running processes in addition to PostgreSQL and
@@ -124,7 +176,7 @@ Sepolia RPC URL, Pinata JWT, and fictional Sepolia role wallets. Never use a
 wallet that holds real assets.
 
 ```bash
-cd <folder_directory>Decentralized-Claims-Registry
+cd /path/to/Decentralized-Claims-Registry
 
 python3 -m venv apps/backend/.venv
 apps/backend/.venv/bin/python -m pip install --require-hashes \
@@ -188,7 +240,7 @@ Open five terminal tabs. In every tab, change to the repository root and load
 the local configuration:
 
 ```bash
-cd <folder_directory>Decentralized-Claims-Registry
+cd /path/to/Decentralized-Claims-Registry
 set -a; source .env.local; set +a
 ```
 
@@ -355,6 +407,9 @@ retention rules, and a validated and monitored model.
 | Public file storage                               | [IPFS](packages/integrations/ipfs/README.md)                                                   |
 | Event delivery and replay                         | [Kafka](packages/integrations/kafka/README.md)                                                 |
 | Feature and assessment storage                    | [PostgreSQL](packages/integrations/postgres/README.md)                                         |
+| Shared adapter boundaries                         | [Integrations](packages/integrations/README.md)                                                |
+| Deployment artifact selection                     | [Ethereum integration](packages/integrations/ethereum/README.md)                               |
+| Logs, metrics and graceful shutdown               | [Observability](packages/observability/README.md)                                              |
 | Single-VM deployment                              | [Google Cloud](infrastructure/gcp/README.md)                                                   |
 
 Stop local infrastructure without deleting its volumes:

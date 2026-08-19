@@ -5,6 +5,24 @@ and verified Kafka events. It does not trust the browser receipt or original API
 response: it downloads the CID from the immutable event and hashes those bytes
 again before scoring publication.
 
+## Quick mental model
+
+The listener is the **chain-to-application bridge**. It treats confirmed logs as
+the source of public history and converts them into forms that the API and
+worker can consume efficiently.
+
+| Boundary | Listener responsibility |
+| --- | --- |
+| Reads | Sepolia blocks/logs and public IPFS bytes |
+| Verifies | Confirmation depth, event order, safe pointer shape and exact Keccak-256 byte hash |
+| Writes | Immutable index events, current PostgreSQL projection, deployment checkpoint, dead letters and Kafka references |
+| Retries | Temporary RPC, IPFS, PostgreSQL and Kafka failures without moving the checkpoint |
+| Must not own | A transaction wallet, Pinata upload token, claimant credential, permit key or scoring model |
+
+If the listener crashes, the desired behaviour is repetition—not guessing.
+Deterministic event IDs and idempotent database operations make that repetition
+safe.
+
 ## Processing loop
 
 ```mermaid
@@ -114,10 +132,18 @@ publication access.
 ## First run, backfill, and reconciliation
 
 A new index refuses to start without `LISTENER_START_BLOCK`. Beginning at the
-current head would look healthy while silently omitting historical claims. The
-gasless `sepolia-gasless-v1` registry was deployed at Sepolia block `11426492`,
-which is the example value. The legacy read-only security-audit deployment used
-block `11377814`; never mix its start block with the gasless deployment ID.
+current head would look healthy while silently omitting historical claims. Use
+the deployment's exact registry block:
+
+| Deployment | Start block | Intended use |
+| --- | ---: | --- |
+| `sepolia-public-intake-v1` | `11516697` | Current permit-backed writer |
+| `sepolia-gasless-v1` | `11426492` | Previous gasless history; no public permits |
+| `sepolia-security-audit-v1` | `11377814` | Hardened non-gasless history |
+
+Never mix a start block with a different deployment ID. The database checkpoint
+is address-scoped, but a wrong initial block can still omit that deployment's
+early events.
 
 For a deliberate full rebuild, isolate the affected deployment and:
 

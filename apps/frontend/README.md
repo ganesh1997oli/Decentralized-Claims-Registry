@@ -28,6 +28,27 @@ The separate `/assessor` surface authenticates a human reviewer, presents the
 claim pointer and model context, and records an off-chain fraud outcome. It does
 not update claim approval/rejection state or initiate model retraining.
 
+![Public claim intake](../../docs/images/frontend-claim-intake.jpg)
+
+_The public route keeps the research warning and data boundary next to the
+claim form, so the user sees what becomes public before signing._
+
+## Quick mental model
+
+The frontend is an **untrusted but helpful coordinator**. It guides the user,
+validates for fast feedback, and presents public/current state. FastAPI and the
+contracts repeat all security-relevant checks because browser code and form
+values can be changed by the user.
+
+| Route | Audience | Responsibility |
+| --- | --- | --- |
+| `/` | Claimant or authorized representative | Submit fictional data, sign wallet proof and exact request, follow receipt and browse indexed claims |
+| `/assessor` | Authenticated human reviewer | Read model context and append a private fraud-outcome revision |
+| `/operations` | Authenticated operator | Inspect listener lag, counts, reconciliation and immutable index events |
+
+The UI may say “invalid” before a request is sent, but only server-side and
+on-chain checks make an authorization decision.
+
 ## Source map
 
 | File | Owns |

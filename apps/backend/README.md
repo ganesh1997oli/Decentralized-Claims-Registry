@@ -8,6 +8,23 @@ requests from the PostgreSQL outbox.
 
 > Claim content is public and unencrypted on IPFS. Use fictional test data only.
 
+## Quick mental model
+
+Think of FastAPI as the **preparation and policy gate**, not as the blockchain
+writer. It answers: “Is this wallet allowed to submit this exact fictional
+claim, and can every later process verify what was authorized?”
+
+| Boundary | Backend responsibility |
+| --- | --- |
+| Receives | Claimant wallet proof, policy reference, synthetic claim fields and an idempotency key |
+| Verifies | Request size/schema, claimant session, policy parties and limits, quota, deployment and signatures |
+| Produces | Canonical schema-v6 bytes, public CID, insurer permit, exact forward request and durable outbox state |
+| Owns | Claimant-session keys, policy lookup keys, insurer-scoped permit key files and the Pinata upload token |
+| Must not own | Claimant key, relayer gas key, assessor key, deployer key, model artifact or Kafka consumer loop |
+
+This separation is why a browser retry can safely ask the API for existing
+state without accidentally paying gas twice.
+
 ## Submission flow
 
 ```mermaid

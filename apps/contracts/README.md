@@ -7,6 +7,25 @@ immutable EIP-712/ERC-2771 verification boundary used for sponsored calls.
 `Counter.sol`, `Counter.ts`, and `send-op-tx.ts` are retained Hardhat examples;
 they are not selected by the claims application.
 
+## Quick mental model
+
+The contracts are the **small public rulebook**. They do not know the policy
+document, fraud explanation, database row, or API session. They know only
+enough to prove who authorized an anchor, preserve its integrity, and constrain
+later lifecycle changes.
+
+| Boundary | Contract responsibility |
+| --- | --- |
+| Receives | A claim hash, safe `ipfs://` pointer, party commitments, signatures and later assessment status/score |
+| Verifies | Role scope, one-time permit, EIP-712 request, trusted-forwarder sender and allowed state transition |
+| Stores | Compact public claim/party records, used permit IDs, status, basis-point score and timestamps |
+| Emits | Ordered `ClaimSubmitted` and `ClaimAssessed` evidence for the listener |
+| Deliberately excludes | Full claim JSON, policy reference, SHAP reasons, human fraud outcome and private keys |
+
+`ClaimsForwarder` answers “who signed this request?”; `ClaimsRegistry` answers
+“is that signer, permit, and transition allowed?” Keeping those questions
+separate makes sponsored gas payment possible without trusting the relayer.
+
 ## Roles
 
 ```mermaid
@@ -136,9 +155,19 @@ gas-paying key. FastAPI never receives claimant or transaction-paying keys.
 
 ## Sepolia deployment artifacts
 
-The currently checked-in gasless deployment predates permit-backed public intake
-and is therefore read-only for the new writer. Deploy this branch first and save
-its Ignition artifacts under a new ID such as `sepolia-public-intake-v1`.
+The current permit-backed public-intake deployment is checked in and selected
+by `.env.example`:
+
+| Item | Value |
+| --- | --- |
+| Chain | Sepolia (`11155111`) |
+| Deployment ID | `sepolia-public-intake-v1` |
+| Registry | [`0xb64BaB321e0Fb19b2295f8182D5A37bAf85F7dff`](https://sepolia.etherscan.io/address/0xb64BaB321e0Fb19b2295f8182D5A37bAf85F7dff) |
+| Forwarder | [`0xeff61937C6a11236D87863e763c13cd7083f0BD0`](https://sepolia.etherscan.io/address/0xeff61937C6a11236D87863e763c13cd7083f0BD0) |
+| Registry deployment block | `11516697` |
+
+Current public writes call `require_public_intake()` during startup. Selecting
+an older artifact therefore fails before the application accepts a claim.
 
 The previous gasless research deployment is:
 
@@ -151,10 +180,10 @@ The previous gasless research deployment is:
 | Registry deployment block | `11426492` |
 | Initial submitter | `0xCa07685b14F806c1E7AD4541330B4Ad24F6581Bd` |
 
-The initial submitter is a public address, not a bundled private key. A local
-browser submission must connect that test wallet or another signer later
-authorized by the admin. The relayer must be a different funded address with no
-registry role.
+This deployment has a forwarder but not insurer-scoped claim permits. It remains
+useful for read-only history and replay testing, but current public-intake
+writers reject it. Its role addresses are public records; no corresponding
+private key is bundled in this repository.
 
 The earlier hardened but non-gasless deployment remains available as read-only
 history:
@@ -217,16 +246,15 @@ professional third-party audit or a guarantee of security.
 | Any assessor could modify any insurer's claim | Every assessor is explicitly scoped to authorized insurer wallets |
 | Status and score could be rewritten arbitrarily | The lifecycle is forward-only and the initial model score cannot change during later transitions |
 | Ownership transfer was immediate and one-step | OpenZeppelin `AccessControlDefaultAdminRules` adds a configurable delay and explicit acceptance |
-| Generic role calls could bypass scoped-role setup | Submitter and assessor roles can only be changed through their invariant-preserving configuration functions |
+| Generic role calls could bypass scoped-role setup | Submitter, permit-issuer and assessor roles can only be changed through their invariant-preserving configuration functions |
 
 ### Verification
 
-- Solidity and TypeScript contract tests: 30 passed.
-- Python backend, listener, IPFS and Kafka tests: 63 passed, 3 integration
-  tests skipped because their external services were not enabled.
-- Docker Compose configuration validation: passed.
-- TypeScript type-check: passed.
-- `npm audit --omit=dev`: no production dependency vulnerabilities reported.
+Use the commands in [Install and verify](#install-and-verify) for the current
+test count and compiled artifact. The cross-layer Python and frontend checks are
+listed in the [root verification section](../../README.md#verification). Avoid
+copying a fixed “tests passed” number into evidence because the suite grows as
+the public-intake and replay boundaries change.
 
 The contract tests cover unauthorized submission, malformed pointers,
 cross-insurer assessment, invalid status regression, score replacement,
@@ -248,11 +276,11 @@ role-reuse attempts, delayed administration transfer, and fraud-score fuzzing.
 
 ### Deployment status
 
-After explicit project-owner authorization, the hardened contract was deployed
-to Sepolia as Ignition deployment `sepolia-security-audit-v1` at
-`0x2AbAbD3553d5963A4844328B7b42DbC5795B78cB`. Read-only verification confirmed
-the deployed bytecode, distinct role accounts, assessor-to-submitter scope,
-86,400-second administration-transfer delay, and zero initial claims.
+`sepolia-public-intake-v1` is the current research writer and includes the
+registry, forwarder, permit issuer scope, claimant/submitter party record, and
+assessor scope described above. `sepolia-gasless-v1` is the previous no-permit
+writer, and `sepolia-security-audit-v1` is hardened non-gasless history.
 
-The earlier checked-in address remains the legacy pre-remediation contract and
-must not be used to validate these security controls.
+The still earlier address `0x57E3...c2AB` is a pre-remediation research record
+and must not be used to validate the current role, permit, forwarder, pointer,
+or lifecycle controls.

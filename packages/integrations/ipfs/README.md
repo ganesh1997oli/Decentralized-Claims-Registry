@@ -3,6 +3,22 @@
 `IPFSClient` gives the application one small interface for public claim bytes.
 Pinata handles uploads; a configurable HTTP gateway handles reads.
 
+## Quick mental model
+
+IPFS is the **public document layer**, while Sepolia is the **public integrity
+anchor**. The CID tells clients where to ask for bytes; the on-chain Keccak-256
+hash tells them whether the returned bytes are exactly the authorized claim.
+
+| Process | Allowed IPFS capability |
+| --- | --- |
+| FastAPI | Upload canonical bytes, read them back, and compare before preparation succeeds |
+| Listener | Read event-referenced bytes and compare them before Kafka publication |
+| Scoring worker | Read the same bytes and verify them again before feature extraction |
+| Frontend | Open a public gateway link from a receipt; never receive the Pinata JWT |
+
+These repeated reads are deliberate trust checks, not redundant downloads.
+Neither a CID nor a hash encrypts data.
+
 ## Byte-integrity flow
 
 ```mermaid

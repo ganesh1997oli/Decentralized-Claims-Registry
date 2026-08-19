@@ -4,6 +4,33 @@ This folder runs the complete demonstration on one disposable Compute Engine
 VM. It is deliberately small, observable, and affordable to remove—not a
 production insurance platform.
 
+## Quick mental model
+
+The VM is a **research appliance**, not a production cluster. Docker Compose
+separates processes and secrets, while all containers still share one machine
+and therefore one failure domain.
+
+| Layer | Responsibility |
+| --- | --- |
+| Terraform | Create the VM, network controls, service account and persistent disk |
+| Docker images | Build reproducible Python/frontend runtime files from reviewed source |
+| Compose | Start dependencies in order, apply migrations, isolate service settings and bind private ports |
+| Nginx | Serve the frontend and proxy the public API boundary |
+| Ops Agent | Collect bounded JSON logs and scrape private Prometheus endpoints |
+| Evidence scripts | Record versions, health, configuration shape and operational output for the dissertation |
+
+Single-node PostgreSQL and Kafka are honest prototype dependencies: restarting
+or losing the VM can interrupt the entire system, and no document should
+describe them as a replicated production service.
+
+> **Current image boundary:** `Dockerfile.app` still copies the
+> `sepolia-gasless-v1` artifacts. The root/local configuration has moved to
+> `sepolia-public-intake-v1`. Before describing a cloud run as permit-backed
+> public intake, include that reviewed deployment directory in the image and
+> set the GCP deployment ID, topic, consumer group, and start block to the same
+> deployment. The deployment checks are expected to fail closed when these
+> values drift.
+
 ## Topology
 
 ```mermaid
