@@ -3,6 +3,23 @@
 Kafka separates the permanent claim anchor from slower duplicate screening and
 model work. Messages contain blockchain and IPFS references—not the full claim.
 
+## Quick mental model
+
+Kafka is the **durable hand-off queue**, not the claim database. A message says
+“this confirmed chain event is ready to process” and carries enough identity to
+find and re-verify the public data.
+
+| Boundary | Kafka integration responsibility |
+| --- | --- |
+| Producer | Listener publishes only after confirmation, indexing and IPFS hash verification |
+| Event | Versioned chain ID, registry address, event ID, claim ID, transaction position, CID and claim hash |
+| Consumer | Worker validates the envelope, re-verifies bytes, reuses durable work on replay, scores and writes back |
+| Commit rule | Offset advances only after the handler reaches a durable completed or quarantined outcome |
+| Excluded | Full claim JSON, wallet keys, policy reference, database password and model artifact bytes |
+
+At-least-once delivery means repetition is normal. Idempotency in PostgreSQL
+and on-chain state checks turn that repetition into safe recovery.
+
 ## Event path
 
 ```mermaid
@@ -130,8 +147,8 @@ The local example uses:
 ```dotenv
 KAFKA_ENABLED="true"
 KAFKA_BOOTSTRAP_SERVERS="127.0.0.1:9092"
-KAFKA_CLAIM_SUBMITTED_TOPIC="claims.submitted.sepolia-gasless-v1"
-KAFKA_CONSUMER_GROUP_ID="claims-registry-scorer-sepolia-gasless-v1"
+KAFKA_CLAIM_SUBMITTED_TOPIC="claims.submitted.sepolia-public-intake-v1"
+KAFKA_CONSUMER_GROUP_ID="claims-registry-scorer-sepolia-public-intake-v1"
 KAFKA_SECURITY_PROTOCOL="PLAINTEXT"
 ```
 

@@ -7,6 +7,22 @@ artifact is served; logistic regression remains an evaluation baseline.
 > The dataset is synthetic. The result is a research integration signal, not a
 > real fraud finding or claim decision.
 
+## Quick mental model
+
+This package is both a **reproducible experiment** and a **small runtime
+adapter**. Training decides what artifact is acceptable; serving loads only
+that reviewed artifact and turns one verified claim into a bounded review
+signal.
+
+| Path | Input | Output | Safety rule |
+| --- | --- | --- | --- |
+| Training | Pinned synthetic dataset revision and leakage-safe feature list | Model, metadata, checksum, threshold, metrics and global SHAP plot | Test period is untouched until final evaluation |
+| Serving | One verified claim plus reviewed metadata | Probability, basis-point score, flag and five local SHAP reasons | Artifact checksum and feature contract must match |
+
+The model can move a claim to `UnderReview` or `Flagged`; it cannot approve,
+reject, or write a human fraud label. A SHAP reason describes the model's
+calculation, not the cause of an incident.
+
 ## Training path
 
 ```mermaid
@@ -75,7 +91,7 @@ from a user or untrusted storage because deserialization can execute code.
 
 ```mermaid
 flowchart LR
-    Claim["Verified schema-v5 claim"] --> Enrich["Add reviewed country frequency"]
+    Claim["Verified schema-v5 or v6 claim"] --> Enrich["Add reviewed country frequency"]
     Enrich --> Frame["Ordered one-row feature frame"]
     Frame --> Pipeline["Saved preprocessing + XGBoost"]
     Pipeline --> Probability["Probability 0..1"]

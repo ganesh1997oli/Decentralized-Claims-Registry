@@ -4,6 +4,24 @@ Sepolia remains authoritative. PostgreSQL keeps a rebuildable public claim
 projection for fast API reads plus the richer, versioned records needed to
 explain and safely replay off-chain screening.
 
+## Quick mental model
+
+PostgreSQL is the system's **durable working memory**. It is not a replacement
+for Sepolia; it remembers the off-chain steps, retry decisions, explanations,
+and private operator records that a compact public contract should not store.
+
+| Data family | Why it exists | Rebuildable from chain alone? |
+| --- | --- | :---: |
+| Claim index and event history | Fast public reads and operator audit | Yes, with IPFS/Kafka dependencies available |
+| Listener checkpoint | Resume from the last completely handled range | No, but it can be reset for a deliberate rebuild |
+| Gasless outbox, nonces and attempts | Survive HTTP/relayer retries without duplicate sponsorship | No |
+| Feature snapshots and assessments | Explain and safely replay the original model result | No |
+| Duplicate fingerprints | Compare normalized incidents without raw duplicate payloads | No |
+| Human assessor revisions | Preserve attributable corrections instead of overwriting history | No |
+
+Every deployment-sensitive lookup includes chain ID and contract address. This
+prevents claim `#12` in one registry from colliding with claim `#12` in another.
+
 ## Stored records
 
 ```mermaid
