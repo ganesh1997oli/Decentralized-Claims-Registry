@@ -26,9 +26,9 @@ x-chain-read-environment: &chain-read-environment
 x-kafka-environment: &kafka-environment
   KAFKA_ENABLED: ${KAFKA_ENABLED:-true}
   KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
-  KAFKA_CLAIM_SUBMITTED_TOPIC: ${KAFKA_CLAIM_SUBMITTED_TOPIC:-claims.submitted.sepolia-gasless-v1}
+  KAFKA_CLAIM_SUBMITTED_TOPIC: ${KAFKA_CLAIM_SUBMITTED_TOPIC:-claims.submitted.sepolia-public-intake-v1}
   KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-claims-registry-cloud}
-  KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID:-claims-registry-scorer-sepolia-gasless-v1}
+  KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID:-claims-registry-scorer-sepolia-public-intake-v1}
   KAFKA_DELIVERY_TIMEOUT_MS: ${KAFKA_DELIVERY_TIMEOUT_MS:-30000}
   KAFKA_CONSUMER_POLL_SECONDS: ${KAFKA_CONSUMER_POLL_SECONDS:-1}
   KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
@@ -122,7 +122,7 @@ services:
           --bootstrap-server kafka:9092 \
           --create \
           --if-not-exists \
-          --topic "${KAFKA_CLAIM_SUBMITTED_TOPIC:-claims.submitted.sepolia-gasless-v1}" \
+          --topic "${KAFKA_CLAIM_SUBMITTED_TOPIC:-claims.submitted.sepolia-public-intake-v1}" \
           --partitions 3 \
           --replication-factor 1 \
           --config cleanup.policy=delete \
@@ -228,11 +228,23 @@ services:
       PINATA_JWT: ${PINATA_JWT:?Set PINATA_JWT in .env.gcp}
       IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
       FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:?Set FRONTEND_ORIGINS in .env.gcp}
-      INSURER_CREDENTIALS_JSON: ${INSURER_CREDENTIALS_JSON:?Set INSURER_CREDENTIALS_JSON in .env.gcp}
-      INSURER_RATE_LIMIT_PER_MINUTE: ${INSURER_RATE_LIMIT_PER_MINUTE:-5}
+      CLAIMANT_AUTH_DOMAIN: ${CLAIMANT_AUTH_DOMAIN:?Set CLAIMANT_AUTH_DOMAIN in .env.gcp}
+      CLAIMANT_AUTH_URI: ${CLAIMANT_AUTH_URI:?Set CLAIMANT_AUTH_URI in .env.gcp}
+      CLAIMANT_SESSION_SIGNING_KEY: ${CLAIMANT_SESSION_SIGNING_KEY:?Set CLAIMANT_SESSION_SIGNING_KEY in .env.gcp}
+      CLAIMANT_SUBJECT_KEY: ${CLAIMANT_SUBJECT_KEY:?Set CLAIMANT_SUBJECT_KEY in .env.gcp}
+      CLAIMANT_AUTH_FINGERPRINT_KEY: ${CLAIMANT_AUTH_FINGERPRINT_KEY:?Set CLAIMANT_AUTH_FINGERPRINT_KEY in .env.gcp}
+      CLAIMANT_CHALLENGE_TTL_SECONDS: ${CLAIMANT_CHALLENGE_TTL_SECONDS:-300}
+      CLAIMANT_SESSION_TTL_SECONDS: ${CLAIMANT_SESSION_TTL_SECONDS:-900}
+      CLAIMANT_AUTH_CLIENT_RATE_PER_MINUTE: ${CLAIMANT_AUTH_CLIENT_RATE_PER_MINUTE:-20}
+      CLAIMANT_AUTH_WALLET_RATE_PER_MINUTE: ${CLAIMANT_AUTH_WALLET_RATE_PER_MINUTE:-5}
+      CLAIMANT_RATE_LIMIT_PER_MINUTE: ${CLAIMANT_RATE_LIMIT_PER_MINUTE:-5}
       IP_RATE_LIMIT_PER_MINUTE: ${IP_RATE_LIMIT_PER_MINUTE:-20}
       ALLOW_RATE_LIMIT_BYPASS: ${ALLOW_RATE_LIMIT_BYPASS:-false}
       MAX_CLAIM_BODY_BYTES: ${MAX_CLAIM_BODY_BYTES:-16384}
+      POLICY_REFERENCE_LOOKUP_KEY: ${POLICY_REFERENCE_LOOKUP_KEY:?Set POLICY_REFERENCE_LOOKUP_KEY in .env.gcp}
+      CLAIMANT_COMMITMENT_KEY: ${CLAIMANT_COMMITMENT_KEY:?Set CLAIMANT_COMMITMENT_KEY in .env.gcp}
+      POLICY_ELIGIBILITY_RECORDS_JSON: ${POLICY_ELIGIBILITY_RECORDS_JSON:?Set POLICY_ELIGIBILITY_RECORDS_JSON in .env.gcp}
+      CLAIM_PERMIT_ISSUERS_JSON: ${CLAIM_PERMIT_ISSUERS_JSON:?Set CLAIM_PERMIT_ISSUERS_JSON in .env.gcp}
       CLAIM_AUTHORIZATION_KEY: ${CLAIM_AUTHORIZATION_KEY:?Set CLAIM_AUTHORIZATION_KEY in .env.gcp}
       GASLESS_REQUEST_FINGERPRINT_KEY: ${GASLESS_REQUEST_FINGERPRINT_KEY:?Set GASLESS_REQUEST_FINGERPRINT_KEY in .env.gcp}
       GASLESS_FORWARD_GAS: ${GASLESS_FORWARD_GAS:-250000}
@@ -249,6 +261,8 @@ services:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - "${CLAIM_PERMIT_ISSUER_KEYS_HOST_DIR:?Set CLAIM_PERMIT_ISSUER_KEYS_HOST_DIR in .env.gcp}:/run/secrets/permit-issuers:ro"
     healthcheck:
       test:
         - CMD
@@ -267,7 +281,8 @@ services:
       <<: *chain-read-environment
       # This dedicated account pays gas only. It must hold no registry role and
       # its balance should be capped and monitored independently.
-      SEPOLIA_RELAYER_PRIVATE_KEY: ${SEPOLIA_RELAYER_PRIVATE_KEY:?Set SEPOLIA_RELAYER_PRIVATE_KEY in .env.gcp}
+      DEPLOYMENT_ENVIRONMENT: production
+      SEPOLIA_RELAYER_PRIVATE_KEY_FILE: /run/secrets/relayer.key
       GASLESS_FORWARD_GAS: ${GASLESS_FORWARD_GAS:-250000}
       GASLESS_SIGNATURE_TTL_SECONDS: ${GASLESS_SIGNATURE_TTL_SECONDS:-600}
       GASLESS_MAX_TRANSACTION_GAS: ${GASLESS_MAX_TRANSACTION_GAS:-600000}
@@ -280,6 +295,8 @@ services:
     depends_on:
       database-migrate:
         condition: service_completed_successfully
+    volumes:
+      - "${SEPOLIA_RELAYER_PRIVATE_KEY_HOST_FILE:?Set SEPOLIA_RELAYER_PRIVATE_KEY_HOST_FILE in .env.gcp}:/run/secrets/relayer.key:ro"
     stop_grace_period: 30s
 
   listener:
@@ -315,7 +332,8 @@ services:
     command: ["python", "-m", "packages.integrations.kafka.scoring_worker"]
     environment:
       <<: [*chain-read-environment, *kafka-environment]
-      SEPOLIA_ASSESSOR_PRIVATE_KEY: ${SEPOLIA_ASSESSOR_PRIVATE_KEY:?Set SEPOLIA_ASSESSOR_PRIVATE_KEY in .env.gcp}
+      DEPLOYMENT_ENVIRONMENT: production
+      SEPOLIA_ASSESSOR_PRIVATE_KEY_FILE: /run/secrets/assessor.key
       IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
       DUPLICATE_FINGERPRINT_KEY: ${DUPLICATE_FINGERPRINT_KEY:?Set DUPLICATE_FINGERPRINT_KEY in .env.gcp}
       CLAIM_AUTHORIZATION_KEY: ${CLAIM_AUTHORIZATION_KEY:?Set CLAIM_AUTHORIZATION_KEY in .env.gcp}
@@ -340,6 +358,7 @@ services:
       # Keep dead-letter writes out of the read-only image and preserve them
       # independently from Kafka retention and container replacement.
       - claims-scoring-state:/var/lib/claims-scoring
+      - "${SEPOLIA_ASSESSOR_PRIVATE_KEY_HOST_FILE:?Set SEPOLIA_ASSESSOR_PRIVATE_KEY_HOST_FILE in .env.gcp}:/run/secrets/assessor.key:ro"
     ports:
       - "127.0.0.1:9102:9102"
     stop_grace_period: 240s
@@ -353,8 +372,8 @@ services:
     restart: unless-stopped
     command:
       - --kafka.server=kafka:9092
-      - --group.filter=${KAFKA_CONSUMER_GROUP_ID:-claims-registry-scorer-sepolia-gasless-v1}
-      - --topic.filter=${KAFKA_CLAIM_SUBMITTED_TOPIC:-claims.submitted.sepolia-gasless-v1}
+      - --group.filter=${KAFKA_CONSUMER_GROUP_ID:-claims-registry-scorer-sepolia-public-intake-v1}
+      - --topic.filter=${KAFKA_CLAIM_SUBMITTED_TOPIC:-claims.submitted.sepolia-public-intake-v1}
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -374,8 +393,17 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     ports:
-      - "${HTTP_PORT:-80}:8080"
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?Set PUBLIC_HOST in .env.gcp}
+    volumes:
+      - claims-caddy-data:/data
+      - claims-caddy-config:/config
     security_opt:
       - no-new-privileges:true
     logging: *json-logging
@@ -385,3 +413,5 @@ volumes:
   claims-kafka-data:
   claims-listener-state:
   claims-scoring-state:
+  claims-caddy-data:
+  claims-caddy-config:

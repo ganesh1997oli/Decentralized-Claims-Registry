@@ -1,0 +1,48 @@
+{$PUBLIC_HOST} {
+	encode zstd gzip
+
+	header {
+		-Server
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	handle_path /api/* {
+		request_body {
+			max_size 16KB
+		}
+		reverse_proxy backend:8000 {
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 240s
+			}
+		}
+	}
+
+	handle /assets/* {
+		root * /srv
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	handle {
+		root * /srv
+		route {
+			try_files {path} /index.html
+			header Cache-Control "no-cache"
+			file_server
+		}
+	}
+}
+
+http://127.0.0.1 {
+	handle /healthz {
+		respond "ok" 200
+	}
+}

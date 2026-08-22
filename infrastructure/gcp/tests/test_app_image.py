@@ -1,4 +1,4 @@
-"""Lock the GCP application image to the gasless runtime it launches."""
+"""Lock the GCP application image to the public-intake runtime it launches."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DOCKERFILE = PROJECT_ROOT / "infrastructure" / "gcp" / "Dockerfile.app"
 REQUIRED_GASLESS_PATHS = (
     Path("apps/relayer"),
-    Path("apps/contracts/ignition/deployments/sepolia-gasless-v1"),
+    Path("apps/contracts/ignition/deployments/sepolia-public-intake-v1"),
 )
 
 
@@ -32,7 +32,7 @@ def _is_copied(required_path: Path, copy_sources: tuple[Path, ...]) -> bool:
     return any(source == required_path or source in required_path.parents for source in copy_sources)
 
 
-def test_app_image_contains_gasless_runtime_and_deployment() -> None:
+def test_app_image_contains_public_intake_runtime_and_deployment() -> None:
     copy_sources = _copy_sources(DOCKERFILE)
     missing = [
         str(required_path)

@@ -73,11 +73,11 @@ def _assert_kafka_identity(
     assert f"--group.filter={consumer_group}" in _command_text(kafka_exporter)
 
 
-def test_default_kafka_identity_is_scoped_to_gasless_deployment() -> None:
+def test_default_kafka_identity_is_scoped_to_public_intake_deployment() -> None:
     _assert_kafka_identity(
         _compose_model(),
-        topic="claims.submitted.sepolia-gasless-v1",
-        consumer_group="claims-registry-scorer-sepolia-gasless-v1",
+        topic="claims.submitted.sepolia-public-intake-v1",
+        consumer_group="claims-registry-scorer-sepolia-public-intake-v1",
     )
 
 
@@ -90,6 +90,90 @@ def test_custom_kafka_identity_reaches_init_apps_and_monitoring() -> None:
         topic="claims.submitted.test-isolated",
         consumer_group="claims-registry-scorer-test-isolated",
     )
+
+
+def test_public_intake_configuration_reaches_the_api() -> None:
+    model = _compose_model()
+    services = model["services"]
+    assert isinstance(services, dict)
+    backend = services["backend"]
+    assert isinstance(backend, dict)
+    environment = backend["environment"]
+    assert isinstance(environment, dict)
+
+    required = {
+        "CLAIMANT_AUTH_DOMAIN",
+        "CLAIMANT_AUTH_URI",
+        "CLAIMANT_SESSION_SIGNING_KEY",
+        "CLAIMANT_SUBJECT_KEY",
+        "CLAIMANT_AUTH_FINGERPRINT_KEY",
+        "POLICY_REFERENCE_LOOKUP_KEY",
+        "CLAIMANT_COMMITMENT_KEY",
+        "POLICY_ELIGIBILITY_RECORDS_JSON",
+        "CLAIM_PERMIT_ISSUERS_JSON",
+    }
+    assert required <= environment.keys()
+    assert environment["CLAIMS_DEPLOYMENT_ID"] == "sepolia-public-intake-v1"
+
+    volumes = backend["volumes"]
+    assert isinstance(volumes, list)
+    assert any(
+        volume.get("target") == "/run/secrets/permit-issuers"
+        and volume.get("read_only") is True
+        for volume in volumes
+        if isinstance(volume, dict)
+    )
+
+
+def test_public_writers_receive_only_mounted_private_keys() -> None:
+    model = _compose_model()
+    services = model["services"]
+    assert isinstance(services, dict)
+
+    expected = {
+        "gasless-relayer": (
+            "SEPOLIA_RELAYER_PRIVATE_KEY",
+            "SEPOLIA_RELAYER_PRIVATE_KEY_FILE",
+            "/run/secrets/relayer.key",
+        ),
+        "scoring-worker": (
+            "SEPOLIA_ASSESSOR_PRIVATE_KEY",
+            "SEPOLIA_ASSESSOR_PRIVATE_KEY_FILE",
+            "/run/secrets/assessor.key",
+        ),
+    }
+    for service_name, (raw_name, file_name, target) in expected.items():
+        service = services[service_name]
+        assert isinstance(service, dict)
+        environment = service["environment"]
+        assert isinstance(environment, dict)
+        assert raw_name not in environment
+        assert environment[file_name] == target
+        assert environment["DEPLOYMENT_ENVIRONMENT"] == "production"
+        volumes = service["volumes"]
+        assert isinstance(volumes, list)
+        assert any(
+            volume.get("target") == target and volume.get("read_only") is True
+            for volume in volumes
+            if isinstance(volume, dict)
+        )
+
+
+def test_public_frontend_exposes_http_and_https_with_persistent_certificates() -> None:
+    model = _compose_model()
+    services = model["services"]
+    assert isinstance(services, dict)
+    frontend = services["frontend"]
+    assert isinstance(frontend, dict)
+
+    ports = frontend["ports"]
+    assert isinstance(ports, list)
+    assert {port["target"] for port in ports if isinstance(port, dict)} == {80, 443}
+    volumes = frontend["volumes"]
+    assert isinstance(volumes, list)
+    assert {
+        volume["target"] for volume in volumes if isinstance(volume, dict)
+    } >= {"/data", "/config"}
 
 
 def test_scoring_dead_letter_has_an_owned_persistent_volume() -> None:

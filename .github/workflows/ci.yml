@@ -157,7 +157,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build and smoke-test the shared application image
+      - name: Build and smoke-test the production images
         run: |
           docker build \
             --file infrastructure/gcp/Dockerfile.app \
@@ -166,7 +166,11 @@ jobs:
           docker run --rm \
             --entrypoint python \
             decentralized-claims-app:ci \
-            -c "import apps.relayer.gasless_relayer; from packages.integrations.ethereum.deployment import load_claims_deployment; deployment = load_claims_deployment({'CLAIMS_DEPLOYMENT_ID': 'sepolia-gasless-v1'}); deployment.require_gasless()"
+            -c "import apps.relayer.gasless_relayer; from packages.integrations.ethereum.deployment import load_claims_deployment; deployment = load_claims_deployment({'CLAIMS_DEPLOYMENT_ID': 'sepolia-public-intake-v1'}); deployment.require_public_intake()"
+          docker build \
+            --file infrastructure/gcp/Dockerfile.frontend \
+            --tag decentralized-claims-frontend:ci \
+            .
 
       # Compose needs the referenced file to exist while resolving services.
       # Placeholder values are safe here because no containers are started.

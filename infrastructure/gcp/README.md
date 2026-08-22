@@ -12,10 +12,10 @@ and therefore one failure domain.
 
 | Layer | Responsibility |
 | --- | --- |
-| Terraform | Create the VM, network controls, service account and persistent disk |
+| Terraform | Create the VM, reserved address, network controls, service account and persistent disk |
 | Docker images | Build reproducible Python/frontend runtime files from reviewed source |
 | Compose | Start dependencies in order, apply migrations, isolate service settings and bind private ports |
-| Nginx | Serve the frontend and proxy the public API boundary |
+| Caddy | Serve the frontend, proxy `/api`, and manage the public TLS certificate |
 | Ops Agent | Collect bounded JSON logs and scrape private Prometheus endpoints |
 | Evidence scripts | Record versions, health, configuration shape and operational output for the dissertation |
 
@@ -23,19 +23,16 @@ Single-node PostgreSQL and Kafka are honest prototype dependencies: restarting
 or losing the VM can interrupt the entire system, and no document should
 describe them as a replicated production service.
 
-> **Current image boundary:** `Dockerfile.app` still copies the
-> `sepolia-gasless-v1` artifacts. The root/local configuration has moved to
-> `sepolia-public-intake-v1`. Before describing a cloud run as permit-backed
-> public intake, include that reviewed deployment directory in the image and
-> set the GCP deployment ID, topic, consumer group, and start block to the same
-> deployment. The deployment checks are expected to fail closed when these
-> values drift.
+`Dockerfile.app`, the default Kafka identity, and the listener start block all
+select `sepolia-public-intake-v1`. The deployment checks fail closed if the
+contract deployment, topic, consumer group, or public-intake configuration
+drifts.
 
 ## Topology
 
 ```mermaid
 flowchart TB
-    User["Public browser"] -->|"port 80"| Web["Nginx + React"]
+    User["Public browser"] -->|"HTTPS / port 443"| Web["Caddy + React"]
 
     subgraph VM["One Compute Engine VM"]
         Web --> API["FastAPI"]
@@ -56,7 +53,8 @@ flowchart TB
     Agent --> Cloud["Cloud Logging + Monitoring"]
 ```
 
-Only the Nginx entry point and IAP-controlled SSH are exposed. FastAPI,
+Only Caddy on HTTP/HTTPS and IAP-controlled SSH are exposed. HTTP is used only
+for certificate validation and redirecting browsers to HTTPS. FastAPI,
 PostgreSQL, Kafka, and metrics bind to Docker networking or VM loopback.
 
 ## Honest scope
@@ -67,9 +65,15 @@ PostgreSQL, Kafka, and metrics bind to Docker networking or VM loopback.
 | One Kafka broker, replication factor one | A production event cluster |
 | One PostgreSQL container and persistent volume | Managed backups or regional durability |
 | Persistent sanitized scoring dead letters | Centralized incident/replay management |
-| HTTP for a short-lived fictional-data demo | Production TLS and a managed domain |
-| Browser insurer wallets plus separate relayer and assessor | Managed/HSM transaction signing |
+| Automatic HTTPS on a stable generated hostname | A branded domain, WAF or managed load balancer |
+| Browser claimant wallets plus mounted relayer, permit and assessor keys | Managed/HSM transaction signing |
 | Structured logs and a focused metrics dashboard | Full production incident response |
+
+The public URL is open for anyone to view and verify fictional claims. Creating
+a claim remains intentionally restricted to a wallet and synthetic policy in
+`POLICY_ELIGIBILITY_RECORDS_JSON`; opening sponsorship to arbitrary internet
+wallets would expose the relayer and Pinata account to abuse and is not part of
+this deployment.
 
 Review current Google Cloud pricing and your billing account before applying
 Terraform. Use a dedicated project, stop the VM when idle, and destroy the
@@ -82,10 +86,10 @@ not a substitute for removing unused resources.
 | --- | --- |
 | `compose.yml` | Runs application, database, broker, migrations and exporters |
 | `Dockerfile.app` | Shared non-root Python runtime for API, listener and worker |
-| `Dockerfile.frontend` | Builds React and serves it with Nginx |
-| `nginx.conf` | Public `/api` proxy, request limit, headers and static caching |
+| `Dockerfile.frontend` | Builds React and serves it with Caddy |
+| `Caddyfile` | Automatic HTTPS, `/api` proxy, request limit, headers and static caching |
 | `.env.gcp.example` | Required settings without real secrets |
-| `terraform/` | VM, service account, HTTP firewall, IAP SSH and APIs |
+| `terraform/` | VM, reserved IP, service account, web firewall, IAP SSH and APIs |
 | `monitoring/ops-agent.yaml` | Private Prometheus scraping and Docker log forwarding |
 | `monitoring/dashboard.json` | Initial research dashboard |
 | `scripts/train-model.sh` | Builds the model in the serving image |
@@ -146,12 +150,14 @@ terraform fmt -check
 terraform validate
 terraform plan
 terraform apply
+terraform output -raw public_host
 ```
 
-Apply only when the plan shows the expected disposable VM, limited firewall
-rules, and observability service account. Terraform outputs the temporary HTTP
-URL and an IAP SSH command. The external IP is ephemeral and can change after a
-stop/start cycle.
+Apply only when the plan shows the expected disposable VM, reserved address,
+limited firewall rules, and observability service account. Terraform outputs a
+stable HTTPS hostname, public URL, and IAP SSH command. By default the hostname
+embeds the reserved IP under `sslip.io`; set `public_host` in `terraform.tfvars`
+if you have already pointed your own DNS name at that address.
 
 ### 3. Put reviewed code on the VM
 
@@ -177,23 +183,33 @@ cp infrastructure/gcp/.env.gcp.example infrastructure/gcp/.env.gcp
 chmod 600 infrastructure/gcp/.env.gcp
 ```
 
-Replace every `CHANGE_ME`. Generate independent random values, for example:
+Copy the `public_host` value from step 2 into `PUBLIC_HOST`,
+`FRONTEND_ORIGINS`, `CLAIMANT_AUTH_DOMAIN`, and `CLAIMANT_AUTH_URI`, then
+replace every remaining `CHANGE_ME`. Generate independent random values, for
+example:
 
 ```bash
 openssl rand -hex 24
 openssl rand -hex 32
 ```
 
-Create one insurer credential at a time:
+Create owner-only key mounts. These files contain testnet keys only; the
+deployment/admin key must stay offline and must not be copied here:
 
 ```bash
-python apps/backend/scripts/generate_insurer_credential.py \
-  northstar-mutual northstar-cloud-v1 0xYOUR_INSURER_WALLET \
-  --daily-quota 25
+install -d -m 700 infrastructure/gcp/.env.gcp-secrets/permit-issuers
+install -m 600 /secure/path/northstar-permit-issuer.key \
+  infrastructure/gcp/.env.gcp-secrets/permit-issuers/northstar-mutual.key
+install -m 600 /secure/path/relayer.key \
+  infrastructure/gcp/.env.gcp-secrets/relayer.key
+install -m 600 /secure/path/assessor.key \
+  infrastructure/gcp/.env.gcp-secrets/assessor.key
 ```
 
-Give the raw key only to that fictional insurer operator and place only the
-digest record in `INSURER_CREDENTIALS_JSON`.
+Set the controlled fictional policy record and its keyed policy-reference digest
+using the [public-intake configuration guide](../../apps/backend/README.md). Its
+insurer address, claimant/representative wallet, and permit issuer must match the
+roles already provisioned on `sepolia-public-intake-v1`.
 
 Create a separate operations credential:
 
@@ -203,15 +219,21 @@ python apps/backend/scripts/generate_operations_credential.py
 
 Give its raw key only to trusted operators and place the printed digest in
 `INDEXER_OPERATIONS_API_KEY_SHA256`. The browser operations page is `/operations`;
-for an internet-accessible deployment, protect it with HTTPS and preferably an
-identity-aware proxy in addition to the application key.
+the public entry point is HTTPS, but an identity-aware proxy is still recommended
+before treating the operations page as anything beyond a research surface.
+
+Generate the separate human-review credential in the same digest-only form:
+
+```bash
+python apps/backend/scripts/generate_assessor_outcome_credential.py
+```
 
 Keep the non-secret Kafka identity scoped to the selected contract deployment.
 The checked-in gasless deployment uses:
 
 ```dotenv
-KAFKA_CLAIM_SUBMITTED_TOPIC="claims.submitted.sepolia-gasless-v1"
-KAFKA_CONSUMER_GROUP_ID="claims-registry-scorer-sepolia-gasless-v1"
+KAFKA_CLAIM_SUBMITTED_TOPIC="claims.submitted.sepolia-public-intake-v1"
+KAFKA_CONSUMER_GROUP_ID="claims-registry-scorer-sepolia-public-intake-v1"
 ```
 
 When deploying a replacement contract, use `claims.submitted.<deployment-id>`
@@ -224,10 +246,10 @@ exporter so events, offsets, and lag metrics cannot cross deployments.
 
 ```mermaid
 flowchart TD
-    API["FastAPI"] --> A["no wallet key; Pinata + insurer digests + HMAC keys"]
-    Relayer["Gasless relayer"] --> R["dedicated gas key + outbox only"]
+    API["FastAPI"] --> A["mounted permit key + Pinata + HMAC keys"]
+    Relayer["Gasless relayer"] --> R["mounted dedicated gas key + outbox only"]
     Listener["Listener"] --> B["public chain/IPFS reads + Kafka config only"]
-    Worker["Scoring worker"] --> C["assessor key + claim-auth key + duplicate HMAC + model + database"]
+    Worker["Scoring worker"] --> C["mounted assessor key + claim-auth key + duplicate HMAC + model + database"]
     Trainer["Model trainer"] --> D["no wallet, Pinata, database or HMAC secrets"]
 ```
 
@@ -237,7 +259,7 @@ a new deployment containing both ClaimsRegistry and ClaimsForwarder; the
 checked-in `sepolia-security-audit-v1` artifact is read-only legacy history.
 
 Invalid-attempt limits are process-local in this single-VM topology. Valid
-sponsorship quotas and idempotency are transactional in PostgreSQL. Nginx and
+sponsorship quotas and idempotency are transactional in PostgreSQL. Caddy and
 FastAPI both enforce a 16 KiB request limit; change both settings together.
 
 This Compose file demonstrates the new process separation but remains a
@@ -246,12 +268,8 @@ research topology. Follow the
 contract migration, secret mounts, fee replacement, HA, monitoring, and
 incident response.
 
-Keep `ALLOW_RATE_LIMIT_BYPASS="false"` for normal deployments. A controlled
-performance-test deployment may enable it only when
-`INSURER_CREDENTIALS_JSON` contains a dedicated synthetic test credential with
-`rateLimitExempt: true`; normal insurer credentials remain limited. Disable the
-switch after testing and use a local chain instead of Sepolia for sustained
-load whenever possible.
+Keep `ALLOW_RATE_LIMIT_BYPASS="false"` for every public deployment. Use a local
+chain rather than the public site for sustained performance testing.
 
 Follow the dedicated
 [rate-limiting and authorised test-bypass runbook](../../apps/backend/README.md#public-claim-intake-limits)
@@ -283,7 +301,9 @@ docker compose \
   logs --follow listener scoring-worker
 ```
 
-Open the Terraform `application_url` and submit fictional claims only.
+Open the Terraform `application_url` and submit fictional claims only. Caddy
+obtains the certificate on first start, so the first HTTPS check can take a
+short time while DNS and certificate issuance complete.
 
 ## Observability
 
@@ -374,7 +394,7 @@ Confirm in the console that the VM and boot disk are gone.
 | Listener misses history | PostgreSQL checkpoint and deployment `LISTENER_START_BLOCK` |
 | Operations page rejects access | `INDEXER_OPERATIONS_API_KEY_SHA256` and the raw operator key |
 | Metrics stay local | Ports `9101`, `9102`, `9308`, then Ops Agent status/logs |
-| Browser unavailable | Frontend health, port 80 firewall, current external IP |
+| Browser unavailable | Public DNS, ports 80/443, Caddy certificate logs, frontend health |
 | API alive but not ready | `/health/ready` and `database-migrate` result |
 
 The [root runbook](../../README.md) explains the application flow; component

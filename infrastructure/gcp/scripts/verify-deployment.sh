@@ -21,19 +21,33 @@ compose=(
   --file "${compose_file}"
 )
 
+read_env_value() {
+  local variable_name="$1"
+  local value
+  value="$(sed -n "s/^${variable_name}=//p" "${env_file}" | tail -n 1)"
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+  printf '%s' "${value}"
+}
+
+public_host="$(read_env_value PUBLIC_HOST)"
+public_origin="https://${public_host}"
+
 echo "Container state"
 "${compose[@]}" ps
 
 echo
 echo "Frontend health"
-curl --fail --silent --show-error http://127.0.0.1/healthz
+curl --fail --silent --show-error "${public_origin}/healthz"
 
 echo
 echo "Frontend application"
-# The health route can succeed even when Nginx cannot find the compiled React
+# The health route can succeed even when Caddy cannot find the compiled React
 # files. Checking the page title confirms that the real browser entry point is
 # being served, not only that the web server process is alive.
-curl --fail --silent --show-error http://127.0.0.1/ \
+curl --fail --silent --show-error "${public_origin}/" \
   | grep -F "<title>Claims Registry | Synthetic Claim Submission</title>"
 
 echo

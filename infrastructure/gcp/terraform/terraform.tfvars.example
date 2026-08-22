@@ -7,3 +7,7 @@ project_id = "CHANGE_ME_FREE_TRIAL_PROJECT_ID"
 region       = "us-central1"
 zone         = "us-central1-a"
 machine_type = "e2-standard-2"
+
+# Leave empty to use the generated <reserved-ip>.sslip.io hostname. To use your
+# own domain, point its A record at the external_ip output and set it here.
+public_host = ""

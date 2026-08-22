@@ -14,6 +14,7 @@ coverage-html/
 .env.*
 !.env.example
 !infrastructure/gcp/.env.gcp.example
+infrastructure/gcp/.env.gcp-secrets/
 
 # Terraform state can contain infrastructure details and is specific to one
 # Google Cloud project. Keep only the human-readable example variables in Git.

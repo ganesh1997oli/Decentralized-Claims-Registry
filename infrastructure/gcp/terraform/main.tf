@@ -12,6 +12,7 @@ locals {
     "logging.googleapis.com",
     "monitoring.googleapis.com",
   ])
+  public_host = var.public_host != "" ? var.public_host : "${replace(google_compute_address.public.address, ".", "-")}.sslip.io"
 }
 
 # Enabling only the APIs used here keeps the project understandable and limits
@@ -22,6 +23,17 @@ resource "google_project_service" "required" {
   project            = var.project_id
   service            = each.value
   disable_on_destroy = false
+}
+
+# A fixed address keeps the HTTPS hostname and wallet-authentication domain
+# stable across VM restarts. It is released when this disposable deployment is
+# destroyed.
+resource "google_compute_address" "public" {
+  project = var.project_id
+  name    = "${var.deployment_name}-public-ip"
+  region  = var.region
+
+  depends_on = [google_project_service.required]
 }
 
 # The VM identity can write logs and metrics, but it cannot administer the
@@ -48,9 +60,9 @@ resource "google_project_iam_member" "log_writer" {
 
 # Only the browser entry point is public. Kafka, PostgreSQL, FastAPI and metrics
 # remain unexposed because Compose binds them to Docker or VM loopback.
-resource "google_compute_firewall" "http" {
+resource "google_compute_firewall" "web" {
   project = var.project_id
-  name    = "${var.deployment_name}-allow-http"
+  name    = "${var.deployment_name}-allow-web"
   network = var.network_name
 
   direction     = "INGRESS"
@@ -59,7 +71,7 @@ resource "google_compute_firewall" "http" {
 
   allow {
     protocol = "tcp"
-    ports    = ["80"]
+    ports    = ["80", "443"]
   }
 
   depends_on = [google_project_service.required]
@@ -116,9 +128,9 @@ resource "google_compute_instance" "research" {
   network_interface {
     network = var.network_name
 
-    # An ephemeral address avoids reserving a paid, unused static address after
-    # the VM is stopped. It may change after a stop/start cycle.
-    access_config {}
+    access_config {
+      nat_ip = google_compute_address.public.address
+    }
   }
 
   metadata = {

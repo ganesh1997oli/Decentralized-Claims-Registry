@@ -43,3 +43,17 @@ variable "network_name" {
   type        = string
   default     = "default"
 }
+
+variable "public_host" {
+  description = "Optional custom DNS hostname pointing at the reserved IP. Empty uses the generated sslip.io hostname."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.public_host == "" ||
+      can(regex("^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$", var.public_host))
+    )
+    error_message = "public_host must be empty or a hostname without a scheme, path, port or whitespace."
+  }
+}

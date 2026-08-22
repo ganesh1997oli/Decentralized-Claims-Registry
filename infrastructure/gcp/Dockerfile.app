@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # Python 3.13 matches the version used in continuous integration. Keeping the
 # cloud and CI runtimes aligned avoids discovering version differences only
 # after a deployment.
@@ -28,7 +26,7 @@ COPY requirements.lock requirements.lock
 
 RUN python -m pip install --require-hashes -r requirements.lock
 
-# Only runtime code and the current gasless Sepolia deployment artifact enter
+# Only runtime code and the current public-intake Sepolia deployment artifact enter
 # the image. Local environment files and trained model files are excluded by
 # .dockerignore; the model is mounted read-only when Compose starts the worker.
 COPY apps/__init__.py apps/__init__.py
@@ -36,8 +34,8 @@ COPY apps/backend apps/backend
 COPY apps/listener apps/listener
 COPY apps/relayer apps/relayer
 COPY packages packages
-COPY apps/contracts/ignition/deployments/sepolia-gasless-v1 \
-    apps/contracts/ignition/deployments/sepolia-gasless-v1
+COPY apps/contracts/ignition/deployments/sepolia-public-intake-v1 \
+    apps/contracts/ignition/deployments/sepolia-public-intake-v1
 
 # A compromised web request or claim payload should not obtain root privileges
 # inside the container. The listener's writable dead-letter volume is prepared

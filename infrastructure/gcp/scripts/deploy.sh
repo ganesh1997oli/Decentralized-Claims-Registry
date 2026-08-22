@@ -73,6 +73,90 @@ if [[ ! -f "${model_host_dir}/model.joblib" ]] \
   exit 1
 fi
 
+required_values=(
+  PUBLIC_HOST
+  FRONTEND_ORIGINS
+  CLAIMANT_AUTH_DOMAIN
+  CLAIMANT_AUTH_URI
+  CLAIMANT_SESSION_SIGNING_KEY
+  CLAIMANT_SUBJECT_KEY
+  CLAIMANT_AUTH_FINGERPRINT_KEY
+  POLICY_REFERENCE_LOOKUP_KEY
+  CLAIMANT_COMMITMENT_KEY
+  POLICY_ELIGIBILITY_RECORDS_JSON
+  CLAIM_PERMIT_ISSUER_KEYS_HOST_DIR
+  CLAIM_PERMIT_ISSUERS_JSON
+  CLAIM_AUTHORIZATION_KEY
+  GASLESS_REQUEST_FINGERPRINT_KEY
+  INDEXER_OPERATIONS_API_KEY_SHA256
+  ASSESSOR_OUTCOME_CREDENTIALS_JSON
+  POSTGRES_PASSWORD
+  SEPOLIA_RELAYER_PRIVATE_KEY_HOST_FILE
+  SEPOLIA_ASSESSOR_PRIVATE_KEY_HOST_FILE
+  PINATA_JWT
+  DUPLICATE_FINGERPRINT_KEY
+  LISTENER_START_BLOCK
+)
+for variable_name in "${required_values[@]}"; do
+  if [[ -z "$(read_env_value "${variable_name}")" ]]; then
+    echo "${variable_name} must be set in the deployment environment." >&2
+    exit 1
+  fi
+done
+
+public_host="$(read_env_value PUBLIC_HOST)"
+frontend_origins="$(read_env_value FRONTEND_ORIGINS)"
+claimant_auth_domain="$(read_env_value CLAIMANT_AUTH_DOMAIN)"
+claimant_auth_uri="$(read_env_value CLAIMANT_AUTH_URI)"
+if [[ "${public_host}" == *"://"* ]] \
+  || [[ "${public_host}" == */* ]] \
+  || [[ "${public_host}" =~ [[:space:]] ]]; then
+  echo "PUBLIC_HOST must be one hostname without a scheme, path or whitespace." >&2
+  exit 1
+fi
+if [[ "${frontend_origins}" != "https://${public_host}" ]] \
+  || [[ "${claimant_auth_domain}" != "${public_host}" ]] \
+  || [[ "${claimant_auth_uri}" != "https://${public_host}" ]]; then
+  echo "PUBLIC_HOST, FRONTEND_ORIGINS and claimant-auth settings must select the same HTTPS origin." >&2
+  exit 1
+fi
+
+if [[ "$(read_env_value ALLOW_RATE_LIMIT_BYPASS)" != "false" ]]; then
+  echo "ALLOW_RATE_LIMIT_BYPASS must be false for a public deployment." >&2
+  exit 1
+fi
+
+resolve_host_path() {
+  local configured_path="$1"
+  if [[ "${configured_path}" == /* ]]; then
+    printf '%s' "${configured_path}"
+  else
+    printf '%s/%s' "${gcp_dir}" "${configured_path}"
+  fi
+}
+
+permit_key_dir="$(resolve_host_path "$(read_env_value CLAIM_PERMIT_ISSUER_KEYS_HOST_DIR)")"
+relayer_key_file="$(resolve_host_path "$(read_env_value SEPOLIA_RELAYER_PRIVATE_KEY_HOST_FILE)")"
+assessor_key_file="$(resolve_host_path "$(read_env_value SEPOLIA_ASSESSOR_PRIVATE_KEY_HOST_FILE)")"
+if [[ ! -d "${permit_key_dir}" ]]; then
+  echo "The permit-issuer key directory is missing." >&2
+  exit 1
+fi
+if [[ ! -f "${relayer_key_file}" ]]; then
+  echo "The relayer key file is missing." >&2
+  exit 1
+fi
+if [[ ! -f "${assessor_key_file}" ]]; then
+  echo "The assessor key file is missing." >&2
+  exit 1
+fi
+
+if [[ -n "$(read_env_value SEPOLIA_RELAYER_PRIVATE_KEY)" ]] \
+  || [[ -n "$(read_env_value SEPOLIA_ASSESSOR_PRIVATE_KEY)" ]]; then
+  echo "Public deployments must mount signer keys from files, not environment values." >&2
+  exit 1
+fi
+
 # Most VM users join the docker group after first login. Falling back to sudo
 # keeps the script usable immediately without weakening Docker's socket.
 if docker info >/dev/null 2>&1; then

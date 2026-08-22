@@ -174,6 +174,73 @@ def test_write_factory_still_requires_a_private_key(monkeypatch):
         raise AssertionError("Expected the write-capable factory to require a key")
 
 
+def test_production_write_factory_reads_a_mounted_private_key(tmp_path, monkeypatch):
+    """Hosted writers keep raw wallet keys out of process environment values."""
+
+    captured = {}
+
+    class WriteProbe(SepoliaClaimsRegistry):
+        def __init__(
+            self,
+            *,
+            rpc_url,
+            private_key,
+            deployment,
+            access,
+            receipt_timeout,
+            private_key_env,
+        ):
+            captured.update(
+                rpc_url=rpc_url,
+                private_key=private_key,
+                deployment=deployment,
+                access=access,
+                receipt_timeout=receipt_timeout,
+                private_key_env=private_key_env,
+            )
+
+    key_file = tmp_path / "assessor.key"
+    key_file.write_text("0x" + "11" * 32, encoding="utf-8")
+    monkeypatch.setenv("SEPOLIA_RPC_URL", "https://rpc.example.test")
+    monkeypatch.setenv("CLAIMS_DEPLOYMENT_ID", "sepolia-public-intake-v1")
+    monkeypatch.setenv("DEPLOYMENT_ENVIRONMENT", "production")
+    monkeypatch.setenv("SEPOLIA_ASSESSOR_PRIVATE_KEY_FILE", str(key_file))
+    monkeypatch.delenv("SEPOLIA_ASSESSOR_PRIVATE_KEY", raising=False)
+
+    registry = WriteProbe.from_env(
+        private_key_env="SEPOLIA_ASSESSOR_PRIVATE_KEY"
+    )
+
+    assert isinstance(registry, WriteProbe)
+    assert captured["private_key"] == "0x" + "11" * 32
+    assert captured["access"] == "assessor"
+
+
+def test_production_write_factory_rejects_environment_private_key(monkeypatch):
+    monkeypatch.setenv("SEPOLIA_RPC_URL", "https://rpc.example.test")
+    monkeypatch.setenv("DEPLOYMENT_ENVIRONMENT", "production")
+    monkeypatch.setenv("SEPOLIA_ASSESSOR_PRIVATE_KEY", "0x" + "11" * 32)
+    monkeypatch.delenv("SEPOLIA_ASSESSOR_PRIVATE_KEY_FILE", raising=False)
+
+    with pytest.raises(BlockchainSubmissionError, match="must use.*_FILE"):
+        SepoliaClaimsRegistry.from_env(
+            private_key_env="SEPOLIA_ASSESSOR_PRIVATE_KEY"
+        )
+
+
+def test_write_factory_rejects_two_private_key_sources(tmp_path, monkeypatch):
+    key_file = tmp_path / "assessor.key"
+    key_file.write_text("0x" + "11" * 32, encoding="utf-8")
+    monkeypatch.setenv("SEPOLIA_RPC_URL", "https://rpc.example.test")
+    monkeypatch.setenv("SEPOLIA_ASSESSOR_PRIVATE_KEY", "0x" + "22" * 32)
+    monkeypatch.setenv("SEPOLIA_ASSESSOR_PRIVATE_KEY_FILE", str(key_file))
+
+    with pytest.raises(BlockchainSubmissionError, match="only one"):
+        SepoliaClaimsRegistry.from_env(
+            private_key_env="SEPOLIA_ASSESSOR_PRIVATE_KEY"
+        )
+
+
 def test_read_factory_requires_an_explicit_deployment(monkeypatch):
     monkeypatch.setenv("SEPOLIA_RPC_URL", "https://rpc.example.test")
     monkeypatch.delenv("CLAIMS_DEPLOYMENT_ID", raising=False)

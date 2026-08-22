@@ -13,6 +13,7 @@ import os
 import re
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from web3 import Web3
@@ -191,12 +192,38 @@ class SepoliaClaimsRegistry:
 
         rpc_url = os.environ.get("SEPOLIA_RPC_URL") or os.environ.get("RPC_URL")
         private_key = os.environ.get(private_key_env) if require_private_key else None
+        private_key_file_env = f"{private_key_env}_FILE"
+        private_key_file = (
+            os.environ.get(private_key_file_env, "").strip()
+            if require_private_key
+            else ""
+        )
+        if private_key and private_key_file:
+            raise BlockchainSubmissionError(
+                f"Configure only one of {private_key_env} and {private_key_file_env}"
+            )
+        if private_key_file:
+            try:
+                private_key = Path(private_key_file).read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                raise BlockchainSubmissionError(
+                    f"Could not read {private_key_file_env}"
+                ) from exc
+        if (
+            require_private_key
+            and os.environ.get("DEPLOYMENT_ENVIRONMENT", "development").strip().lower()
+            == "production"
+            and not private_key_file
+        ):
+            raise BlockchainSubmissionError(
+                f"Production writers must use {private_key_file_env}"
+            )
         missing = [
             name
             for name, value in (
                 ("SEPOLIA_RPC_URL", rpc_url),
                 (
-                    private_key_env,
+                    f"{private_key_env} or {private_key_file_env}",
                     private_key if require_private_key else "not-required",
                 ),
             )

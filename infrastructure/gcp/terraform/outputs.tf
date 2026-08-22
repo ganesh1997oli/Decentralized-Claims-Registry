@@ -4,13 +4,18 @@ output "vm_name" {
 }
 
 output "external_ip" {
-  description = "Temporary browser address. Update FRONTEND_ORIGINS after a restart."
-  value       = google_compute_instance.research.network_interface[0].access_config[0].nat_ip
+  description = "Reserved public address used by the HTTPS hostname."
+  value       = google_compute_address.public.address
+}
+
+output "public_host" {
+  description = "Set PUBLIC_HOST and the claimant-auth host settings to this value."
+  value       = local.public_host
 }
 
 output "application_url" {
-  description = "Public HTTP URL for the dissertation demonstration."
-  value       = "http://${google_compute_instance.research.network_interface[0].access_config[0].nat_ip}"
+  description = "Public HTTPS URL for the dissertation demonstration."
+  value       = "https://${local.public_host}"
 }
 
 output "iap_ssh_command" {
