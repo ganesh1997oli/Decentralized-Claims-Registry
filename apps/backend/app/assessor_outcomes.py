@@ -32,7 +32,7 @@ class AssessorOutcomeAuthenticationError(ValueError):
 
 @dataclass(frozen=True)
 class AssessorPrincipal:
-    """Server-authoritative identity attached to one human outcome revision."""
+    """Server-verified identity attached to one human outcome revision."""
 
     assessor_reference: str
 
@@ -48,8 +48,8 @@ class _AssessorCredential:
 class AssessorOutcomeBoundary:
     """Authenticate human reviewers without sharing insurer or worker secrets.
 
-    This interface is intentionally small: a request either produces a trusted
-    assessor principal or fails. Rate limits and enterprise identity proxies can
+    A request either resolves to a verified assessor principal or fails. Rate
+    limits and enterprise identity proxies can
     be added around this seam later without changing the persistence interface or
     allowing a browser-provided assessor name into the audit trail.
     """
@@ -67,8 +67,8 @@ class AssessorOutcomeBoundary:
     ) -> AssessorOutcomeBoundary:
         """Parse digest-only assessor credentials from deployment settings.
 
-        The JSON array supports rotation and multiple reviewers while remaining
-        deliberately narrower than insurer credentials: it grants access only to
+        The JSON array supports rotation and multiple reviewers. Unlike insurer
+        credentials, it grants access only to
         the off-chain outcome endpoints and carries no wallet, insurer, quota, or
         model authority.
         """
@@ -146,7 +146,7 @@ class AssessorOutcomeBoundary:
         Iterating the complete credential list avoids revealing a match position.
         ``compare_digest`` avoids ordinary early-exit string comparison, and the
         minimum length rejects obviously invalid input before hashing. The error
-        deliberately does not distinguish a missing, malformed, or unknown key.
+        uses the same response for a missing, malformed, or unknown key.
         """
 
         candidate = (api_key or "").strip()
@@ -164,4 +164,3 @@ class AssessorOutcomeBoundary:
                 "Invalid assessor outcome credential"
             )
         return match
-

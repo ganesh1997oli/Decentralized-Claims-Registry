@@ -40,7 +40,7 @@ retried briefly because a gateway may not expose it immediately.
 
 | Operation | Behaviour |
 | --- | --- |
-| `upload_bytes` | Upload exact bytes and return the CID |
+| `upload_bytes` | Upload bytes and return the CID |
 | `download_pointer` | Validate an `ipfs://` pointer, download bytes, and retry transient reads |
 | `pointer_to_gateway_url` | Convert a safe CID without allowing arbitrary URLs or paths |
 

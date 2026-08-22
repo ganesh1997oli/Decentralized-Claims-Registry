@@ -20,7 +20,7 @@ later lifecycle changes.
 | Verifies | Role scope, one-time permit, EIP-712 request, trusted-forwarder sender and allowed state transition |
 | Stores | Compact public claim/party records, used permit IDs, status, basis-point score and timestamps |
 | Emits | Ordered `ClaimSubmitted` and `ClaimAssessed` evidence for the listener |
-| Deliberately excludes | Full claim JSON, policy reference, SHAP reasons, human fraud outcome and private keys |
+| Not stored | Full claim JSON, policy reference, SHAP reasons, human fraud outcome and private keys |
 
 `ClaimsForwarder` answers “who signed this request?”; `ClaimsRegistry` answers
 “is that signer, permit, and transition allowed?” Keeping those questions
@@ -34,7 +34,7 @@ flowchart LR
     Admin -->|"setPermitIssuer scoped to insurer"| Issuer["Eligibility permit issuer"]
     Admin -->|"setAssessor scoped to insurer"| Assessor["Scoring assessor"]
     Claimant["Claimant / representative"] -->|"sign ForwardRequest"| Forwarder["ClaimsForwarder"]
-    Issuer -->|"sign exact ClaimPermit"| Claim["Claim anchor"]
+    Issuer -->|"sign ClaimPermit"| Claim["Claim anchor"]
     Relayer["Unprivileged relayer"] -->|"pays gas"| Forwarder
     Forwarder -->|"submitClaimWithPermit as signer"| Claim
     Assessor -->|"assessClaim only for its insurer"| Claim
@@ -269,7 +269,7 @@ role-reuse attempts, delayed administration transfer, and fraud-score fuzzing.
   timelock and managed signing infrastructure.
 - RPC, IPFS, Kafka and Sepolia remain availability dependencies.
 - The contract is not upgradeable. Remediation requires deploying a new
-  contract and intentionally migrating application configuration.
+  contract and updating the application configuration as a planned migration.
 - The development toolchain still reports advisories in development-only npm
   packages. These packages are not shipped in the application runtime, but
   should be reviewed during routine dependency upgrades.

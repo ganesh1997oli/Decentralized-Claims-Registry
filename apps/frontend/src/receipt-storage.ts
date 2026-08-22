@@ -1,5 +1,5 @@
 // Persist only the latest public receipt. Claim fields and claimant sessions
-// intentionally never cross this browser-storage boundary.
+// never cross this browser-storage boundary.
 import { isClaimReceipt, type ClaimReceipt } from './api.ts'
 
 export const LAST_RECEIPT_STORAGE_KEY = 'claims-registry:last-receipt:v1'

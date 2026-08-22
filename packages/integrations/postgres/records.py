@@ -38,7 +38,7 @@ class ClaimantAuthChallengeRecord:
 
 @dataclass(frozen=True)
 class GaslessSubmissionRecord:
-    """Durable state of one idempotent, wallet-authorized relay request.
+    """Persisted state of one idempotent, wallet-authorized relay request.
 
     One record is the current view of the state machine. Raw transaction fields
     appear only after signing, receipt fields only after confirmation, and
@@ -155,7 +155,7 @@ def gasless_submission_from_row(
 class IndexedClaim:
     """Current public contract state reconstructed from confirmed event logs.
 
-    The record intentionally mirrors the compact Solidity ``Claim`` structure.
+    The record mirrors the compact Solidity ``Claim`` structure.
     It contains no downloaded IPFS document or insurer credential, so returning
     it from the public dashboard cannot widen the existing data boundary.
     """
@@ -172,7 +172,7 @@ class IndexedClaim:
 
 @dataclass(frozen=True)
 class ClaimIndexStatus:
-    """Durable progress of one chain-and-contract projection."""
+    """Persisted progress of one chain-and-contract projection."""
 
     chain_id: int
     contract_address: str
@@ -214,7 +214,7 @@ class ClaimIndexEventPage:
 
 @dataclass(frozen=True)
 class ClaimIndexReconciliationRecord:
-    """Durable result of comparing one checkpoint with authoritative state."""
+    """Stored result of comparing one checkpoint with on-chain state."""
 
     indexed_through_block: int
     chain_claims: int
@@ -231,7 +231,7 @@ class ClaimIndexReconciliationRecord:
 class ClaimIndexOperationsSnapshot:
     """One bounded database snapshot for the authenticated operations UI.
 
-    This record contains only durable PostgreSQL facts. The service layer adds a
+    This record contains only stored PostgreSQL facts. The service layer adds a
     best-effort chain-head sample and derives lag/state without contaminating the
     repository with RPC availability concerns.
     """
@@ -275,7 +275,7 @@ class AssessmentRecord:
         claim_id: int,
         score: FraudScore,
     ) -> AssessmentRecord:
-        """Create the initial durable worker record from a deterministic score.
+        """Create the initial worker record from a deterministic score.
 
         Status is derived once from the model's flagged decision and contract scope
         is normalized for later idempotent lookups. On-chain receipt fields remain
@@ -298,7 +298,7 @@ class AssessmentRecord:
 
 # These values describe a human investigative conclusion, not the model's
 # UnderReview/Flagged screening status or the claim's Approved/Rejected business
-# disposition. ``Inconclusive`` intentionally has no binary training-label value.
+# disposition. ``Inconclusive`` has no binary training-label value.
 HumanFraudOutcome = Literal["ConfirmedFraud", "Legitimate", "Inconclusive"]
 
 

@@ -92,7 +92,7 @@ class FileClaimPermitIssuer:
 
     The signer never pays gas and must hold only an insurer-scoped
     `PERMIT_ISSUER_ROLE`. Production deployments can replace this adapter with a
-    managed signer while retaining the same narrow `issue` interface.
+    managed signer while retaining the same `issue` interface.
     """
 
     def __init__(

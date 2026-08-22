@@ -276,7 +276,7 @@ def get_gasless_submission_service() -> GaslessClaimSubmissionService:
 
     Construction performs configuration and adapter validation but receives no
     relayer or assessor key. Uvicorn must be restarted after environment changes
-    because this dependency is intentionally cached for consistent requests.
+    because this dependency is cached and shared across requests.
     """
 
     try:
@@ -339,7 +339,7 @@ ActiveDeploymentDependency = Annotated[
 
 @lru_cache
 def load_claimant_session_manager() -> ClaimantSessionManager:
-    """Construct the wallet-session module over the durable challenge store."""
+    """Construct the wallet-session module over the PostgreSQL challenge store."""
 
     deployment = load_active_deployment()
     repositories = PostgresRepositories.from_env()
@@ -513,7 +513,7 @@ def health_ready(
 ) -> ReadinessResponse | JSONResponse:
     """Report whether every dependency required for traffic is currently usable.
 
-    A not-ready result deliberately returns the same structured body with HTTP
+    A not-ready result returns the same structured body with HTTP
     503, allowing load balancers to stop routing traffic while operators retain
     per-dependency diagnostics.
     """
@@ -701,7 +701,7 @@ def list_claims(
 ) -> ClaimPageResponse:
     """Return one validated page from the deployment-scoped PostgreSQL index.
 
-    This route performs no blockchain RPC scan. The response includes the durable
+    This route performs no blockchain RPC scan. The response includes the stored
     checkpoint so consumers can distinguish confirmed projection progress from
     the volatile latest chain head shown on the operations surface.
     """
@@ -729,7 +729,7 @@ def get_claim_assessment(
     repositories: PostgresRepositoriesDependency,
     deployment: ActiveDeploymentDependency,
 ) -> ClaimAssessmentResponse:
-    """Return the latest durable assessment and duplicate-review context.
+    """Return the latest stored assessment and duplicate-review context.
 
     Both reads are scoped to the active chain and contract. A missing assessment is
     an expected asynchronous state and returns 404 for the browser polling loop;
@@ -897,7 +897,7 @@ def record_assessor_outcome(
 
     A model screening record is required so this route cannot become an unrelated
     adjudication database. The outcome is never mapped to Approved/Rejected and
-    this function deliberately performs no contract transaction. Submitting a
+    this function performs no contract transaction. Submitting a
     correction creates a new revision rather than mutating prior audit evidence.
     """
 
@@ -955,7 +955,7 @@ def legacy_submit_claim() -> None:
 def get_gasless_network(
     service: GaslessSubmissionServiceDependency,
 ) -> GaslessNetworkResponse:
-    """Return server-authoritative wallet preflight configuration.
+    """Return wallet preflight configuration selected by the server.
 
     This read-only endpoint lets the browser select and pin the expected chain,
     registry, forwarder, and EIP-712 domain before any upload or signature.
@@ -991,7 +991,7 @@ def prepare_gasless_claim(
         ),
     ],
 ) -> GaslessSubmissionResponse:
-    """Create or replay one durable, wallet-signable claim preparation.
+    """Create or replay one persisted, wallet-signable claim preparation.
 
     The wallet session identifies the submitter, policy eligibility identifies
     the claimant and insurer, and the Idempotency-Key binds network retries to
@@ -1042,7 +1042,7 @@ def authorize_gasless_claim(
     claimant: ClaimantSessionDependency,
     service: GaslessSubmissionServiceDependency,
 ) -> GaslessSubmissionResponse:
-    """Verify submitter intent and expose the durable record to the relayer.
+    """Verify submitter intent and expose the authorized record to the relayer.
 
     The response is accepted/queued, not a blockchain receipt. Broadcasting and
     confirmation happen asynchronously in the isolated payer process.

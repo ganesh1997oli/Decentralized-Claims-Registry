@@ -14,7 +14,7 @@ import {
  * Browser regression for the asynchronous scoring lifecycle.
  *
  * FastAPI returns 404 from the assessment endpoint until the Kafka worker has
- * persisted a result. This scenario deliberately keeps that endpoint pending
+ * persisted a result. This scenario keeps that endpoint pending
  * beyond the rapid polling window and proves that React continues checking and
  * renders the eventual score without a page reload.
  */
@@ -181,7 +181,7 @@ test('shows a delayed assessment without reloading the browser', async ({
   await page.goto('/')
   await page.getByRole('button', { name: /Sign & submit gaslessly/ }).click()
 
-  // This assertion is intentionally made without page.reload(). It protects the
+  // Assert without page.reload() to protect the
   // exact user-facing regression where a delayed score appeared only on refresh.
   await expect(page.getByText('40.9%')).toBeVisible()
   expect(assessmentRequests).toBeGreaterThan(31)

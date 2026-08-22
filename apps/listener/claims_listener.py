@@ -66,7 +66,7 @@ RPC_URL = (
 
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 CONFIRMATION_BLOCKS = int(os.environ.get("CONFIRMATION_BLOCKS", "12"))
-# Fifty blocks is deliberately conservative for an unauthenticated public RPC.
+# Fifty blocks is a cautious default for an unauthenticated public RPC.
 # Raising this to 250 or 500 can drain a stale checkpoint in fewer requests, but
 # it also makes each eth_getLogs call heavier and more likely to hit a provider's
 # timeout, result-size, or rate-limit boundary. This is an operator-tuned query
@@ -98,7 +98,7 @@ def deployment_state_paths(
 ) -> tuple[Path, Path]:
     """Derive deployment-scoped paths for local operational artifacts.
 
-    The PostgreSQL checkpoint is authoritative; the checkpoint-shaped path is
+    The PostgreSQL checkpoint controls progress; the checkpoint-shaped path is
     retained for compatibility with older tooling. The dead-letter path must be
     scoped by deployment, chain, and normalized contract address so switching a
     local environment cannot mix quarantined events from two registries.
@@ -170,7 +170,7 @@ class BlockRangeProcessor(Protocol):
 
 
 class BlockCheckpoint(Protocol):
-    """Durably record the last block whose entire range completed."""
+    """Persist the last block whose entire range completed."""
 
     def save(self, block_number: int) -> None:
         """Persist the inclusive end block without allowing regression."""
@@ -179,7 +179,7 @@ class BlockCheckpoint(Protocol):
 
 
 class ClaimIndexWriter(Protocol):
-    """Narrow persistence boundary used while handling confirmed logs."""
+    """Persistence interface used while handling confirmed logs."""
 
     def index_claim_submitted(self, **values: Any) -> None:
         """Idempotently project one confirmed ``ClaimSubmitted`` log."""
@@ -206,7 +206,7 @@ class DeadLetterSink(Protocol):
 
 
 class JsonlDeadLetterSink:
-    """Durably record rejected public chain events for operator review."""
+    """Record rejected public chain events for operator review."""
 
     def __init__(self, path: Path) -> None:
         """Target an append-only JSONL file without creating it prematurely.
@@ -221,7 +221,7 @@ class JsonlDeadLetterSink:
     def record(self, event: Any, error: PermanentClaimEventError) -> None:
         """Append the public event identity and rejection reason as one record.
 
-        The raw downloaded document is deliberately excluded: it is not needed
+        The raw downloaded document is excluded because it is not needed
         to replay the blockchain log and may contain private claim information.
         ``transactionHash:logIndex`` lets an operator correlate this entry with
         both Etherscan and the database audit stream.
@@ -407,7 +407,7 @@ class ClaimEventProcessor:
         )
         # Index the immutable public log before the slower IPFS/Kafka work. If a
         # later adapter fails, the range is replayed; the database upsert is
-        # deliberately idempotent and cannot regress a newer assessment.
+        # idempotent and cannot regress a newer assessment.
         if self.indexer is not None:
             self.indexer.index_claim_submitted(
                 chain_id=self.chain_id,
@@ -451,7 +451,7 @@ class ClaimEventProcessor:
         self.publisher.publish(claim_event)
         # Count this event only after the producer has received Kafka's
         # acknowledgement. A failed attempt remains visible through the poll
-        # error metric and will be retried from the durable block checkpoint.
+        # error metric and will be retried from the stored block checkpoint.
         if self.metrics is not None:
             self.metrics.observe_event("claim_submitted")
             self.metrics.observe_kafka_publication()
@@ -505,7 +505,7 @@ class ClaimEventProcessor:
 
 
 class ConfirmedBlockPoller:
-    """Advance a durable checkpoint only after every safe log succeeds."""
+    """Advance a checkpoint only after every safe log succeeds."""
 
     def __init__(
         self,
@@ -533,11 +533,11 @@ class ConfirmedBlockPoller:
         self.max_block_range = max_block_range
 
     def process_latest(self, *, latest_block: int, last_processed: int) -> int:
-        """Process at most one safe range and return its durable end block.
+        """Process at most one safe range and return its stored end block.
 
         Blocks newer than ``latest_block - confirmation_blocks`` are ignored to
         reduce reorganization risk. The checkpoint is saved only after the full
-        range succeeds, so an exception leaves ``last_processed`` authoritative
+        range succeeds, so an exception leaves ``last_processed`` unchanged
         and makes the next poll replay exactly the unfinished range.
         """
 
@@ -554,7 +554,7 @@ class ConfirmedBlockPoller:
 
         self.processor.process_range(last_processed + 1, range_end)
         # A processing exception exits before this save, guaranteeing that the
-        # failed range is retried from the previous durable checkpoint.
+        # failed range is retried from the previous checkpoint.
         self.checkpoint.save(range_end)
         return range_end
 

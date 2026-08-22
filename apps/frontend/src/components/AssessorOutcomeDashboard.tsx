@@ -41,7 +41,7 @@ const OUTCOME_OPTIONS: Array<{
 function readSessionKey(): string {
   // The assessor key is a short-lived browser credential, not application data.
   // sessionStorage clears with the tab; localStorage and Vite configuration are
-  // deliberately avoided because both would retain or expose it more broadly.
+  // avoided because both would retain or expose it more broadly.
   if (typeof window === 'undefined') return ''
   try {
     return window.sessionStorage?.getItem(ASSESSOR_KEY_SESSION_STORAGE) ?? ''
@@ -82,8 +82,8 @@ function formatDate(value: string): string {
 /**
  * Dedicated human-review surface.
  *
- * It intentionally does not reuse the insurer submission form or the indexer
- * operations credential. The model screening is evidence presented to a person;
+ * This view does not reuse the insurer submission form or indexer operations
+ * credential. The model screening is evidence presented to a person;
  * this module never turns the probability into a conclusion, updates Sepolia, or
  * starts model training.
  */
@@ -475,4 +475,3 @@ export function AssessorOutcomeDashboard() {
     </div>
   )
 }
-

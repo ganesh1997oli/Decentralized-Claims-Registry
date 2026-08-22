@@ -1,6 +1,6 @@
 """ERC-2771 preparation and least-privilege relay adapters for Sepolia.
 
-This module deliberately exposes two different blockchain boundaries:
+This module separates two blockchain boundaries:
 
 * :class:`GaslessClaimsGateway` is used by FastAPI. It has no private key. It
   creates the one allowlisted claim request a verified submitter may sign and
@@ -170,7 +170,7 @@ class PreparedForwardRequest:
 
     @classmethod
     def from_record(cls, record: GaslessSubmissionRecord) -> PreparedForwardRequest:
-        """Reconstruct a request from durable fields without inventing defaults.
+        """Reconstruct a request from stored fields without inventing defaults.
 
         A relay retry must sign and execute the same request prepared for the
         insurer. Missing fields therefore indicate corrupt/incomplete outbox
@@ -205,9 +205,9 @@ class PreparedForwardRequest:
 class GaslessClaimsGateway:
     """Prepare and verify signed claims without receiving a transaction key.
 
-    This is the safe blockchain adapter for the HTTP process. Its interface is
-    intentionally narrower than Web3: callers provide claim content and an
-    verified principal and claim anchor, while this class fixes the contract,
+    This is the safe blockchain adapter for the HTTP process. It exposes less
+    than Web3: callers provide claim content, a verified principal, and a claim
+    anchor, while this class fixes the contract,
     function, ETH value, gas allowance, signature lifetime, and EIP-712 domain.
     """
 

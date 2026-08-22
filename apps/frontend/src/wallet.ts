@@ -126,7 +126,7 @@ export async function switchWalletChain(
   chainId: number,
   provider: EthereumProvider = browserWallet(),
 ): Promise<void> {
-  // The backend's reviewed deployment is authoritative; signing on the wallet's
+  // Use the deployment selected by the backend; signing on the wallet's
   // previously selected chain would create an invalid EIP-712 domain.
   if (!Number.isSafeInteger(chainId) || chainId <= 0) {
     throw new Error('The claims API returned an invalid chain ID.')

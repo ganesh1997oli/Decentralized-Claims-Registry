@@ -11,7 +11,7 @@ import {
 ///         pay to relay a valid insurer-signed request.
 /// @dev OpenZeppelin maintains one nonce per signer and verifies the signature,
 ///      deadline, target, value, gas allowance, and calldata before forwarding.
-///      This contract intentionally has no owner or withdrawal mechanism; it is
+///      This contract has no owner or withdrawal mechanism; it is
 ///      an authorization verifier, not a treasury or role-management service.
 contract ClaimsForwarder is ERC2771Forwarder {
     string public constant FORWARDER_NAME = "ClaimsRegistryForwarder";

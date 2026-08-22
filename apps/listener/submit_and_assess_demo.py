@@ -5,7 +5,7 @@ Exercise both least-privilege roles for demonstration:
 1. submitter: upload a synthetic claim to IPFS, then submitClaim(hash, pointer)
 2. assessor: assessClaim(claimId, status, fraudScore) <- the write-back
 
-The two transactions are deliberately signed by different role accounts.
+The two transactions are signed by different role accounts.
 
 Env vars:
 SEPOLIA_SUBMITTER_PRIVATE_KEY required when submitting a new claim.

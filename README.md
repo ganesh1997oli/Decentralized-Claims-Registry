@@ -22,8 +22,8 @@ public IPFS, and secrets stay in server-side processes._
 ## Start here
 
 This repository is a **research prototype**, not a production insurance
-service. It is intentionally split into small applications so each security
-boundary can be inspected and tested independently.
+service. It is split into small applications so each security boundary can be
+inspected and tested on its own.
 
 Choose the path that matches what you want to do:
 
@@ -44,12 +44,12 @@ Choose the path that matches what you want to do:
 For one fictional claim, the system does six main things:
 
 1. The browser collects the claim and asks a wallet to prove who is submitting.
-2. FastAPI checks the fictional policy and prepares the exact request to sign.
+2. FastAPI checks the fictional policy and prepares the request for signing.
 3. The claim JSON is uploaded to public IPFS and its fingerprint is anchored on
    Sepolia through a gas-paying relayer.
 4. A listener waits for blockchain confirmations, verifies the IPFS bytes, and
    publishes a small reference event to Kafka.
-5. A worker checks for an exact cross-insurer duplicate, runs the synthetic
+5. A worker checks for matching incidents across insurers, runs the synthetic
    XGBoost model, saves SHAP reasons in PostgreSQL, and updates the public status.
 6. The browser shows the public anchor and review signals. A human assessor can
    separately record an off-chain outcome.
@@ -58,8 +58,8 @@ No model result automatically approves, rejects, or accuses a person of fraud.
 
 ### Current implementation and earlier planning documents
 
-The repository is the source of truth for what runs today. Earlier proposal
-material describes the starting plan, and several decisions changed during
+The code and deployment artifacts describe what runs today. Earlier proposal
+material records the starting plan, but several decisions changed during
 implementation and security review:
 
 | Area | Current repository behavior |
@@ -112,11 +112,11 @@ cd /path/to/Decentralized-Claims-Registry
 # Create one isolated Python environment used by all Python components.
 python3 -m venv apps/backend/.venv
 
-# Install the exact reviewed Python dependency versions from the lockfile.
+# Install the reviewed Python versions from the lockfile.
 apps/backend/.venv/bin/python -m pip install --require-hashes \
   -r requirements-dev.lock
 
-# Install the exact frontend and smart-contract dependency versions.
+# Install the locked frontend and smart-contract dependencies.
 npm --prefix apps/frontend ci
 npm --prefix apps/contracts ci
 ```
@@ -182,15 +182,15 @@ flowchart LR
     API --> Browser
 ```
 
-The split is intentional: policy eligibility and the insurer permit authorize
-the claim, the claimant or representative authorizes the exact call, and an
-isolated relayer only pays gas. Kafka handles slower screening without holding
-the submission request open. See the
+Policy eligibility and the insurer permit authorize the claim. The claimant or
+representative signs the contract call, while an isolated relayer only pays
+gas. Kafka handles slower screening without holding the submission request
+open. See the
 [public-intake design and provisioning guide](docs/README.md).
 
 ## What is stored where
 
-| Place      | Stored                                                                                                                                                 | Deliberately not stored                                      |
+| Place      | Stored                                                                                                                                                 | Not stored                                                   |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
 | Browser    | Form state, short claimant session in memory, and latest public receipt in local storage                                                                  | Wallet keys, Pinata JWT, HMAC keys, saved bearer sessions    |
 | IPFS       | Authorized schema-v6 synthetic claim JSON                                                                                                              | Encryption or access control                                 |
@@ -211,11 +211,11 @@ sequenceDiagram
     participant W as Worker
     participant P as PostgreSQL
 
-    A->>I: Upload exact canonical bytes
+    A->>I: Upload canonical bytes
     A->>I: Download and compare bytes
     A->>P: Persist wallet-authorized request
     R->>P: Persist signed raw transaction before broadcast
-    R->>E: Execute exact request and pay gas
+    R->>E: Execute signed request and pay gas
     E-->>L: Confirmed ClaimSubmitted log
     L->>P: Append event and update claim projection
     L->>I: Download and verify on-chain hash
@@ -244,7 +244,7 @@ apps/
 ├── contracts/     Solidity registry, tests and Ignition deployments
 ├── frontend/      React intake, receipt and claims dashboard
 ├── listener/      Confirmed-log indexing, IPFS verification and reconciliation
-└── relayer/       Durable nonce, fee replacement, broadcast and confirmation
+└── relayer/       Nonce tracking, fee replacement, broadcast and confirmation
 
 packages/
 ├── duplicates/    Cross-insurer HMAC incident matching
@@ -268,7 +268,7 @@ A beginner can follow one claim without reading every file:
    use case.
 4. [`ClaimsRegistry.sol`](apps/contracts/contracts/ClaimsRegistry.sol) enforces
    permits, roles, lifecycle rules, and the compact public record.
-5. [`gasless_relayer.py`](apps/relayer/gasless_relayer.py) moves a durable signed
+5. [`gasless_relayer.py`](apps/relayer/gasless_relayer.py) moves an authorized
    request through signing, broadcast, replacement, and confirmation.
 6. [`claims_listener.py`](apps/listener/claims_listener.py) rebuilds confirmed
    chain history, verifies IPFS, and publishes the Kafka reference.
@@ -283,20 +283,19 @@ offset commits is part of correctness, not just an implementation detail.
 ## Component responsibilities
 
 The easiest way to understand the repository is to follow ownership. Each
-component has one primary job and deliberately does not absorb the keys or
-responsibilities of its neighbours.
+component has one primary job and holds only the keys needed for that job.
 
 | Component | Plain-English job | Technical boundary | Guide |
 | --- | --- | --- | --- |
 | Frontend | Collect a fictional claim and explain what is happening | React UI, claimant wallet proof, EIP-712 signature, polling and public receipt display | [Frontend](apps/frontend/README.md) |
-| Backend | Check who may submit and prepare the exact sponsored call | FastAPI validation, short claimant sessions, policy eligibility, permit signing, canonical IPFS upload and durable preparation | [Backend](apps/backend/README.md) |
+| Backend | Check who may submit and prepare the sponsored call | FastAPI validation, short claimant sessions, policy eligibility, permit signing, canonical IPFS upload and persisted preparation | [Backend](apps/backend/README.md) |
 | Relayer | Pay the testnet gas without gaining claim authority | PostgreSQL outbox, EOA nonce allocation, raw-transaction persistence, fee replacement and receipt confirmation | [Relayer](apps/relayer/README.md) |
 | Contracts | Enforce the public rules and retain the compact record | Solidity registry, EIP-712 permit verification, ERC-2771 sender recovery, role scopes and lifecycle transitions | [Contracts](apps/contracts/README.md) |
 | Listener | Turn confirmed chain history into replayable application data | Confirmation-aware log polling, IPFS re-verification, PostgreSQL projection and Kafka publication | [Listener](apps/listener/README.md) |
 | Kafka worker | Run slow screening outside the HTTP request | Versioned event validation, retry/quarantine policy, feature processing, scoring and chain write-back | [Kafka](packages/integrations/kafka/README.md) |
 | PostgreSQL | Remember off-chain state that must survive retries | Migrations, idempotency/outbox state, chain index, immutable features, assessments and human-outcome revisions | [PostgreSQL](packages/integrations/postgres/README.md) |
-| IPFS adapter | Store and retrieve the exact public claim bytes | Pinata upload, safe `ipfs://` parsing, gateway reads and byte-for-byte verification | [IPFS](packages/integrations/ipfs/README.md) |
-| Duplicate detector | Find exact normalized incidents across configured insurers | Versioned HMAC fingerprinting and human-review match signals | [Duplicates](packages/duplicates/README.md) |
+| IPFS adapter | Store and retrieve the public claim bytes | Pinata upload, safe `ipfs://` parsing, gateway reads and byte-for-byte verification | [IPFS](packages/integrations/ipfs/README.md) |
+| Duplicate detector | Find matching normalized incidents across configured insurers | Versioned HMAC fingerprinting and human-review match signals | [Duplicates](packages/duplicates/README.md) |
 | Model | Produce a reproducible synthetic review signal | Leakage-controlled training, artifact verification, XGBoost inference and local SHAP reasons | [Model](packages/model/README.md) |
 | Observability | Make long-running processes diagnosable without leaking secrets | Structured JSON logs, bounded Prometheus labels and graceful shutdown | [Observability](packages/observability/README.md) |
 | GCP deployment | Run the research system as one reproducible cloud demonstration | Terraform, hardened single-VM Compose, monitoring and evidence collection | [GCP infrastructure](infrastructure/gcp/README.md) |
@@ -312,8 +311,8 @@ being called directly from every application process.
 | Anchor | A compact on-chain record proving the hash and pointer accepted for a claim. It is not the full claim |
 | Canonical JSON | One deterministic byte representation, so every component calculates the same hash |
 | CID | IPFS content identifier used as the public location-independent pointer |
-| Claim permit | One-time, insurer-scoped EIP-712 authorization for an exact claim, claimant and deadline |
-| Forward request | The exact sponsored contract call signed by the claimant or authorized representative |
+| Claim permit | One-time, insurer-scoped EIP-712 authorization binding a claim, claimant and deadline |
+| Forward request | Sponsored contract call signed by the claimant or authorized representative |
 | Gasless | The user signs but does not pay Sepolia gas. The restricted relayer pays to submit the unchanged call |
 | Confirmation depth | Number of newer blocks the listener waits before treating an event as sufficiently stable |
 | Projection | PostgreSQL's fast, rebuildable current view of confirmed contract events |
@@ -329,7 +328,7 @@ order because a later process depends on the earlier infrastructure.
 
 | Process | Needs | Main job |
 | --- | --- | --- |
-| FastAPI | PostgreSQL, Sepolia, Pinata, policy and permit configuration | Authenticate, validate, upload, and prepare an exact signed request |
+| FastAPI | PostgreSQL, Sepolia, Pinata, policy and permit configuration | Authenticate, validate, upload, and prepare a request for signing |
 | React/Vite | FastAPI and a browser wallet | Guide the user through submission and display results |
 | Relayer | PostgreSQL, Sepolia RPC, funded test wallet | Pay testnet gas for an already authorized request |
 | Listener | Sepolia RPC, IPFS, PostgreSQL, Kafka | Verify confirmed public events and publish references |
@@ -375,7 +374,7 @@ you can review one boundary at a time.
 | Configuration group | Important settings | Beginner explanation |
 | --- | --- | --- |
 | Network | `SEPOLIA_RPC_URL`, `CLAIMS_DEPLOYMENT_ID`, `LISTENER_START_BLOCK` | Every process must read the same chain and contract deployment |
-| Public storage | `PINATA_JWT`, `IPFS_GATEWAY` | FastAPI uploads the exact fictional JSON and other processes read it back |
+| Public storage | `PINATA_JWT`, `IPFS_GATEWAY` | FastAPI uploads the fictional claim JSON and other processes read it back |
 | Claimant session | `CLAIMANT_*` secrets | Short-lived wallet login and privacy-preserving claimant identifiers |
 | Policy and permit | `POLICY_ELIGIBILITY_RECORDS_JSON`, `CLAIM_PERMIT_ISSUERS_JSON` | Defines who can submit and which scoped key may authorize the claim |
 | Gas relayer | `SEPOLIA_RELAYER_PRIVATE_KEY` or `_FILE` | Pays test ETH but has no authority to change claim contents |
@@ -386,21 +385,20 @@ you can review one boundary at a time.
 #### Checked-in deployment does not mean checked-in access
 
 The repository includes the ABI, addresses, and deployment block for
-`sepolia-public-intake-v1`. It intentionally does **not** include the private
-keys that control its roles. The placeholder path in
-`CLAIM_PERMIT_ISSUERS_JSON` is deliberately invalid.
+`sepolia-public-intake-v1`, but not the private keys that control its roles. The
+placeholder path in `CLAIM_PERMIT_ISSUERS_JSON` does not point to a real key.
 
 You have two valid choices:
 
 1. Use `sepolia-public-intake-v1` only if you already control its matching
    permit-issuer, assessor, claimant, and relayer test wallets.
 2. Otherwise, [deploy your own permit-backed contract](apps/contracts/README.md#sepolia-deployment),
-   save it under a new deployment ID, record its exact deployment block, and
+   save it under a new deployment ID, record the registry deployment block, and
    follow the [public-intake provisioning guide](docs/README.md).
 
 FastAPI fails during startup when the selected deployment, policy, permit key,
-and live contract roles do not agree. This fail-closed behavior is expected and
-prevents an incorrectly configured service from sponsoring claims.
+and live contract roles do not agree. This prevents a misconfigured service
+from sponsoring claims.
 
 When a local key is stored in a file, use an absolute path and restrict access:
 
@@ -445,7 +443,7 @@ apps/backend/.venv/bin/python \
 apps/backend/.venv/bin/python \
   -m packages.integrations.postgres.migrations check
 
-# Create the exact deployment-scoped topic. Repeating this command is safe.
+# Create the deployment-scoped topic. Repeating this command is safe.
 docker compose -f packages/integrations/kafka/compose.yml exec kafka \
   /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
@@ -555,7 +553,7 @@ Do not submit until readiness reports every dependency as `ok`. Then open:
 - Kafka UI at <http://127.0.0.1:8081>
 
 Connect the wallet named in your fictional policy record. The wallet first
-signs a readable ownership challenge, then signs the exact EIP-712 request. It
+signs a readable ownership challenge, then signs the EIP-712 request. It
 does not pay gas. A healthy submission progresses through:
 
 ```text
@@ -658,12 +656,12 @@ TEST_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092 \
 ## Limits that matter
 
 - IPFS content is public and unencrypted.
-- Valid sponsorship quotas are durable in PostgreSQL. Early or invalid-credential
+- Valid sponsorship quotas are stored in PostgreSQL. Early or invalid-credential
   abuse counters remain process-local and should be enforced at the edge in a
   multi-instance production deployment.
 - The dashboard reads a confirmed-event PostgreSQL index and may lag the chain
   by the configured confirmation depth.
-- Exact incident fingerprints produce review candidates, not proof of fraud.
+- Matching incident fingerprints produce review candidates, not proof of fraud.
 - The synthetic model is an integration artifact, not a validated decision model.
 - Insurers sign through browser test wallets. Relayer and assessor keys are
   process-level testnet signers, not managed signing infrastructure.

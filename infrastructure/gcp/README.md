@@ -1,8 +1,8 @@
 # Google Cloud single-VM research deployment
 
 This folder runs the complete demonstration on one disposable Compute Engine
-VM. It is deliberately small, observable, and affordable to remove—not a
-production insurance platform.
+VM. The single-VM layout is easy to inspect and inexpensive to remove, but it
+is not a production insurance platform.
 
 ## Quick mental model
 
@@ -148,7 +148,7 @@ terraform plan
 terraform apply
 ```
 
-Apply only when the plan shows the expected disposable VM, narrow firewall
+Apply only when the plan shows the expected disposable VM, limited firewall
 rules, and observability service account. Terraform outputs the temporary HTTP
 URL and an IAP SSH command. The external IP is ephemeral and can change after a
 stop/start cycle.
@@ -335,7 +335,7 @@ docker compose \
 
 The `claims-scoring-state` named volume survives container replacement and is
 writable only by the one-off ownership initializer and the non-root scoring
-worker. If that volume is unavailable, the worker deliberately leaves the Kafka
+worker. If that volume is unavailable, the worker leaves the Kafka
 offset uncommitted rather than losing the rejection evidence.
 
 ## Evidence and shutdown

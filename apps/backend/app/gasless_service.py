@@ -1,7 +1,7 @@
 """Two-stage public claim preparation and submitter authorization workflow.
 
 The service is the application-level coordinator used by FastAPI. A normal
-submission moves through these durable states::
+submission moves through these persisted states::
 
     preparing -> prepared -> authorized -> signed -> broadcast -> confirmed
 
@@ -82,11 +82,11 @@ class GaslessSubmissionEligibilityError(PermissionError):
 
 
 class GaslessSubmissionStateError(RuntimeError):
-    """Raised when a request conflicts with durable submission state."""
+    """Raised when a request conflicts with stored submission state."""
 
 
 class GaslessSubmissionRateLimitError(RuntimeError):
-    """Raised when durable sponsor limits reject a new preparation."""
+    """Raised when stored sponsor limits reject a new preparation."""
 
     def __init__(self, message: str, *, retry_after: int) -> None:
         """Carry the retry interval used to populate FastAPI's response header."""
@@ -126,7 +126,7 @@ class GaslessSubmissionStore(Protocol):
         ...
 
     def authorize(self, submission_id: UUID, **values) -> GaslessSubmissionRecord:
-        """Durably record a verified submitter signature exactly once."""
+        """Record a verified submitter signature exactly once."""
 
         ...
 
@@ -134,9 +134,9 @@ class GaslessSubmissionStore(Protocol):
 class SubmissionOwner(Protocol):
     """Stable ownership values required after claim preparation.
 
-    A bearer token is intentionally absent from this interface. Outbox rows are
-    owned by the stable, keyed subject identifier carried inside the token, so
-    session renewal does not orphan an in-flight sponsored transaction.
+    This interface uses the verified subject rather than a bearer token. Outbox
+    rows are owned by the stable, keyed subject identifier carried inside the
+    token, so session renewal does not orphan an in-flight sponsored transaction.
     """
 
     credential_id: str
@@ -173,7 +173,7 @@ class GaslessClaimSubmissionService:
 
     The API phase prepares content and validates submitter intent. It never signs
     an Ethereum transaction; the isolated relayer consumes only records that
-    reach the durable ``authorized`` state. Methods in this class orchestrate
+    reach the persisted ``authorized`` state. Methods in this class orchestrate
     adapters, while concurrency, quota counting, and compare-and-set state
     transitions remain inside the PostgreSQL repository.
     """
@@ -225,7 +225,7 @@ class GaslessClaimSubmissionService:
 
         Startup fails when IPFS, PostgreSQL, deployment, authorization, or HMAC
         settings are incomplete. This prevents the HTTP server from appearing
-        ready with only part of the durable workflow available.
+        ready with only part of the submission workflow available.
         """
 
         raw_fingerprint_key = settings.get("GASLESS_REQUEST_FINGERPRINT_KEY", "")
@@ -236,7 +236,7 @@ class GaslessClaimSubmissionService:
         database_url = settings.get("DATABASE_URL", "").strip()
         if not database_url:
             raise SubmissionAuthConfigurationError(
-                "DATABASE_URL is required for durable gasless submissions"
+                "DATABASE_URL is required to store gasless submissions"
             )
         pinata_jwt = settings.get("PINATA_JWT", "").strip()
         if not pinata_jwt:
@@ -330,11 +330,11 @@ class GaslessClaimSubmissionService:
     ) -> GaslessSubmissionResponse:
         """Reserve sponsorship, verify IPFS bytes, and prepare EIP-712 data.
 
-        ``begin_preparation`` makes the request idempotent and enforces durable
+        ``begin_preparation`` makes the request idempotent and enforces stored
         quotas before a paid Pinata operation. The exact canonical payload is
         uploaded, downloaded, byte-compared, hashed, and encoded into the one
-        forward request the verified submitter may authorize. A matching retry returns the
-        existing record instead of repeating side effects.
+        forward request the verified submitter may authorize. A matching retry
+        returns the existing record instead of repeating side effects.
         """
 
         if isinstance(actor, ClaimantSession):
@@ -520,7 +520,7 @@ class GaslessClaimSubmissionService:
         submission_id: UUID,
         principal: SubmissionOwner,
     ) -> GaslessSubmissionResponse:
-        """Return credential-scoped durable progress from PostgreSQL.
+        """Return credential-scoped progress from PostgreSQL.
 
         Status polling never contacts the payer wallet and never performs a
         chain write, so browser retries cannot allocate nonces or duplicate
@@ -542,7 +542,7 @@ class GaslessClaimSubmissionService:
 
     @staticmethod
     def _request(record: GaslessSubmissionRecord) -> PreparedForwardRequest:
-        """Rehydrate typed-data fields only from the durable request record."""
+        """Rehydrate typed-data fields only from the stored request record."""
 
         return PreparedForwardRequest.from_record(record)
 

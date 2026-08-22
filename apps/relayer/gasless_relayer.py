@@ -1,7 +1,7 @@
 """Drain authorized ERC-2771 submissions from PostgreSQL into Ethereum.
 
-The worker is deliberately separate from FastAPI. The API never receives the
-relayer key, and HTTP retries never allocate EOA nonces. PostgreSQL persists raw
+The worker runs outside FastAPI. The API never receives the relayer key, and
+HTTP retries never allocate EOA nonces. PostgreSQL persists raw
 signed transactions before broadcast so a crash can safely replay the same
 bytes and transaction hash.
 
@@ -39,10 +39,10 @@ logger = get_event_logger(__name__)
 
 
 class GaslessRelayWorker:
-    """Move each durable relay request through sign, broadcast, and confirm.
+    """Move each persisted relay request through sign, broadcast, and confirm.
 
-    The worker is intentionally stateless between polls. PostgreSQL is the
-    source of truth for progress, which makes a process restart or a second
+    The worker keeps no progress in memory between polls. PostgreSQL records
+    each transition, which makes a process restart or a second
     replica equivalent to another safe attempt at the current transition.
     """
 
@@ -57,8 +57,8 @@ class GaslessRelayWorker:
     ) -> None:
         """Configure confirmation and replacement policy for one worker.
 
-        ``confirmation_blocks`` controls when a mined receipt becomes durable
-        application truth. ``stuck_transaction_seconds`` controls when the same
+        ``confirmation_blocks`` controls when a mined receipt is considered
+        confirmed. ``stuck_transaction_seconds`` controls when the same
         nonce may be re-signed with higher fees; it does not create a second
         logical claim.
         """
@@ -74,7 +74,7 @@ class GaslessRelayWorker:
         self.clock = clock
 
     def _broadcast(self, record: GaslessSubmissionRecord) -> GaslessSubmissionRecord:
-        """Replay the persisted raw bytes, then durably mark their broadcast.
+        """Replay the persisted raw bytes, then record their broadcast.
 
         Signing and persistence happen earlier. A crash between Ethereum and
         PostgreSQL can therefore rebroadcast the identical bytes/hash safely.
@@ -130,7 +130,7 @@ class GaslessRelayWorker:
         Terminal errors prove that this logical request cannot safely continue.
         Dependency, fee, and nonce-conflict errors remain retryable/operator
         visible because changing infrastructure state may resolve them. Raw RPC
-        text is deliberately not persisted or returned to the browser.
+        text is not saved or returned to the browser.
         """
 
         message = str(exc).lower()
@@ -152,7 +152,7 @@ class GaslessRelayWorker:
         return "relay_dependency_unavailable", False
 
     def process(self, record: GaslessSubmissionRecord) -> None:
-        """Advance one durable record through every immediately safe transition.
+        """Advance one record through every immediately safe transition.
 
         The normal path is ``authorized -> signed -> broadcast -> confirmed``.
         Signed bytes are saved before network I/O, all known receipts are checked
@@ -178,7 +178,7 @@ class GaslessRelayWorker:
             if receipt is not None and current.state == "signed":
                 # Ethereum can accept and mine persisted bytes before a crash
                 # prevents PostgreSQL from recording ``broadcast``. Repair the
-                # durable transition from the receipt evidence before confirming
+                # stored transition from the receipt evidence before confirming
                 # so the state machine remains auditable without rebroadcasting.
                 current = self.store.mark_broadcast(current.submission_id)
             if receipt is None and current.state == "signed":

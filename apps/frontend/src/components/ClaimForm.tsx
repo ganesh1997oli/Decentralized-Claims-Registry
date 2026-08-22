@@ -33,8 +33,8 @@ type FormValues = {
 }
 
 function initialForm(): FormValues {
-  // Generate a fresh synthetic reference each time the form is intentionally
-  // reset; it is human-readable test data, not the submission's idempotency key.
+  // Each reset gets a readable synthetic reference. This is test data, not the
+  // submission's idempotency key.
   return {
     insurerId: RESEARCH_INSURERS[0].id,
     claimReference: `synthetic-web-${Date.now().toString().slice(-6)}`,
@@ -57,12 +57,7 @@ type ClaimFormProps = {
   onSubmitted: (receipt: ClaimReceipt) => void
 }
 
-/**
- * Owns the complete claim-intake workflow.
- *
- * Keeping validation and retry identity inside this component gives callers a
- * deliberately narrow interface: they only receive a server-validated receipt.
- */
+/** Owns claim intake and returns a server-validated receipt to its caller. */
 export function ClaimForm({ onSubmitted }: ClaimFormProps) {
   const [form, setForm] = useState<FormValues>(initialForm)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -73,8 +68,7 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
 
   useEffect(
     () => () => {
-      // Cancel status polling when the form unmounts. The server-side outbox is
-      // durable and continues independently; this only stops obsolete UI work.
+      // Stop obsolete UI polling on unmount. The server-side outbox continues.
       submissionAbort.current?.abort()
     },
     [],
@@ -95,8 +89,8 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    // Perform fast browser validation before any sponsored/IPFS side effect. The
-    // API repeats authoritative schema, policy, quota, and role validation.
+    // Catch simple input errors before IPFS or sponsorship work. The API still
+    // checks the schema, policy, quota, and roles.
     event.preventDefault()
     setError(null)
 
@@ -141,7 +135,7 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
     submissionAbort.current = controller
     try {
       // Reuse the key after recoverable transport errors so FastAPI returns the
-      // same durable workflow. Rotate it only after success, a terminal state,
+      // same stored workflow. Rotate it only after success, a terminal state,
       // form edits, or an explicit reset.
       idempotencyKey.current ??= crypto.randomUUID()
       const receipt = await submitGaslessClaim({
@@ -170,7 +164,7 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
 
   function resetForm() {
     // Rotate retry identity so the next edited claim cannot accidentally resume
-    // an earlier durable submission.
+    // an earlier submission.
     setForm(initialForm())
     setProgress(null)
     setError(null)
@@ -442,9 +436,9 @@ export function ClaimForm({ onSubmitted }: ClaimFormProps) {
               </label>
 
               <div className="rounded-2xl border border-coral/25 bg-coral-pale p-4 text-sm leading-6 text-ink">
-                <strong className="font-bold">Evidence is intentionally disabled.</strong>{' '}
-                This application currently uses public, unencrypted IPFS. Photos and documents
-                will be added only after encrypted storage is implemented.
+                <strong className="font-bold">Evidence uploads are unavailable.</strong>{' '}
+                This application currently uses public, unencrypted IPFS. Photos and
+                documents require encrypted storage.
               </div>
 
               {error && (

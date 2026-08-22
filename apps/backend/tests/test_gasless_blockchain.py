@@ -60,7 +60,7 @@ DEPLOYMENT = ClaimsDeployment(
 
 
 def submission_record(**changes) -> GaslessSubmissionRecord:
-    """Build one complete durable authorization and allow focused overrides."""
+    """Build one complete stored authorization and allow focused overrides."""
 
     record = GaslessSubmissionRecord(
         submission_id=UUID("11111111-1111-4111-8111-111111111111"),
@@ -374,7 +374,7 @@ def test_relay_default_gas_cap_covers_public_permit_calldata():
     """Keep the sponsored cap above the measured permit-call safety buffer."""
 
     # The first live public-intake canary estimated 420,762 gas. The adapter
-    # deliberately adds 20% before signing, so the supported default must admit
+    # adds 20% before signing, so the supported default must admit
     # the resulting 504,915-gas transaction without weakening forward-call gas.
     execute = FakeExecute(estimate=420_762)
     adapter = relay_chain(execute=execute)

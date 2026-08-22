@@ -55,7 +55,7 @@ class ChainAssessment:
 
 @dataclass(frozen=True)
 class ChainClaim:
-    """Authoritative public Solidity claim state used by reconciliation."""
+    """Public Solidity claim state used by reconciliation."""
 
     claim_id: int
     claimant: str
@@ -109,7 +109,7 @@ class SepoliaClaimsRegistry:
         )
 
         # Public reads need only the RPC endpoint and deployed contract address.
-        # The query-only FastAPI dependency deliberately passes no key, keeping
+        # The query-only FastAPI dependency passes no key, keeping
         # signing authority out of a code path that can never submit a write.
         self.account = None
         self.private_key_env = private_key_env
@@ -425,7 +425,7 @@ class SepoliaClaimsRegistry:
         Claim IDs are contiguous and increasing, so walking backward returns the
         newest claims without fetching the full registry. The public FastAPI list
         uses PostgreSQL instead; this RPC method remains useful in focused tooling
-        and tests where authoritative direct reads are specifically required.
+        and tests where direct on-chain reads are specifically required.
         """
 
         try:
@@ -460,7 +460,7 @@ class SepoliaClaimsRegistry:
             ) from exc
 
     def claim_count(self, *, block_identifier: int | None = None) -> int:
-        """Read the authoritative registry size at an optional snapshot block.
+        """Read the on-chain registry size at an optional snapshot block.
 
         Pinning the call is essential during reconciliation: otherwise new claims
         mined after the database checkpoint could create false missing-row reports.
@@ -482,9 +482,9 @@ class SepoliaClaimsRegistry:
     def get_claim(
         self, claim_id: int, *, block_identifier: int | None = None
     ) -> ChainClaim:
-        """Read one authoritative claim at an optional snapshot block.
+        """Read one on-chain claim at an optional snapshot block.
 
-        Reconciliation passes the durable checkpoint so all calls describe the
+        Reconciliation passes the stored checkpoint so all calls describe the
         same historical state. Workers may omit it when checking current contract
         state before retrying an at-least-once write.
         """

@@ -1,6 +1,6 @@
 # One-VM research deployment for the dissertation.
 #
-# This intentionally favours a reproducible, affordable demonstration over high
+# This favours a reproducible, affordable demonstration over high
 # availability. Kafka and PostgreSQL each have one node and must not be described
 # as a production cluster.
 name: ${COMPOSE_PROJECT_NAME:-decentralized-claims-cloud}
@@ -165,7 +165,7 @@ services:
     logging: *json-logging
 
   model-trainer:
-    # This service deliberately does not read .env.gcp: model training needs no
+    # This service does not read .env.gcp: model training needs no
     # wallet, Pinata token, database password or duplicate-fingerprint key.
     image: decentralized-claims-app:local
     build:

@@ -62,7 +62,7 @@ function readSessionKey(): string {
 
 function storeSessionKey(apiKey: string): void {
   // Persist only after FastAPI has authenticated the candidate. localStorage is
-  // deliberately avoided because it would retain the credential across sessions.
+  // avoided because it would retain the credential across sessions.
   if (typeof window === 'undefined') return
   try {
     window.sessionStorage?.setItem(OPERATIONS_KEY_SESSION_STORAGE, apiKey)
@@ -118,7 +118,7 @@ function statePresentation(state: IndexerState): {
       return {
         label: 'Healthy',
         classes: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-        explanation: 'The durable checkpoint has reached the confirmed head.',
+        explanation: 'The stored checkpoint has reached the confirmed head.',
       }
     case 'catching_up':
       return {
@@ -136,7 +136,7 @@ function statePresentation(state: IndexerState): {
       return {
         label: 'Uninitialized',
         classes: 'border-amber-200 bg-amber-50 text-amber-800',
-        explanation: 'No durable checkpoint exists for this deployment.',
+        explanation: 'No checkpoint exists for this deployment.',
       }
     default:
       return {
@@ -156,8 +156,7 @@ function MetricCard({
   value: string
   detail: string
 }) {
-  // This component is intentionally presentation-only. Keeping data derivation in
-  // the backend prevents four cards from calculating incompatible health facts.
+  // The backend derives health state so these cards cannot disagree.
   return (
     <article className="rounded-2xl border border-ink/8 bg-white p-5 shadow-sm">
       <p className="text-xs font-bold tracking-[0.14em] text-slate uppercase">
@@ -174,7 +173,7 @@ function MetricCard({
 function parseBlockFilter(value: string, label: string): number | null {
   // Inputs remain strings while editing so an empty field is possible. Accept only
   // unsigned decimal integers representable exactly by JavaScript; FastAPI repeats
-  // the non-negative constraint because client validation is never authoritative.
+  // the non-negative constraint because client validation is not sufficient.
   const normalized = value.trim()
   if (!normalized) return null
   if (!/^\d+$/.test(normalized)) {

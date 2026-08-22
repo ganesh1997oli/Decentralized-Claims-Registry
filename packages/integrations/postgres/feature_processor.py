@@ -4,7 +4,7 @@ The scoring worker calls the small ``process`` interface. This module owns the
 data-quality checks, deterministic policy HMAC, and claim-level calculations;
 the store owns transactional historical aggregation and persistence.
 
-Free text, evidence, and raw policy references are intentionally excluded from
+Free text, evidence, and raw policy references are excluded from
 the snapshot. They are unnecessary for the current research features and would
 increase the amount of sensitive claim data copied into PostgreSQL.
 """

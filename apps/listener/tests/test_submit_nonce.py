@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from web3.exceptions import Web3RPCError
 
-SCRIPT = Path(__file__).with_name("submit_and_assess_demo.py")
+SCRIPT = Path(__file__).parent.parent / "submit_and_assess_demo.py"
 
 
 def load_send_function(w3, acct):
@@ -26,7 +26,7 @@ def load_send_function(w3, acct):
         "re": re,
         "Web3RPCError": Web3RPCError,
     }
-    # The test deliberately executes only the one parsed function definition
+    # Execute only the parsed function definition
     # selected above; no external or user-controlled source reaches this call.
     exec(  # noqa: S102
         compile(ast.Module(body=[send_node], type_ignores=[]), str(SCRIPT), "exec"),

@@ -3,7 +3,7 @@
  *
  * These tests live outside production `src`, matching the sibling contracts
  * application's `test` directory. They cover both the locked review surface and
- * its narrow HTTP boundary without mixing assessor cases into the public claim
+ * its HTTP boundary without mixing assessor cases into the public claim
  * application or general-purpose API test files.
  */
 import { renderToStaticMarkup } from 'react-dom/server'

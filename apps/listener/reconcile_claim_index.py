@@ -33,7 +33,7 @@ logger = get_event_logger(__name__)
 
 
 class ContractClaimReader(Protocol):
-    """Read authoritative claim state at one optional historical block."""
+    """Read on-chain claim state at one optional historical block."""
 
     def claim_count(self, *, block_identifier: int | None = None) -> int:
         """Return the registry's next claim ID at the selected block."""
@@ -43,7 +43,7 @@ class ContractClaimReader(Protocol):
     def get_claim(
         self, claim_id: int, *, block_identifier: int | None = None
     ) -> ChainClaim:
-        """Return one authoritative public claim at the selected block."""
+        """Return one public claim at the selected block."""
 
         ...
 
@@ -73,7 +73,7 @@ class IndexedClaimReader(Protocol):
     def get_status(
         self, *, chain_id: int, contract_address: str
     ) -> ClaimIndexStatus | None:
-        """Return the durable comparison block or ``None`` before initialization."""
+        """Return the stored comparison block or ``None`` before initialization."""
 
         ...
 
@@ -111,7 +111,7 @@ def _same_public_state(chain: ChainClaim, indexed: IndexedClaim) -> bool:
 
     Ethereum addresses and hashes are case-insensitive hexadecimal values, while
     the IPFS pointer is an exact string. Database-only provenance such as block
-    position and indexing time is intentionally excluded from this contract
+    position and indexing time is excluded from this contract
     state comparison.
     """
 
@@ -137,7 +137,7 @@ class ClaimIndexReconciler:
         contract: ContractClaimReader,
         index: IndexedClaimReader,
     ) -> None:
-        """Bind one deployment to its authoritative and projected readers.
+        """Bind one deployment to its chain and projected readers.
 
         Dependency injection makes it possible to exercise reconciliation with
         deterministic snapshots. The deployment identity is reused for every
@@ -158,7 +158,7 @@ class ClaimIndexReconciler:
         decide whether and where to persist the resulting audit record.
 
         Raises:
-            RuntimeError: If no durable checkpoint exists yet.
+            RuntimeError: If no checkpoint exists yet.
         """
 
         scope = {
@@ -239,7 +239,7 @@ def main() -> None:
         index=repositories.claims,
     ).reconcile()
     duration_ms = max(0, round((time.monotonic() - started_at) * 1_000))
-    # This audit append is intentionally distinct from projection repair. Both
+    # This audit append is separate from projection repair. Both
     # success and mismatch results are valuable operational facts and neither
     # changes the event history or the current indexed claim state.
     repositories.claims.record_reconciliation(

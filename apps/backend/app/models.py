@@ -367,7 +367,7 @@ HumanFraudOutcome = Literal["ConfirmedFraud", "Legitimate", "Inconclusive"]
 class AssessorOutcomeRequest(BaseModel):
     """A human conclusion supplied after reviewing one screened claim.
 
-    The assessor identity is intentionally absent. FastAPI derives it from the
+    The assessor identity is absent because FastAPI derives it from the
     authenticated credential so a caller cannot write another reviewer's name.
     Approval and rejection are also absent because claim disposition is a
     separate business decision and must never be converted into a fraud label.
@@ -491,7 +491,7 @@ class ClaimIndexReconciliationResponse(BaseModel):
 class IndexerOperationsResponse(BaseModel):
     """Authenticated, bounded telemetry for one indexer deployment.
 
-    Durable PostgreSQL fields remain populated when RPC sampling fails; chain
+    Stored PostgreSQL fields remain populated when RPC sampling fails; chain
     head, safe head, and lag then become null and ``state`` becomes ``degraded``.
     The response exposes no IPFS payload, private key, or repair capability.
     """

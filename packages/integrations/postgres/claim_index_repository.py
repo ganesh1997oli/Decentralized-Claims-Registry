@@ -1,8 +1,8 @@
 """PostgreSQL projection of confirmed ClaimsRegistry events.
 
-The blockchain remains the source of truth. This repository owns a disposable
-read model that can be rebuilt by replaying logs from the deployment block. All
-writes are idempotent because the listener deliberately retries a block range
+The blockchain remains primary. This repository stores a disposable read model
+that can be rebuilt by replaying logs from the deployment block. All writes are
+idempotent because the listener retries a block range
 when RPC, IPFS, Kafka, PostgreSQL, or checkpoint persistence fails.
 """
 
@@ -115,7 +115,7 @@ class PostgresClaimIndexRepository:
     def __init__(self, database: PostgresDatabase) -> None:
         """Retain the transaction-owning database adapter used by every operation.
 
-        Repository methods intentionally acquire their own cursor so related SQL
+        Repository methods acquire their own cursor so related SQL
         statements commit atomically and callers cannot accidentally advance a
         projection outside the database adapter's rollback behavior.
         """
@@ -422,7 +422,7 @@ class PostgresClaimIndexRepository:
         normalized_contract = contract_address.lower()
         offset = (page - 1) * page_size
         with self.database.cursor() as cursor:
-            # Count and page are deliberately returned by one SQL statement.
+            # Count and page come from one SQL statement.
             # PostgreSQL therefore evaluates both against one statement snapshot
             # even while the listener inserts another confirmed claim.
             cursor.execute(
@@ -537,7 +537,7 @@ class PostgresClaimIndexRepository:
 
         Totals, checkpoint and last reconciliation come from one SQL statement,
         so the headline cards cannot disagree with each other while the listener
-        commits another block. Recent events are deliberately bounded and read
+        commits another block. Recent events are bounded and read
         in the same transaction; the dashboard is an observability surface, not
         an unbounded event export API.
         """
@@ -818,7 +818,7 @@ class PostgresClaimIndexRepository:
     def load_checkpoint(
         self, *, chain_id: int, contract_address: str, default: int
     ) -> int:
-        """Load durable progress, using the configured replay origin only once.
+        """Load stored progress, using the configured replay origin only once.
 
         ``default`` is normally one block before the deployment block. It is used
         only when no checkpoint row exists; configuration changes cannot silently
@@ -871,7 +871,7 @@ class PostgresClaimIndexCheckpoint:
         """Bind the generic poller checkpoint to one deployment scope.
 
         Normalization and SQL behavior remain in the repository; this adapter only
-        supplies the chain and contract identity required by its narrow protocol.
+        supplies the chain and contract identity required by the protocol.
         """
 
         self.repository = repository
@@ -879,7 +879,7 @@ class PostgresClaimIndexCheckpoint:
         self.contract_address = contract_address
 
     def load(self, *, default: int) -> int:
-        """Return the durable block or the caller's first-run replay origin."""
+        """Return the stored block or the caller's first-run replay origin."""
 
         return self.repository.load_checkpoint(
             chain_id=self.chain_id,

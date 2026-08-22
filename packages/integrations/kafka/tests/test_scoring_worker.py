@@ -499,7 +499,7 @@ def test_malformed_claim_is_quarantined_before_the_next_claim_is_processed():
     consumer = KafkaClaimEventConsumer(KafkaSettings(), consumer=fake_kafka)
 
     # Both events represent the order in one Kafka partition. The first call
-    # must return normally after durable quarantine; that return is what lets
+    # must return normally after storing the quarantine; that return lets
     # Kafka commit its offset and deliver the second event.
     assert consumer.process_next(partition_safe_handler)
     assert consumer.process_next(partition_safe_handler)

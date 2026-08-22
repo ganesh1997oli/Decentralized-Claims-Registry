@@ -9,8 +9,8 @@ instead of spreading vendor-specific calls through every process.
 
 | Integration | Plain-English role | Technical responsibility | Guide |
 | --- | --- | --- | --- |
-| Ethereum | Select and validate the exact registry deployment | Ignition artifact loading, ABI capability checks, chain ID/code validation and Web3 contract construction | [Ethereum](ethereum/README.md) |
-| IPFS | Store and retrieve public canonical claim bytes | Pinata upload, safe pointer parsing, gateway retry and exact byte reads | [IPFS](ipfs/README.md) |
+| Ethereum | Select and validate the registry deployment | Ignition artifact loading, ABI capability checks, chain ID/code validation and Web3 contract construction | [Ethereum](ethereum/README.md) |
+| IPFS | Store and retrieve public canonical claim bytes | Pinata upload, safe pointer parsing, gateway retry and byte-for-byte reads | [IPFS](ipfs/README.md) |
 | Kafka | Hand confirmed claims to the asynchronous worker | Versioned envelopes, producer acknowledgements, consumer retry/quarantine and offset control | [Kafka](kafka/README.md) |
 | PostgreSQL | Persist retry-safe off-chain state | Connections, migrations, repositories, transactions, advisory locks and deployment-scoped queries | [PostgreSQL](postgres/README.md) |
 

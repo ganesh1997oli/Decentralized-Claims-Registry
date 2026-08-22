@@ -246,7 +246,7 @@ describe('gasless claims API', () => {
     })
   })
 
-  it('loads the server-authoritative wallet network', async () => {
+  it('loads the wallet network selected by the server', async () => {
     const network = {
       chain_id: 11155111,
       contract_address: gaslessSubmission.contract_address,
