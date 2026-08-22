@@ -15,7 +15,7 @@ independent processes:
 
 | Process             | Why it exists                                                  | Keep it running? |
 | ------------------- | -------------------------------------------------------------- | ---------------- |
-| PostgreSQL          | Durable gasless outbox, index, assessments and checkpoints     | Yes              |
+| PostgreSQL          | Persistent gasless outbox, index, assessments and checkpoints  | Yes              |
 | Kafka               | Carries verified claim references to the scoring worker        | Yes              |
 | FastAPI             | Verifies claimant sessions/policies, issues permits and prepares EIP-712 data | Yes |
 | React/Vite          | Browser UI and claimant-wallet signature flow                  | Yes              |
@@ -375,7 +375,7 @@ Other useful pages:
 4. Approve wallet connection and the Sepolia network-switch request.
 5. Sign the readable one-time claimant challenge.
 6. Review and sign the EIP-712 request. This is a signature, not a gas payment.
-7. Leave the page open while it polls the durable submission status.
+7. Leave the page open while it polls the stored submission status.
 
 A healthy sequence looks like:
 
@@ -389,7 +389,7 @@ Browser:  anchor receipt -> assessment details -> indexed claim state
 ```
 
 Closing the browser does not cancel an already authorized submission. PostgreSQL
-keeps the outbox state and the relayer continues. The current UI deliberately
+keeps the outbox state and the relayer continues. The current UI
 does not persist bearer sessions or submission IDs, so a full page close does not
 automatically restore its progress display. For manual recovery, keep the
 `submission_id` from the prepare response and query its authenticated FastAPI
@@ -421,7 +421,7 @@ database checkpoint and records the result; it does not rewrite projection rows.
 | Symptom                                                     | Likely cause                                              | What to do                                                                          |
 | ----------------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `No module named pytest`, `uvicorn`, or `prometheus_client` | Wrong Python environment                                  | Use `apps/backend/.venv/bin/python -m ...` exactly                                  |
-| `LISTENER_START_BLOCK is required`                          | New deployment block not recorded                        | Set the exact registry deployment block, source `.env.local`, restart listener      |
+| `LISTENER_START_BLOCK is required`                          | New deployment block not recorded                        | Set the registry deployment block, source `.env.local`, restart listener            |
 | Readiness: claimant authentication unavailable              | Missing keys, bad URI/domain, or pending migration        | Validate claimant settings and apply every PostgreSQL migration                     |
 | Readiness: gasless deployment unavailable                   | Old artifact, wrong RPC, forwarder, insurer, or issuer scope | Check the public ABI and every live role binding                                 |
 | Readiness: PostgreSQL unavailable                           | Container stopped or migration pending                    | Check Compose, then run migration `upgrade` and `check`                             |
@@ -442,7 +442,7 @@ docker compose -f packages/integrations/kafka/compose.yml down
 ```
 
 PostgreSQL and Kafka volumes are preserved. Use `down --volumes` only when you
-intentionally want to erase the local database, checkpoints, outbox, and Kafka
+want to erase the local database, checkpoints, outbox, and Kafka
 history. That deletion cannot be recovered unless you made a backup.
 
 ## Next references

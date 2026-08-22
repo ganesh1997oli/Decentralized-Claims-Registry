@@ -1,6 +1,6 @@
 """PostgreSQL adapter for append-only human fraud-outcome revisions.
 
-This adapter intentionally does not read or write ``claim_assessments``. Model
+This adapter does not read or write ``claim_assessments``. Model
 probabilities remain reproducible screening evidence, while this repository owns
 human conclusions that may later be exported through a governed dataset process.
 It contains no retraining, label conversion, model deployment, or on-chain write.
@@ -65,8 +65,8 @@ class PostgresAssessorOutcomeRepository:
         """Append one serialized revision and return the committed-shaped row.
 
         A transaction-scoped advisory lock prevents two assessors from selecting
-        the same next revision concurrently. Repeating a submission intentionally
-        creates a visible correction revision rather than silently overwriting the
+        the same next revision concurrently. Repeating a submission creates a
+        visible correction revision rather than silently overwriting the
         audit trail. The caller must first verify that the indexed claim exists.
         """
 

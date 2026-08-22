@@ -12,7 +12,7 @@ Kafka, model, database, and the restricted relayer stay server-side.
 flowchart LR
     Form["Synthetic claim form"] -->|"wallet challenge + policy"| API["FastAPI"]
     API --> Eligibility["Policy eligibility + insurer permit"]
-    Eligibility --> Typed["Exact EIP-712 request"]
+    Eligibility --> Typed["EIP-712 request"]
     Typed -->|"Claimant submitter signature"| API
     API --> Receipt["Anchor receipt"]
     Receipt --> Pending["Assessment pending"]
@@ -42,7 +42,7 @@ values can be changed by the user.
 
 | Route | Audience | Responsibility |
 | --- | --- | --- |
-| `/` | Claimant or authorized representative | Submit fictional data, sign wallet proof and exact request, follow receipt and browse indexed claims |
+| `/` | Claimant or authorized representative | Submit fictional data, sign wallet proof and EIP-712 request, follow receipt and browse indexed claims |
 | `/assessor` | Authenticated human reviewer | Read model context and append a private fraud-outcome revision |
 | `/operations` | Authenticated operator | Inspect listener lag, counts, reconciliation and immutable index events |
 
@@ -61,7 +61,7 @@ on-chain checks make an authorization decision.
 | `src/components/IndexerOperationsDashboard.tsx` | Authenticated lag, counts, reconciliation and recent-event telemetry |
 | `src/components/AssessorOutcomeDashboard.tsx` | Separate human-review queue and append-only fraud-outcome form |
 | `src/api.ts` | Gasless fetch calls plus runtime response-shape validation |
-| `src/wallet.ts` | Narrow EIP-1193 connect, sign-in, chain switch, and EIP-712 boundary |
+| `src/wallet.ts` | EIP-1193 connection, sign-in, chain switch, and EIP-712 boundary |
 | `src/gasless-submission.ts` | Idempotent prepare, sign, authorize, recovery, and polling workflow |
 | `src/display-receipt.ts` | Safe merge of a browser receipt and current chain state |
 | `src/receipt-storage.ts` | Latest public submission receipt only |
@@ -107,7 +107,7 @@ Open <http://127.0.0.1:5173>. A complete submission also requires:
 - a policy reference whose keyed digest exists in the configured eligibility adapter.
 
 The wallet first signs a readable, one-time ownership message and later signs the
-exact EIP-712 `ForwardRequest`. Neither signature sends a transaction. The
+EIP-712 `ForwardRequest`. Neither signature sends a transaction. The
 isolated relayer pays only after FastAPI verifies policy eligibility, obtains a
 scoped insurer permit, and durably records the request signature.
 
@@ -133,9 +133,9 @@ secret.
   idempotency key is already doing IPFS work. The browser polls rather than
   uploading the same document twice.
 - A network error after authorization does not immediately trigger another
-  signature. The browser first reads durable state because the original request
+  signature. The browser first reads stored state because the original request
   may already have reached FastAPI.
-- The wallet is connected and switched using server-authoritative network data
+- The wallet is connected and switched using network data supplied by the server
   before claim bytes are pinned.
 - A stable idempotency key survives network retry but resets if form content changes.
 - A successful submission displays the confirmed sponsored transaction, block,
@@ -173,7 +173,7 @@ review-only duplicate experience without contacting Sepolia.
 
 ## Safety limits
 
-- Evidence upload is intentionally absent while IPFS is public and unencrypted.
+- Evidence upload is unavailable while IPFS remains public and unencrypted.
 - The dashboard uses a confirmed-event PostgreSQL projection. It reports the
   indexed-through block and can temporarily lag the chain.
 - A duplicate match and XGBoost score are review signals only.

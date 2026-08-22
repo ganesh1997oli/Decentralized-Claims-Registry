@@ -26,7 +26,8 @@ An insurer-backed determination that a policy existed, covered the incident date
 _Avoid_: Claim approval, fraud check
 
 **Claim Permit**:
-A short-lived, single-use insurer attestation allowing one submitter to anchor one exact eligible claim.
+A short-lived, single-use insurer attestation allowing one submitter to anchor a
+specific eligible claim.
 _Avoid_: API key, permanent submitter role
 
 **Fraud Screening**:

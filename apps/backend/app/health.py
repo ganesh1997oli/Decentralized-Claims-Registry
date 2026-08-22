@@ -1,7 +1,7 @@
 """Operational liveness and readiness reporting for the FastAPI process.
 
 Liveness must never depend on a remote system: restarting a healthy process
-does not repair PostgreSQL or Sepolia. Readiness is intentionally different. It
+does not repair PostgreSQL or Sepolia. Readiness goes further: it
 checks every dependency required to accept traffic and returns stable messages
 that do not expose credentials, connection strings or upstream response bodies.
 """
@@ -65,7 +65,7 @@ class ReadinessProbe:
         """Execute every check and return a complete, sanitized status map.
 
         One failure does not short-circuit later checks, which gives an operator a
-        useful incident snapshot. Adapter exception text is intentionally omitted
+        useful incident snapshot. Adapter exception text is omitted
         from both logs and responses because it may contain credential-bearing
         URLs; the exception type remains available for correlation.
         """
@@ -78,7 +78,7 @@ class ReadinessProbe:
             except Exception as exc:  # noqa: BLE001 - adapters normalize failures
                 ready = False
                 results[check.name] = check.failure_message
-                # Logs keep the exception type for diagnosis but intentionally
+                # Logs keep the exception type for diagnosis but
                 # omit its text, which could contain an upstream URL or secret.
                 logger.warning(
                     "readiness.check_failed",
@@ -99,7 +99,7 @@ def build_readiness_probe() -> ReadinessProbe:
     """
 
     def check_claimant_authentication() -> None:
-        """Validate wallet-session policy against the durable challenge store."""
+        """Validate wallet-session policy against the PostgreSQL challenge store."""
 
         repositories = PostgresRepositories.from_env()
         deployment = load_claims_deployment(os.environ)
@@ -123,7 +123,7 @@ def build_readiness_probe() -> ReadinessProbe:
     def check_sepolia_contract() -> None:
         """Verify contracts, trust link, and every public-intake role binding."""
 
-        # FastAPI is deliberately transaction-keyless. This check validates both
+        # FastAPI has no transaction key. This check validates both
         # contracts plus every insurer/permit-issuer pair without constructing
         # the standalone gas-paying relayer adapter.
         eligibility = ConfiguredPolicyEligibility.from_env()

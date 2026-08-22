@@ -3,22 +3,22 @@
 The backend is transaction-keyless: it never holds a claimant or gas-paying
 relayer key. It verifies a claimant wallet session and policy, creates one
 canonical IPFS document, signs a narrowly scoped insurer permit, and returns an
-exact EIP-712 request. A separate relayer sponsors only wallet-authorized
-requests from the PostgreSQL outbox.
+EIP-712 request for the wallet to sign. A separate relayer sponsors only
+wallet-authorized requests from the PostgreSQL outbox.
 
 > Claim content is public and unencrypted on IPFS. Use fictional test data only.
 
 ## Quick mental model
 
 Think of FastAPI as the **preparation and policy gate**, not as the blockchain
-writer. It answers: “Is this wallet allowed to submit this exact fictional
+writer. It answers: “Is this wallet allowed to submit this fictional
 claim, and can every later process verify what was authorized?”
 
 | Boundary | Backend responsibility |
 | --- | --- |
 | Receives | Claimant wallet proof, policy reference, synthetic claim fields and an idempotency key |
 | Verifies | Request size/schema, claimant session, policy parties and limits, quota, deployment and signatures |
-| Produces | Canonical schema-v6 bytes, public CID, insurer permit, exact forward request and durable outbox state |
+| Produces | Canonical schema-v6 bytes, public CID, insurer permit, forward request and persisted outbox state |
 | Owns | Claimant-session keys, policy lookup keys, insurer-scoped permit key files and the Pinata upload token |
 | Must not own | Claimant key, relayer gas key, assessor key, deployer key, model artifact or Kafka consumer loop |
 
@@ -43,9 +43,9 @@ sequenceDiagram
     B->>A: Claim + policy reference + Idempotency-Key
     A->>A: Verify policy, coverage, parties, limits and quota
     A->>A: Create canonical schema-v6 JSON and scoped insurer permit
-    A->>I: Upload exact bytes
-    A->>I: Download and compare exact bytes
-    A->>P: Store exact ForwardRequest
+    A->>I: Upload canonical bytes
+    A->>I: Download and compare bytes
+    A->>P: Store ForwardRequest
     A-->>B: EIP-712 typed data
     B->>B: Claimant or representative wallet signs
     B->>A: POST signature
@@ -53,11 +53,11 @@ sequenceDiagram
     A->>P: Authorized outbox state
     R->>P: Persist raw sponsored transaction
     R->>E: execute(ForwardRequest)
-    A-->>B: Poll durable confirmed receipt
+    A-->>B: Poll confirmed receipt
 ```
 
-The API stops after durable authorization; the isolated relayer creates the
-permanent anchor. The listener and Kafka worker own duplicate screening,
+The API stops after recording the authorization; the isolated relayer creates
+the permanent anchor. The listener and Kafka worker own duplicate screening,
 feature persistence, XGBoost/SHAP, and assessment write-back.
 
 ## Code map
@@ -73,7 +73,7 @@ feature persistence, XGBoost/SHAP, and assessment write-back.
 | `app/assessor_outcomes.py` | Independent digest-only human-review authentication |
 | `app/gasless_service.py` | Idempotent IPFS, EIP-712, sponsorship and status workflow |
 | `app/gasless_blockchain.py` | Keyless preparation plus least-privilege relay adapter |
-| `apps/relayer/gasless_relayer.py` | Separate durable sign/broadcast/confirm worker |
+| `apps/relayer/gasless_relayer.py` | Separate sign/broadcast/confirm worker with persistent state |
 | `app/health.py` | Dependency-safe readiness reporting |
 
 The query service reads the deployment-scoped PostgreSQL projection. Loading the
@@ -93,10 +93,10 @@ dashboard does not construct a Web3 client, wallet, or Pinata upload client.
 | `GET` | `/assessor/session` | Validate a human-review key and return its bound assessor reference |
 | `GET` | `/assessor/claims/{claim_id}/outcome` | Latest private human outcome revision, or `404` before review |
 | `POST` | `/assessor/claims/{claim_id}/outcome` | Append `ConfirmedFraud`, `Legitimate`, or `Inconclusive` after screening |
-| `GET` | `/claims/gasless/config` | Public server-authoritative wallet network preflight |
-| `POST` | `/claims/gasless/prepare` | Authenticate, upload, and return exact EIP-712 typed data |
+| `GET` | `/claims/gasless/config` | Public wallet network preflight from server configuration |
+| `POST` | `/claims/gasless/prepare` | Authenticate, upload, and return EIP-712 typed data |
 | `POST` | `/claims/gasless/{id}/authorize` | Verify wallet signature and enqueue sponsorship |
-| `GET` | `/claims/gasless/{id}` | Read durable relay/confirmation status for the owning claimant subject |
+| `GET` | `/claims/gasless/{id}` | Read persisted relay/confirmation status for the owning claimant subject |
 | `POST` | `/claims` | Disabled with HTTP 410; no custodial fallback |
 
 `201` means a wallet-signable request was prepared, not that it was mined.
@@ -172,7 +172,7 @@ Useful URLs:
 | `CLAIM_AUTHORIZATION_KEY` | API + worker | Signs canonical schema-v6 bytes so the worker can trust verified parties |
 | `GASLESS_REQUEST_FINGERPRINT_KEY` | API | HMACs idempotency content and client fingerprints stored in PostgreSQL |
 | `PINATA_JWT` | API | Server-side public upload credential |
-| `DATABASE_URL` | API + relayer | Durable idempotency, relay outbox, index, assessments and duplicate results |
+| `DATABASE_URL` | API + relayer | Persistent idempotency, relay outbox, index, assessments and duplicate results |
 | `SEPOLIA_RELAYER_PRIVATE_KEY_FILE` | Relayer only | Dedicated gas-paying account; forbidden from all registry roles |
 | `FRONTEND_ORIGINS` | API | Allowed browser origins |
 | `MAX_CLAIM_BODY_BYTES` | API | Request limit; default 16 KiB |
@@ -265,7 +265,7 @@ counter remains process-local and should also be enforced at a production edge.
 ### Legacy performance-test bypass
 
 This compatibility mechanism applies only to legacy insurer principals. Public
-claimants always use the durable PostgreSQL limits from their verified policy;
+claimants always use the PostgreSQL-backed limits from their verified policy;
 neither the browser nor a bearer token can request an exemption. For historical
 schema-v5 test tooling, the old record shape was:
 
@@ -284,8 +284,8 @@ The corresponding public local key is
 dedicated credential instead of using this example key for any hosted test.
 
 The exemption activates only when the API also starts with
-`ALLOW_RATE_LIMIT_BYPASS="true"`. Both controls are required deliberately: an
-exempt credential behaves like a normal limited credential while the master
+`ALLOW_RATE_LIMIT_BYPASS="true"`. Requiring both controls means an exempt
+credential behaves like a normal limited credential while the master
 switch is false. Normal credentials remain limited when the switch is true, and
 invalid or unauthorised attempts continue to count against the IP boundary.
 
@@ -317,7 +317,7 @@ Swagger can inspect the request/response schemas, but it cannot safely replace
 the wallet-signing step. Open <http://127.0.0.1:5173>, connect the configured
 test wallet, and follow the browser progress states.
 
-`POST /claims` is intentionally disabled and returns HTTP 410. There is no
+`POST /claims` is disabled and returns HTTP 410. There is no
 server-custodial fallback that silently uses a backend submitter key.
 
 ## Failure behaviour
@@ -328,7 +328,7 @@ flowchart TD
     Auth -->|No| FourXX["401 / 403 / 429"]
     Auth -->|Yes| Config{"Dependencies configured?"}
     Config -->|No| Unavailable["503 with safe JSON detail"]
-    Config -->|Yes| Prepare["IPFS round trip + durable EIP-712 request"]
+    Config -->|Yes| Prepare["IPFS round trip + persisted EIP-712 request"]
     Prepare -->|Fails| Gateway["409 / 502; no authorization queued"]
     Prepare -->|Succeeds| Created["201; wallet signature required"]
 ```
@@ -353,7 +353,8 @@ Pinata, or require PostgreSQL.
 - Claims pagination is served by the confirmed PostgreSQL event projection and
   can lag Sepolia by the configured confirmation depth.
 - Wallet proof is not policy eligibility by itself; the policy adapter must use
-  an authoritative insurer source before real-world use. Sponsorship quotas are durable.
+  an insurer-controlled source before real-world use. Sponsorship quotas are
+  stored in PostgreSQL.
 - The relayer key should use a secret-manager file mount or managed signer and a
   capped balance. It never belongs in the API process.
 
@@ -364,9 +365,9 @@ See the [root runbook](../../README.md) and the
 
 ## Public claim intake limits
 
-The API has two durable abuse-control boundaries: wallet authentication and
-sponsored claim preparation. Both use PostgreSQL transactions so limits remain
-consistent across API replicas and restarts.
+The API stores abuse-control state for wallet authentication and sponsored
+claim preparation in PostgreSQL. Transactions keep those limits consistent
+across API replicas and restarts.
 
 > Use fictional claim data in this repository. Preparing a claim uploads the
 > canonical document to public IPFS, and authorizing it can spend Sepolia ETH
@@ -374,7 +375,7 @@ consistent across API replicas and restarts.
 
 ### Boundaries
 
-| Boundary | Durable key | Default | Configuration |
+| Boundary | Stored key | Default | Configuration |
 | --- | --- | ---: | --- |
 | Challenge requests by client | HMAC client fingerprint | 20/minute | `CLAIMANT_AUTH_CLIENT_RATE_PER_MINUTE` |
 | Challenge requests by wallet | Wallet address | 5/minute | `CLAIMANT_AUTH_WALLET_RATE_PER_MINUTE` |
@@ -390,7 +391,7 @@ preparation lease expires.
 
 ### Authentication challenges
 
-`POST /claimant/session/challenge` stores the exact readable message the wallet
+`POST /claimant/session/challenge` stores the readable message the wallet
 will sign. Before inserting it, the repository serializes the relevant client
 and wallet decisions, counts challenges issued in the previous minute, and
 rejects requests that exceed either limit.
@@ -444,7 +445,7 @@ Before enabling public submission, confirm:
 1. PostgreSQL migrations `007` and `008` are applied.
 2. All HMAC/session keys contain independent, high-entropy production values.
 3. The policy eligibility source contains the expected claimant and delegate
-   wallets and an intentionally chosen `dailyQuota`.
+   wallets and the intended `dailyQuota`.
 4. Edge infrastructure also limits request bodies, connections, and obviously
    abusive unauthenticated traffic.
 5. Metrics alert on sustained HTTP 429 responses, active-preparation conflicts,
@@ -462,6 +463,6 @@ The relevant suites are:
 - `apps/backend/tests/test_policy_eligibility.py` for claimant/delegate,
   coverage, incident, amount, and quota policy;
 - `apps/backend/tests/test_gasless_service.py` for public preparation and
-  durable workflow behavior; and
+  restart and retry behavior; and
 - `packages/integrations/postgres/tests/test_migrations.py` for the persistence
   schema and constraints.

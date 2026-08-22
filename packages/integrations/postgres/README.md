@@ -1,14 +1,14 @@
 # PostgreSQL claim-processing storage
 
-Sepolia remains authoritative. PostgreSQL keeps a rebuildable public claim
+Sepolia remains the primary record. PostgreSQL keeps a rebuildable public claim
 projection for fast API reads plus the richer, versioned records needed to
 explain and safely replay off-chain screening.
 
 ## Quick mental model
 
-PostgreSQL is the system's **durable working memory**. It is not a replacement
-for Sepolia; it remembers the off-chain steps, retry decisions, explanations,
-and private operator records that a compact public contract should not store.
+PostgreSQL stores the system's **working state**. It is not a replacement for
+Sepolia; it remembers the off-chain steps, retry decisions, explanations, and
+private operator records that a compact public contract should not store.
 
 | Data family | Why it exists | Rebuildable from chain alone? |
 | --- | --- | :---: |
@@ -115,7 +115,7 @@ number reused by a new deployment cannot expose the old contract's result.
 | --- | --- |
 | `database.py` | Connection configuration and one-transaction cursor lifetime |
 | `claim_index_repository.py` | Idempotent event projection, indexed pages, and database checkpoint |
-| `gasless_submission_repository.py` | Idempotency, durable quotas, outbox transitions, EOA nonce reservation and relay attempts |
+| `gasless_submission_repository.py` | Idempotency, persistent quotas, outbox transitions, EOA nonce reservation and relay attempts |
 | `assessment_repository.py` | Score, SHAP, processing state and chain receipt |
 | `assessor_outcome_repository.py` | Append-only human fraud conclusions and correction revisions |
 | `duplicate_repository.py` | Private incident fingerprint and current matches |
@@ -129,7 +129,7 @@ permission to create schema.
 
 ## Human assessor outcomes
 
-`claim_assessor_outcomes` is intentionally independent from
+`claim_assessor_outcomes` is independent from
 `claim_assessments`. The latter is immutable model evidence; the former is an
 attributable human conclusion selected from `ConfirmedFraud`, `Legitimate`, and
 `Inconclusive`. An advisory lock allocates monotonic revisions per

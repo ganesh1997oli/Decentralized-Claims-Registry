@@ -1,6 +1,6 @@
 """Apply ordered SQL migrations exactly once with checksum verification.
 
-The runner is intentionally small and uses the project's existing psycopg
+The runner uses the project's existing psycopg
 dependency. Every upgrade executes inside one database transaction and holds a
 PostgreSQL advisory transaction lock, preventing two deployment processes from
 applying schema changes concurrently.

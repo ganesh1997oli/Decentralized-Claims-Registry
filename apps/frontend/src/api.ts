@@ -572,7 +572,7 @@ function isClaimStatusCounts(value: unknown): value is ClaimStatusCounts {
 
 function isClaimIndexEvent(value: unknown): value is ClaimIndexEvent {
   // This validator is the runtime trust boundary for an individual audit row.
-  // It intentionally accepts the backend's status string so a future unknown
+  // It accepts the backend's status string so a future unknown
   // Solidity enum remains visible instead of invalidating the entire response.
   if (!isRecord(value)) return false
   return (
@@ -605,7 +605,7 @@ function isClaimIndexEventPage(value: unknown): value is ClaimIndexEventPage {
 function isClaimIndexReconciliation(
   value: unknown,
 ): value is ClaimIndexReconciliation {
-  // Reconciliation is durable audit evidence, so reject partial deployments
+  // Reconciliation is stored audit evidence, so reject partial deployments
   // instead of rendering missing difference arrays as a false success.
   if (!isRecord(value)) return false
   return (
@@ -625,7 +625,7 @@ function isIndexerOperations(value: unknown): value is IndexerOperations {
   // TypeScript types are erased in production. This full structural check keeps
   // an older/incompatible backend from being interpreted as healthy telemetry.
   // Nullable RPC-derived fields are valid because PostgreSQL data survives an
-  // RPC outage and the backend deliberately returns a degraded snapshot.
+  // RPC outage and the backend returns a degraded snapshot.
   if (!isRecord(value)) return false
   const states: IndexerState[] = [
     'healthy',
@@ -741,7 +741,7 @@ export async function createClaimantSession(
 export async function getGaslessNetwork(
   signal?: AbortSignal,
 ): Promise<GaslessNetwork> {
-  // Deployment discovery is intentionally unauthenticated and read-only. The
+  // Deployment discovery is unauthenticated and read-only. The
   // browser compares these values with the subsequent prepared response before
   // it allows the verified claimant submitter wallet to sign.
   let response: Response
@@ -762,7 +762,7 @@ export async function getGaslessNetwork(
 }
 
 /**
- * Creates or resumes the credential-scoped durable preparation for one claim.
+ * Creates or resumes the credential-scoped preparation for one claim.
  *
  * The idempotency key represents this exact claim attempt. Reusing it after an
  * uncertain HTTP result is safe; reusing it with changed claim data is rejected
@@ -814,7 +814,7 @@ export async function prepareGaslessClaim(
 /**
  * Persists the claimant submitter's verified signature for asynchronous relay.
  *
- * A successful response means the authorization is durable, not necessarily
+ * A successful response means the authorization is stored, not necessarily
  * that an Ethereum transaction has already been signed or broadcast.
  */
 export async function authorizeGaslessClaim(
@@ -823,7 +823,7 @@ export async function authorizeGaslessClaim(
   accessToken: string,
   signal?: AbortSignal,
 ): Promise<GaslessSubmission> {
-  // This endpoint records a submitter signature; it does not broadcast. Durable
+  // This endpoint records a submitter signature; it does not broadcast. Stored
   // authorization lets the isolated relayer safely continue after HTTP/browser
   // failure without receiving another signature.
   let response: Response
@@ -1073,7 +1073,7 @@ export async function getIndexerOperations(
 /**
  * Searches indexed blockchain events using opaque keyset pagination.
  *
- * `cursor` is generated and validated by FastAPI; the browser deliberately does
+ * `cursor` is generated and validated by FastAPI; the browser does
  * not decode it. Returning that token unchanged preserves stable pagination even
  * while newly confirmed events are inserted at the head of the audit stream.
  */

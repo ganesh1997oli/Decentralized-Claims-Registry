@@ -1,5 +1,5 @@
-// Browser-side coordinator for a durable sponsored submission. The workflow is
-// intentionally split into prepare -> sign -> authorize -> poll. Retrying an
+// Browser-side coordinator for a persisted sponsored submission. The workflow
+// uses prepare -> sign -> authorize -> poll so retrying an
 // uncertain network request reuses the same server record; it never asks the
 // claimant wallet or relayer to create an untracked second transaction.
 import {
@@ -33,7 +33,7 @@ export type SubmissionProgress =
   | 'Waiting for confirmations'
 
 /**
- * Signals a durable terminal state in which the current idempotency key may be
+ * Signals a terminal state in which the current idempotency key may be
  * discarded. Network and polling errors use ordinary `Error` because the same
  * server-side submission may still be progressing and should be resumed.
  */
@@ -130,7 +130,7 @@ function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
 
 /** Maps internal outbox states to the smaller progress vocabulary shown in UI. */
 function progressFor(submission: GaslessSubmission): SubmissionProgress {
-  // Collapse durable backend states into language meaningful to a claimant;
+  // Map backend states to language meaningful to a claimant;
   // detailed state and error codes remain available in API responses and logs.
   if (submission.state === 'authorized') return 'Queued for sponsorship'
   if (submission.state === 'signed') return 'Broadcasting transaction'
@@ -138,7 +138,7 @@ function progressFor(submission: GaslessSubmission): SubmissionProgress {
 }
 
 /**
- * Follows one durable server record until it has a confirmed public receipt.
+ * Follows one server record until it has a confirmed public receipt.
  *
  * Polling FastAPI instead of Ethereum keeps RPC details and replacement hashes
  * behind the relayer boundary. Three consecutive read failures stop this UI
@@ -153,7 +153,7 @@ async function pollUntilConfirmed(
   // Poll the database-backed status resource rather than Ethereum. The relayer
   // owns nonce allocation and receipts; browser retries therefore cannot create
   // duplicate chain writes. A few transient read failures are tolerated because
-  // the submission continues durably after the browser loses connectivity.
+  // the submission continues after the browser loses connectivity.
   let submission = initial
   let transientFailures = 0
   while (true) {
@@ -180,7 +180,7 @@ async function pollUntilConfirmed(
       transientFailures += 1
       if (transientFailures >= 3) {
         throw new Error(
-          `Submission ${submission.submission_id} remains durable, but its status ` +
+          `Submission ${submission.submission_id} has been recorded, but its status ` +
             `could not be checked: ${error instanceof Error ? error.message : 'network error'}`,
         )
       }
@@ -245,7 +245,7 @@ export async function submitGaslessClaim({
   }
   while (prepared.state === 'preparing') {
     // A matching Idempotency-Key can observe an API replica that is still doing
-    // the original IPFS round-trip. Wait for that durable lease to resolve rather
+    // the original IPFS round-trip. Wait for that lease to resolve rather
     // than starting a second upload or allocating a second forwarder nonce.
     await wait(Math.min(10_000, Math.max(500, prepared.poll_after_ms)), signal)
     prepared = await getGaslessSubmission(
@@ -277,7 +277,7 @@ export async function submitGaslessClaim({
     )
   } catch (authorizationError) {
     // The POST may have reached FastAPI before the connection failed. Read the
-    // durable state before asking the claimant to sign or submit anything again.
+    // stored state before asking the claimant to sign or submit anything again.
     const recovered = await getGaslessSubmission(
       prepared.submission_id,
       session.access_token,

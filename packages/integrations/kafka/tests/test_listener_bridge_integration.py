@@ -51,7 +51,7 @@ class StaticEventQuery:
         return self
 
     def get_logs(self, *, from_block: int, to_block: int) -> list[dict]:
-        # The test deliberately sends the same confirmed range used by the
+        # Send the same confirmed range used by the
         # listener below.  An unexpected range would make the fixture misleading.
         assert (from_block, to_block) == (100, BLOCK_NUMBER)
         return self.entries

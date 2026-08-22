@@ -1,3 +1,9 @@
 # Public intake uses insurer-scoped claim permits
 
-Public claimants sign their own gasless submissions, while an insurer-scoped permit issuer attests policy eligibility for one exact claim, submitter, and expiry. We rejected both unrestricted contract writes, which allow registry spam and fabricated policies, and permanent claimant roles, which create unsafe administration and revocation burdens; short-lived single-use permits preserve public intake without turning the official registry into an unverified incident feed.
+Claimants sign their own gasless submissions. A permit issuer for the selected
+insurer separately confirms the policy eligibility, claim, submitter, and expiry.
+
+Unrestricted contract writes would allow spam and fabricated policies. Permanent
+claimant roles would also create unnecessary administration and revocation work.
+A short-lived, single-use permit avoids both problems without treating every
+public submission as a verified insurance incident.

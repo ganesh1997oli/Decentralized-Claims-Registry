@@ -56,7 +56,7 @@ logger = get_event_logger(__name__)
 class PermanentClaimProcessingError(RuntimeError):
     """An immutable claim defect that will produce the same result on replay.
 
-    This marker is intentionally narrow. Only errors caused by bytes or public
+    Use this marker only for errors caused by bytes or public
     identities that are already anchored on-chain belong here. Network, Kafka,
     database, IPFS availability, model, and Sepolia errors must keep propagating
     normally so Kafka leaves the offset uncommitted and retries them later.
@@ -70,7 +70,7 @@ class PermanentClaimProcessingError(RuntimeError):
 
 
 class ClaimDeadLetterSink(Protocol):
-    """Durably retain public metadata for a permanently rejected claim event."""
+    """Persist public metadata for a permanently rejected claim event."""
 
     def record(
         self,
@@ -110,11 +110,11 @@ def scoring_dead_letter_path(
 
 
 class JsonlClaimDeadLetterSink:
-    """Append sanitized rejection records to a durable, operator-readable file.
+    """Append sanitized rejection records to a persistent, operator-readable file.
 
     JSON Lines keeps every rejection independently readable and works with the
     single-VM deployment without adding a second Kafka producer or database
-    dependency to the failure path. The full IPFS claim is deliberately absent:
+    dependency to the failure path. The full IPFS claim is absent because
     blockchain coordinates are sufficient to investigate or replay the event,
     while copying claim contents would create another sensitive-data store.
     """
@@ -130,9 +130,8 @@ class JsonlClaimDeadLetterSink:
         """Flush one rejection to disk before the handler allows an offset commit.
 
         If directory creation, writing, flushing, or ``fsync`` fails, the error
-        is allowed to escape. That fail-closed behavior is important: Kafka must
-        replay the event rather than silently skipping a claim whose rejection
-        was never durably recorded.
+        propagates to the caller. Kafka then replays the event instead of
+        skipping a claim whose rejection was never recorded.
 
         A crash after this fsync but before Kafka's commit can append the same
         event again on restart. That is expected under at-least-once delivery;
@@ -207,7 +206,7 @@ class QuarantiningClaimHandler:
             self.dead_letter.record(event, exc)
             if self.metrics is not None:
                 # Count quarantine only after the fsync above succeeds. This
-                # makes the metric mean that durable evidence exists and the
+                # makes the metric mean that stored evidence exists and the
                 # consumer can safely commit, not merely that validation failed.
                 self.metrics.observe_handled(
                     outcome="quarantined",
@@ -288,7 +287,7 @@ class FeatureProcessor(Protocol):
 
 
 class AssessmentStore(Protocol):
-    """Durable assessment state used to make Kafka redelivery idempotent."""
+    """Persisted assessment state used to make Kafka redelivery idempotent."""
 
     def get_by_event_id(self, event_id: str) -> AssessmentRecord | None:
         """Return the prior score/write state for one immutable event ID."""
@@ -321,7 +320,7 @@ class AssessmentRegistry(Protocol):
     """Minimal chain interface needed for idempotent assessment write-back."""
 
     def get_claim(self, claim_id: int) -> ChainClaim:
-        """Read authoritative lifecycle state before attempting an update."""
+        """Read current on-chain lifecycle state before attempting an update."""
 
         ...
 
@@ -339,7 +338,7 @@ class AssessmentRegistry(Protocol):
 def verify_claim_payload(event: ClaimSubmittedEvent, payload: bytes) -> None:
     """Refuse to score bytes that do not match the public on-chain commitment.
 
-    Hash mismatch deliberately remains an unmarked, retryable error here. The
+    A hash mismatch remains an unmarked, retryable error here. The
     listener already verified the immutable pointer before publishing, so a
     later mismatch can indicate a temporary gateway/cache response rather than
     a malformed claim. Quarantining it immediately could skip data that a later
@@ -385,7 +384,7 @@ class MonitoredClaimHandler:
     """Measure completed and retryable-failure handler calls.
 
     Permanent rejection metrics belong to ``QuarantiningClaimHandler`` because
-    only that outer boundary knows whether durable quarantine actually succeeded.
+    only that outer boundary knows whether quarantine was written successfully.
     """
 
     def __init__(
@@ -409,7 +408,7 @@ class MonitoredClaimHandler:
             self.handler(event)
         except PermanentClaimProcessingError:
             # The outer QuarantiningClaimHandler records this outcome only after
-            # its durable dead-letter write succeeds. Counting it here would
+            # its dead-letter write succeeds. Counting it here would
             # claim success even when that operations volume is unavailable.
             raise
         except Exception:

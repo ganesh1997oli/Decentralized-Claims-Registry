@@ -1,7 +1,7 @@
 """Create private incident fingerprints and find matches from other insurers.
 
-The detector intentionally returns a review candidate rather than a fraud
-decision. A keyed HMAC makes stored fingerprints impractical to reproduce
+The detector returns a review candidate, not a fraud decision. A keyed HMAC
+makes stored fingerprints impractical to reproduce
 without the server-side key, while deterministic canonicalization lets
 participating synthetic insurers compare the same incident consistently.
 """
@@ -129,7 +129,7 @@ class CrossInsurerDuplicateDetector:
         )
 
     def _fingerprint(self, claim: ClaimForDuplicateDetection) -> str:
-        # References, policy premium, and free text are deliberately excluded:
+        # References, policy premium, and free text are excluded because
         # different insurers can assign different references and descriptions to
         # the same underlying incident.
         incident = {

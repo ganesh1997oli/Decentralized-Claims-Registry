@@ -38,7 +38,7 @@ def kafka_settings():
     topic = f"claims.integration.{identity}"
     admin = AdminClient({"bootstrap.servers": bootstrap_servers})
 
-    # Topic auto-creation is deliberately disabled by the application.  Creating
+    # The application disables topic auto-creation. Creating
     # the topic explicitly also lets this fixture wait for broker confirmation
     # before the listener attempts to publish.
     create_future = admin.create_topics(
@@ -107,6 +107,6 @@ def postgres_repositories():
 
 @pytest.fixture
 def postgres_repository(postgres_repositories):
-    """Compatibility alias while integration tests migrate to narrow adapters."""
+    """Compatibility alias while integration tests migrate to focused adapters."""
 
     return postgres_repositories

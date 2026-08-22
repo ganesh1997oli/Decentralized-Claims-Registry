@@ -1,7 +1,7 @@
-"""Durable idempotency, sponsorship limits, and relay outbox persistence.
+"""Persistent idempotency, sponsorship limits, and relay outbox state.
 
 The table managed here is both a user-visible workflow record and a
-transactional outbox. Its state machine is intentionally monotonic::
+transactional outbox. Its state machine is monotonic::
 
     preparing -> prepared -> authorized -> signed -> broadcast -> confirmed
          |           |            |          |           |
@@ -36,7 +36,7 @@ PREPARATION_LEASE = timedelta(minutes=10)
 
 
 class GaslessSubmissionError(PostgresStorageError):
-    """Base failure for the durable sponsored-submission workflow."""
+    """Base failure for the persisted sponsored-submission workflow."""
 
 
 class GaslessSubmissionNotFoundError(GaslessSubmissionError):
@@ -48,7 +48,7 @@ class GaslessSubmissionConflictError(GaslessSubmissionError):
 
 
 class GaslessSubmissionLimitError(GaslessSubmissionError):
-    """Raised when durable sponsorship capacity has been exhausted."""
+    """Raised when stored sponsorship capacity has been exhausted."""
 
     def __init__(self, message: str, *, retry_after: int) -> None:
         """Store a positive retry delay suitable for an HTTP ``Retry-After``."""
@@ -75,7 +75,7 @@ class SignedRelayTransaction:
 
 
 class PostgresGaslessSubmissionRepository:
-    """Own every durable transition, lock, and invariant in the relay lifecycle.
+    """Own every stored transition, lock, and invariant in the relay lifecycle.
 
     Keeping the state machine in SQL transactions makes behavior consistent
     across multiple API or relayer replicas. Callers request transitions; they

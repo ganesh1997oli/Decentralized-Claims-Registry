@@ -1,8 +1,8 @@
 """Authenticated, read-only operational view of the blockchain indexer.
 
-The normal claims route deliberately performs no RPC request. This operations
-service is different: an operator explicitly asks for the current chain head so
-the durable PostgreSQL checkpoint can be translated into meaningful block lag.
+The normal claims route performs no RPC request. The operations service does:
+an operator explicitly asks for the current chain head so
+the stored PostgreSQL checkpoint can be translated into meaningful block lag.
 RPC failure degrades the response instead of hiding the database facts that are
 still useful during an incident.
 """
@@ -98,7 +98,7 @@ class IndexerOperationsBoundary:
     def from_env(cls) -> IndexerOperationsBoundary:
         """Construct the boundary from the required digest-only environment value.
 
-        The raw key is intentionally unsupported in process configuration. It is
+        The raw key cannot be set in process configuration. It is
         supplied by the browser only for the duration of an authenticated request.
         """
 
@@ -313,7 +313,7 @@ def _decode_event_cursor(cursor: str | None) -> tuple[int, int, str] | None:
 
 
 class IndexerOperationsService:
-    """Combine a durable DB snapshot with one current chain-head sample."""
+    """Combine a stored DB snapshot with one current chain-head sample."""
 
     def __init__(
         self,
@@ -384,7 +384,7 @@ class IndexerOperationsService:
     def snapshot(self) -> IndexerOperationsResponse:
         """Combine one bounded database snapshot with one best-effort RPC sample.
 
-        PostgreSQL failure aborts the request because no durable index facts are
+        PostgreSQL failure aborts the request because no stored index facts are
         available. RPC failure instead produces a ``degraded`` response with null
         head/lag fields so operators retain checkpoint, count, event, and last
         reconciliation data during a provider incident.

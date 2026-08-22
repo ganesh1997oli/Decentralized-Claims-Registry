@@ -52,7 +52,7 @@ export function useClaimsWorkspace() {
   >(null)
   const detailsRequest = useRef<AbortController | null>(null)
   // The polling effect owns the request lifecycle; this ref gives the UI a
-  // narrow, stable way to ask that effect for an immediate retry.
+  // stable way to ask that effect for an immediate retry.
   const assessmentCheckNow = useRef<(() => void) | null>(null)
 
   const pendingAssessmentClaimId =
@@ -112,7 +112,7 @@ export function useClaimsWorkspace() {
 
   useEffect(() => {
     // On a fresh page, restore the newest confirmed indexed claim unless the
-    // user deliberately selected an older row. PostgreSQL is only a projection;
+    // user selected an older row. PostgreSQL is only a projection;
     // its values originate from confirmed contract events.
     if (
       selectedClaimId !== null ||

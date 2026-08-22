@@ -1,6 +1,6 @@
 """Insurer-backed policy eligibility for public claim intake.
 
-Policy eligibility is intentionally deeper than a collection of route checks:
+Policy eligibility is handled as one service rather than scattered route checks:
 one interface resolves the submitted policy reference, claimant relationship,
 coverage dates, claim type, amount, insurer identity, quota, and claimant
 commitment. A future insurer HTTP adapter can replace the configured adapter at
@@ -159,10 +159,10 @@ class ConfiguredPolicyEligibility:
     """Verify synthetic/local policies from digest-only configuration.
 
     This adapter is suitable for controlled deployments and local research. It
-    deliberately stores keyed policy-reference digests rather than raw policy
+    stores keyed policy-reference digests rather than raw policy
     numbers. A production insurer integration should implement the same
     `verify` interface and return the same `ClaimantPrincipal` after consulting
-    its authoritative policy system.
+    its policy system.
     """
 
     def __init__(
@@ -319,7 +319,7 @@ class ConfiguredPolicyEligibility:
 
         reference = policy_reference_hmac(self.lookup_key, claim.policy_reference)
         record = self._by_reference.get(reference)
-        # Use one deliberately nonspecific response for unknown policies and
+        # Use the same nonspecific response for unknown policies and
         # mismatched claimants to reduce policy-number enumeration value.
         if record is None or session.claimant_address not in record.authorized_submitters:
             raise PolicyEligibilityError(

@@ -1,6 +1,6 @@
 """Low-cardinality metrics for the blockchain listener and scoring worker.
 
-Metrics deliberately avoid claim IDs, transaction hashes, wallet addresses and
+Metrics avoid claim IDs, transaction hashes, wallet addresses and
 other per-claim labels. Those values are useful in logs, but using them as
 metric labels would create an ever-growing number of time series and could make
 Cloud Monitoring unnecessarily expensive.
@@ -93,7 +93,7 @@ class ListenerMetrics:
             ),
             last_processed_block=Gauge(
                 "claims_listener_last_processed_block",
-                "Last block durably processed and saved in the listener checkpoint.",
+                "Last block processed and saved in the listener checkpoint.",
                 registry=registry,
             ),
             block_lag=Gauge(
@@ -148,7 +148,7 @@ class ListenerMetrics:
         self.poll_errors.inc()
 
     def observe_event(self, event_type: str) -> None:
-        """Count a known event using a deliberately small label vocabulary."""
+        """Count a known event using a small, fixed label vocabulary."""
 
         self.events.labels(event_type=event_type).inc()
 

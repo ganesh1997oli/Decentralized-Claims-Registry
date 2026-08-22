@@ -2,7 +2,7 @@
 
 The public blockchain stores only the compact status and score. This module
 owns the richer probability, threshold, SHAP reasons, processing state and
-write-back receipt. It deliberately knows nothing about duplicate fingerprints,
+write-back receipt. It does not handle duplicate fingerprints,
 feature history, connection construction or schema migrations.
 """
 

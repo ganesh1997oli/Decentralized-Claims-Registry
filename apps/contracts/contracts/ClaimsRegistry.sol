@@ -494,7 +494,7 @@ contract ClaimsRegistry is
 
     /// @notice Grant or revoke an eligibility signer for one insurer.
     /// @dev Issuers receive the global role only while at least one insurer
-    ///      scope exists. The issuer is deliberately separate from the insurer,
+    ///      scope exists. The issuer is separate from the insurer,
     ///      assessor, and administrator so a compromised eligibility key cannot
     ///      administer roles, assess claims, or submit legacy claims directly.
     function setPermitIssuer(
@@ -761,7 +761,7 @@ contract ClaimsRegistry is
             );
     }
 
-    /// @dev Final states deliberately have no outgoing transitions.
+    /// @dev Final states have no outgoing transitions.
     function _isAllowedTransition(
         Status currentStatus,
         Status requestedStatus

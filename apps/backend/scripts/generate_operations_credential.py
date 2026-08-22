@@ -16,7 +16,7 @@ def main() -> None:
     updated and the process is restarted.
     """
 
-    # The raw key is intentionally printed once for delivery to the operator.
+    # Print the raw key once for delivery to the operator.
     # Only its one-way digest belongs in API configuration or a secret manager.
     api_key = secrets.token_urlsafe(32)
     digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()

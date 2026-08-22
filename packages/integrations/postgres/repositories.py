@@ -30,7 +30,7 @@ from packages.integrations.postgres.gasless_submission_repository import (
 class PostgresRepositories:
     """The focused persistence adapters used by the running application.
 
-    Callers select the narrow repository they actually need. The bundle exists
+    Callers select only the repository they need. The bundle exists
     only to guarantee that all adapters share identical connection configuration.
     """
 

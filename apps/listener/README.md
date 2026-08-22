@@ -1,6 +1,6 @@
 # Blockchain listener and claims indexer
 
-The listener turns confirmed Sepolia logs into a durable PostgreSQL claims index
+The listener turns confirmed Sepolia logs into a persistent PostgreSQL claims index
 and verified Kafka events. It does not trust the browser receipt or original API
 response: it downloads the CID from the immutable event and hashes those bytes
 again before scoring publication.
@@ -14,7 +14,7 @@ worker can consume efficiently.
 | Boundary | Listener responsibility |
 | --- | --- |
 | Reads | Sepolia blocks/logs and public IPFS bytes |
-| Verifies | Confirmation depth, event order, safe pointer shape and exact Keccak-256 byte hash |
+| Verifies | Confirmation depth, event order, safe pointer shape and matching Keccak-256 byte hash |
 | Writes | Immutable index events, current PostgreSQL projection, deployment checkpoint, dead letters and Kafka references |
 | Retries | Temporary RPC, IPFS, PostgreSQL and Kafka failures without moving the checkpoint |
 | Must not own | A transaction wallet, Pinata upload token, claimant credential, permit key or scoring model |
@@ -104,7 +104,7 @@ claim.assessed
 | --- | --- | --- |
 | `SEPOLIA_RPC_URL` | Public Sepolia endpoint | Reads blocks and logs |
 | `CLAIMS_DEPLOYMENT_ID` | Required | Selects one checked-in address and ABI |
-| `DATABASE_URL` | Required | Durable claim projection, event history, and checkpoint |
+| `DATABASE_URL` | Required | Persistent claim projection, event history, and checkpoint |
 | `CONFIRMATION_BLOCKS` | `12` | Holds back the newest blocks for reorganization safety |
 | `MAX_BLOCK_RANGE` | `50` | Bounds each public RPC log query |
 | `POLL_INTERVAL` | `5` | Wait at the confirmed head; not used between backfill chunks |
@@ -122,7 +122,7 @@ listener makes fewer RPC round trips. The trade-off is that each `eth_getLogs`
 query becomes heavier and may exceed the provider's timeout, response-size, or
 rate-limit policy. Keep `50` as the conservative public-RPC default, test a
 temporary increase against the selected provider, and reduce it again if
-`listener.poll_failed` appears. A failed range does not advance the durable
+`listener.poll_failed` appears. A failed range does not advance the stored
 checkpoint, so it is retried rather than skipped.
 
 The normal listener needs no wallet, Pinata upload token, insurer credential,
@@ -133,7 +133,7 @@ publication access.
 
 A new index refuses to start without `LISTENER_START_BLOCK`. Beginning at the
 current head would look healthy while silently omitting historical claims. Use
-the deployment's exact registry block:
+the registry's deployment block:
 
 | Deployment | Start block | Intended use |
 | --- | ---: | --- |
@@ -165,7 +165,7 @@ apps/backend/.venv/bin/python -m apps.listener.reconcile_claim_index
 ```
 
 The command prints JSON and exits non-zero for missing, unexpected, or stale
-claims. It deliberately does not repair rows from a point-in-time read; replaying
+claims. It does not repair rows from a point-in-time read; replaying
 events preserves the complete audit history. It appends only the compact result
 and duration to `claim_index_reconciliations`, allowing the authenticated
 `/operations` dashboard to show the most recent proof of consistency.
@@ -199,7 +199,7 @@ Replace `1` with the actual claim ID.
 ## Test
 
 ```bash
-apps/backend/.venv/bin/python -m pytest apps/listener/test_*.py -q
+apps/backend/.venv/bin/python -m pytest apps/listener/tests -q
 ```
 
 Tests inject chain, IPFS, Kafka, index, checkpoint, and dead-letter adapters.
@@ -290,7 +290,7 @@ protected operator surface is unusable.
 
 The confirmed head is `latest block - CONFIRMATION_BLOCKS`. A small non-zero lag
 can be normal between listener polls. Alert on sustained state rather than one
-sample. The default `INDEXER_STALE_AFTER_SECONDS=120` is intentionally longer
+sample. The default `INDEXER_STALE_AFTER_SECONDS=120` is longer
 than ordinary Sepolia block and listener polling intervals.
 
 ### Routine checks
@@ -366,5 +366,5 @@ instances with coordinated ownership, managed secrets, HTTPS/enterprise
 identity, alert routing, backups, and an explicit deep-reorganization recovery
 procedure.
 
-For the exact local terminal order, environment-loading commands, and readiness
+For the complete local terminal order, environment-loading commands, and readiness
 checks, see the [local development guide](../../LOCAL_DEVELOPMENT.md).

@@ -194,7 +194,7 @@ def test_deploy_accepts_matching_deployment_scoped_identity(tmp_path: Path) -> N
         consumer_group="claims-registry-scorer-sepolia-gasless-v2",
     )
 
-    # The Kafka validation passed. The later missing-model check intentionally
+    # The Kafka validation passed. The later missing-model check
     # stops the script before it can build images or start containers.
     assert completed.returncode == 1
     assert "KAFKA_" not in completed.stderr

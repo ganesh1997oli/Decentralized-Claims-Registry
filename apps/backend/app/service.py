@@ -2,7 +2,7 @@
 
 The order is important: create one canonical document, prove that the same bytes
 can be read from IPFS, and only then anchor their hash on Sepolia. In asynchronous
-mode this service deliberately stops after the anchor; the listener and Kafka
+mode this service stops after the anchor; the listener and Kafka
 worker own the later model assessment.
 """
 
@@ -53,7 +53,7 @@ class ClaimQueryServiceError(RuntimeError):
 
 
 class IPFSStore(Protocol):
-    """Narrow content-addressed storage interface used during submission."""
+    """Content-addressed storage used during submission."""
 
     def upload_bytes(self, payload: bytes, *, filename: str, content_type: str) -> str:
         """Upload exact bytes and return their content identifier."""
@@ -116,7 +116,7 @@ def canonical_claim_bytes(
 class ClaimQueryService:
     """Read the confirmed-event projection without wallet or upload credentials.
 
-    PostgreSQL is a rebuildable query layer, not a competing source of truth.
+    PostgreSQL is a rebuildable query layer; the on-chain record remains primary.
     Keeping it separate from submission means dashboard reads remain fast and
     cannot accidentally gain access to Pinata or a transaction-signing account.
     """
@@ -166,7 +166,7 @@ class ClaimQueryService:
     def list_claims(self, *, page: int, page_size: int) -> ClaimPageResponse:
         """Build one browser page from the confirmed blockchain index.
 
-        The projection supplies current claim rows, count, and durable progress
+        The projection supplies current claim rows, count, and index progress
         without an RPC scan. Numeric Solidity statuses are translated here so
         persistence remains contract-shaped while the API stays domain-readable.
         Unknown future enum values remain visible rather than failing the page.

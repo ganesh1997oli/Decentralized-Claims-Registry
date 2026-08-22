@@ -364,8 +364,7 @@ class KafkaClaimEventPublisher:
                 f"Kafka rejected event {event.event_id}: {exc}"
             ) from exc
 
-        # Waiting here is deliberate. The listener must not save its block
-        # cursor until Kafka confirms that the event is durable.
+        # Wait for acknowledgement before the listener saves its block cursor.
         remaining = self._producer.flush(self.settings.delivery_timeout_ms / 1000)
         if remaining:
             raise KafkaPublishError(
@@ -430,7 +429,7 @@ class KafkaClaimEventConsumer:
 
 
 def create_publisher(settings: KafkaSettings) -> ClaimEventPublisher | None:
-    """Return no publisher when Kafka is intentionally disabled."""
+    """Return no publisher when Kafka is disabled."""
 
     if not settings.enabled:
         return None

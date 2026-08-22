@@ -1,6 +1,6 @@
 """Small, dependency-free structured logging boundary for runtime services.
 
-The JSON contract is intentionally stable because operators, log sinks, and
+The JSON schema stays stable so operators, log sinks, and
 alerts should search fields such as ``event_id`` and ``claim_id`` without
 parsing human prose. Callers provide an event name and structured values; this
 module owns serialization and defensive redaction.
@@ -108,7 +108,7 @@ def configure_logging(
 
 
 class EventLogger:
-    """Narrow logging interface that makes stable event names mandatory."""
+    """Structured logger that requires stable event names."""
 
     def __init__(self, name: str) -> None:
         self._logger = logging.getLogger(name)

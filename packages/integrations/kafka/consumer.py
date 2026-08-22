@@ -1,7 +1,8 @@
 """Consume submitted-claim events and independently verify their IPFS bytes.
 
-This is the Week 5 proof that events reach Kafka. It deliberately does not run
-fraud scoring yet; the durable PostgreSQL processor belongs to the next stage.
+This diagnostic proves that events reach Kafka and that their IPFS bytes still
+match the on-chain hash. It stops before fraud scoring; ``scoring_worker.py``
+handles the full PostgreSQL-backed workflow.
 """
 
 from __future__ import annotations

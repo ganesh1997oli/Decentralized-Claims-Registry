@@ -1,9 +1,8 @@
 """Wallet-backed claimant sessions for public claim intake.
 
-The module implements a deliberately small interface: issue one EIP-4361-style
-challenge, exchange its wallet signature for a short-lived bearer session, and
-authenticate that session. PostgreSQL owns one-time challenge consumption;
-cryptographic message and token policy remain local to this module.
+The module issues an EIP-4361-style challenge, exchanges its wallet signature
+for a short-lived bearer session, and authenticates that session. PostgreSQL
+handles one-time challenge consumption; message and token rules remain here.
 """
 
 from __future__ import annotations
@@ -43,7 +42,7 @@ class ClaimantAuthenticationError(PermissionError):
 
 
 class ClaimantAuthenticationRateLimitError(RuntimeError):
-    """Raised before issuing a challenge when durable limits are exhausted."""
+    """Raised before issuing a challenge when stored limits are exhausted."""
 
     def __init__(self, message: str, *, retry_after: int) -> None:
         super().__init__(message)
@@ -60,7 +59,7 @@ class ClaimantChallengeStore(Protocol):
         client_limit_per_minute: int,
         wallet_limit_per_minute: int,
     ) -> ClaimantAuthChallengeRecord:
-        """Persist a challenge after durable abuse-control checks."""
+        """Persist a challenge after database-backed abuse-control checks."""
 
         ...
 
@@ -96,7 +95,7 @@ class ClaimantSession:
         The persistence column retains its historical name during the rolling
         migration from insurer credentials. Public code uses `subject_id`; this
         compatibility property keeps old relay records readable without making
-        a short-lived session token part of durable ownership.
+        a short-lived session token part of stored ownership.
         """
 
         return self.subject_id
@@ -298,7 +297,7 @@ class ClaimantSessionManager:
         *,
         client_ip: str,
     ) -> IssuedClaimantChallenge:
-        """Create a durable EIP-4361-style proof-of-wallet challenge."""
+        """Create a persisted EIP-4361-style proof-of-wallet challenge."""
 
         try:
             wallet = Web3.to_checksum_address(wallet_address)

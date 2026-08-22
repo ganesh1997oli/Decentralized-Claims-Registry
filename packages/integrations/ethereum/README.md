@@ -1,6 +1,6 @@
 # Ethereum deployment integration
 
-This adapter gives every Python process one authoritative way to select and
+This adapter gives every Python process one shared way to select and
 validate a checked-in `ClaimsRegistry` deployment. The environment chooses a
 deployment ID; the adapter resolves its Ignition addresses and ABIs.
 
@@ -37,7 +37,7 @@ CLAIMS_DEPLOYMENT_ID="sepolia-public-intake-v1"
 SEPOLIA_RPC_URL="https://your-reviewed-sepolia-endpoint"
 ```
 
-The deployment ID is intentionally the only selector. Do not add independent
+The deployment ID is the only selector. Do not add independent
 registry-address environment variables to individual services; that would
 reintroduce configuration drift.
 

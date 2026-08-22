@@ -66,7 +66,7 @@ class ClaimAuthorizationVerificationError(ValueError):
 
 @dataclass(frozen=True)
 class InsurerPrincipal:
-    """The authoritative insurer identity established from one API credential.
+    """The verified insurer identity established from one API credential.
 
     ``rate_limit_exempt`` records credential policy only. It never activates a
     bypass by itself; the server-wide master switch must also be enabled.
@@ -261,7 +261,7 @@ class SubmissionBoundary:
         """Initialize the in-process authentication-abuse boundary.
 
         These counters are a first line of defence and protect invalid-key paths.
-        PostgreSQL independently enforces durable sponsorship quotas across API
+        PostgreSQL independently enforces persistent sponsorship quotas across API
         replicas when a valid gasless preparation reaches the service layer.
         """
 
@@ -272,7 +272,7 @@ class SubmissionBoundary:
         self._clock = clock
         # These counters protect the historical schema-v5 credential path in a
         # single process. The lock makes check-and-reserve atomic locally; the
-        # public intake path uses durable PostgreSQL challenge and sponsorship
+        # public intake path uses PostgreSQL challenge and sponsorship
         # reservations instead.
         self._lock = threading.Lock()
         self._ip_attempts: dict[str, deque[datetime]] = defaultdict(deque)
@@ -453,7 +453,7 @@ class SubmissionBoundary:
 
             # Both controls must opt in: marking a credential as exempt is
             # harmless while the server-wide switch remains false. This
-            # fail-closed pairing prevents an accidentally copied credential
+            # Paired checks prevent an accidentally copied credential
             # record from silently disabling normal abuse protection.
             bypassed = self._allow_rate_limit_bypass and principal.rate_limit_exempt
             if not bypassed:
@@ -484,7 +484,7 @@ class SubmissionBoundary:
         capacity. Signature authorization and status polling still require the
         same insurer credential, but retries must remain idempotent and free.
         Invalid credentials continue to consume the process-local IP attempt
-        limit as a first line of defence in front of the durable sponsor quota.
+        limit as a first line of defence in front of the stored sponsor quota.
         """
 
         now = self._clock()

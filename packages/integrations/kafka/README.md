@@ -5,7 +5,7 @@ model work. Messages contain blockchain and IPFS references—not the full claim
 
 ## Quick mental model
 
-Kafka is the **durable hand-off queue**, not the claim database. A message says
+Kafka is the **message hand-off queue**, not the claim database. A message says
 “this confirmed chain event is ready to process” and carries enough identity to
 find and re-verify the public data.
 
@@ -13,8 +13,8 @@ find and re-verify the public data.
 | --- | --- |
 | Producer | Listener publishes only after confirmation, indexing and IPFS hash verification |
 | Event | Versioned chain ID, registry address, event ID, claim ID, transaction position, CID and claim hash |
-| Consumer | Worker validates the envelope, re-verifies bytes, reuses durable work on replay, scores and writes back |
-| Commit rule | Offset advances only after the handler reaches a durable completed or quarantined outcome |
+| Consumer | Worker validates the envelope, re-verifies bytes, reuses stored work on replay, scores and writes back |
+| Commit rule | Offset advances only after the handler records completion or quarantine |
 | Excluded | Full claim JSON, wallet keys, policy reference, database password and model artifact bytes |
 
 At-least-once delivery means repetition is normal. Idempotency in PostgreSQL
@@ -30,7 +30,7 @@ flowchart LR
     Worker --> Verify["Reverify hash + signed insurer authorization"]
     Verify --> Valid{"Immutable input valid?"}
     Valid -->|Yes| Duplicate["Cross-insurer duplicate check"]
-    Valid -->|No| DeadLetter[("Durable dead-letter file")]
+    Valid -->|No| DeadLetter[("Persistent dead-letter file")]
     DeadLetter --> RejectedCommit["Commit rejected event offset"]
     Duplicate --> Features["Versioned feature snapshot"]
     Features --> Model["XGBoost + local SHAP"]
@@ -63,7 +63,7 @@ submitting another transaction.
 
 ## Permanent claim quarantine
 
-The worker deliberately treats failures in two different ways:
+The worker separates failures into two groups:
 
 - Temporary infrastructure failures—such as an unavailable IPFS gateway,
   PostgreSQL, RPC endpoint, or Kafka broker—escape the handler. Kafka does not
@@ -112,7 +112,7 @@ docker compose -f packages/integrations/kafka/compose.yml ps
 ```
 
 The initialization service creates the legacy `claims.submitted.v1` topic. The
-gasless deployment deliberately uses a new topic name so its event stream cannot
+gasless deployment uses a new topic name so its event stream cannot
 be confused with legacy contract history. After loading `.env.local`, create the
 configured topic once:
 
@@ -195,7 +195,7 @@ cross-insurer matching.
 docker compose -f packages/integrations/kafka/compose.yml down
 ```
 
-Add `--volumes` only when you intentionally want to remove local Kafka and
+Add `--volumes` only when you want to remove local Kafka and
 PostgreSQL data.
 
 The local single broker uses plaintext inside the development boundary. A

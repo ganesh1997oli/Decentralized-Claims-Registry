@@ -97,12 +97,12 @@ def test_reconciliation_accepts_an_exact_projection():
 
 
 def test_reconciliation_reports_missing_unexpected_and_stale_claims():
-    authoritative = [chain_claim(claim(0)), chain_claim(claim(1, status=4))]
+    chain_state = [chain_claim(claim(0)), chain_claim(claim(1, status=4))]
     indexed = [claim(9), claim(1, status=1)]
 
     result = ClaimIndexReconciler(
         deployment=deployment(),
-        contract=FakeContract(authoritative),
+        contract=FakeContract(chain_state),
         index=FakeIndex(indexed),
     ).reconcile()
 

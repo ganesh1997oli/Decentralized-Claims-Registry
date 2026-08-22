@@ -1,4 +1,4 @@
-"""Durable one-time wallet challenges for public claimant authentication."""
+"""Persisted one-time wallet challenges for public claimant authentication."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ class ClaimantAuthChallengeError(RuntimeError):
 
 
 class ClaimantAuthChallengeRateLimitError(ClaimantAuthChallengeError):
-    """Raised before challenge creation when a durable abuse limit is reached."""
+    """Raised before challenge creation when a stored abuse limit is reached."""
 
     def __init__(self, message: str, *, retry_after: int = 60) -> None:
         super().__init__(message)

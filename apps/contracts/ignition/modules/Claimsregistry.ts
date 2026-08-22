@@ -1,4 +1,4 @@
-// Deploy the registry with four intentionally separate roles. A permit issuer
+// Deploy the registry with four separate roles. A permit issuer
 // may attest policy eligibility but cannot submit legacy claims, assess claims,
 // administer roles, or pay relay gas. The one-day default-admin delay makes an
 // accidental transfer recoverable before acceptance.

@@ -19,7 +19,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "insurer_id", help="authoritative insurer ID, e.g. northstar-mutual"
+        "insurer_id", help="insurer ID, e.g. northstar-mutual"
     )
     parser.add_argument(
         "credential_id", help="rotation-friendly ID, e.g. northstar-cloud-v1"
