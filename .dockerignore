@@ -17,4 +17,5 @@ packages/model/artifacts
 packages/model/data
 packages/model/notebooks
 infrastructure/gcp/evidence
+gha-creds-*.json
 *.docx

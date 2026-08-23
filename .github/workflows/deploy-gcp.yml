@@ -1,0 +1,254 @@
+name: Deploy reviewed commit to Google Cloud
+
+# Deployment is intentionally never triggered by push or pull_request. After
+# this workflow is reviewed and merged to the default branch, a repository
+# maintainer starts it from Actions -> Deploy reviewed commit to Google Cloud.
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: "Optional full main-branch SHA; blank deploys the selected main revision"
+        required: false
+        type: string
+      confirmation:
+        description: "Type DEPLOY to confirm the release request"
+        required: true
+        type: string
+
+# Begin with no token authority. Each job receives only what it needs.
+permissions: {}
+
+# Never cancel an active release: interruption during a Compose replacement can
+# leave the operator unsure which version owns the VM. A second request queues.
+concurrency:
+  group: gcp-research-deployment
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate reviewed release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      release_sha: ${{ steps.release.outputs.release_sha }}
+      ci_run_id: ${{ steps.ci.outputs.ci_run_id }}
+    steps:
+      # Pin actions by immutable commit, while the comment records the reviewed
+      # upstream release for human dependency updates.
+      - name: Check out complete main history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve and validate immutable release
+        id: release
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          REQUESTED_SHA: ${{ inputs.release_sha }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "This workflow may deploy only refs/heads/main." >&2
+            exit 1
+          fi
+          if [[ "${CONFIRMATION}" != "DEPLOY" ]]; then
+            echo "Confirmation must be exactly DEPLOY." >&2
+            exit 1
+          fi
+
+          release_sha="${REQUESTED_SHA:-${GITHUB_SHA}}"
+          if [[ ! "${release_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "release_sha must be blank or a complete lowercase 40-character SHA." >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin \
+            "+refs/heads/main:refs/remotes/origin/main"
+          git cat-file -e "${release_sha}^{commit}"
+          if ! git merge-base --is-ancestor \
+            "${release_sha}" refs/remotes/origin/main; then
+            echo "The requested SHA is not part of reviewed main history." >&2
+            exit 1
+          fi
+
+          echo "release_sha=${release_sha}" >>"${GITHUB_OUTPUT}"
+          echo "Release candidate: ${release_sha}"
+
+      - name: Require a successful Continuous integration run
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.release.outputs.release_sha }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          ci_run_id="$(
+            gh api --method GET \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+              -f head_sha="${RELEASE_SHA}" \
+              -f status=success \
+              -f per_page=1 \
+              --jq '.workflow_runs[0].id // empty'
+          )"
+          if [[ -z "${ci_run_id}" ]]; then
+            echo "No successful Continuous integration run exists for ${RELEASE_SHA}." >&2
+            echo "Wait for CI to pass, then start this deployment again." >&2
+            exit 1
+          fi
+
+          echo "ci_run_id=${ci_run_id}" >>"${GITHUB_OUTPUT}"
+          echo "Verified successful CI run ${ci_run_id}."
+
+  deploy:
+    name: Release to research VM
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      id-token: write
+
+    # Configure this environment in repository Settings before enabling the GCP
+    # identity. Required reviewers and a main-only deployment branch rule form
+    # the human approval boundary around the keyless cloud credential.
+    environment:
+      name: gcp-research
+
+    env:
+      GCP_CD_ENABLED: ${{ vars.GCP_CD_ENABLED }}
+      GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_VM_NAME: ${{ vars.GCP_VM_NAME }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_ZONE: ${{ vars.GCP_ZONE }}
+      RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+
+    steps:
+      - name: Check out the exact reviewed release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Validate protected environment variables
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if [[ "${GCP_CD_ENABLED}" != "true" ]]; then
+            echo "Set GCP_CD_ENABLED=true in the protected gcp-research environment." >&2
+            exit 1
+          fi
+          required_variables=(
+            GCP_DEPLOY_SERVICE_ACCOUNT
+            GCP_PROJECT_ID
+            GCP_VM_NAME
+            GCP_WORKLOAD_IDENTITY_PROVIDER
+            GCP_ZONE
+          )
+          for variable_name in "${required_variables[@]}"; do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "Missing protected environment variable: ${variable_name}" >&2
+              exit 1
+            fi
+          done
+
+      # Workload Identity Federation produces short-lived credentials. No JSON
+      # service-account key or application secret is stored in GitHub.
+      - name: Authenticate to Google Cloud without a key
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          cleanup_credentials: true
+          request_reason: >-
+            claims-registry release ${{ env.RELEASE_SHA }}
+            from GitHub run ${{ github.run_id }} attempt ${{ github.run_attempt }}
+
+      - name: Install pinned Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        with:
+          version: "578.0.0"
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Confirm the research VM is already running
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          vm_status="$(
+            gcloud compute instances describe "${GCP_VM_NAME}" \
+              --project "${GCP_PROJECT_ID}" \
+              --zone "${GCP_ZONE}" \
+              --format='value(status)'
+          )"
+          if [[ "${vm_status}" != "RUNNING" ]]; then
+            echo "The deployment VM is ${vm_status}, not RUNNING." >&2
+            echo "Start it deliberately in GCP, then retry. CD never starts billable resources." >&2
+            exit 1
+          fi
+
+      - name: Check private deployment material on the VM
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          gcloud compute ssh "${GCP_VM_NAME}" \
+            --project "${GCP_PROJECT_ID}" \
+            --zone "${GCP_ZONE}" \
+            --tunnel-through-iap \
+            --quiet \
+            --command='sudo test -d /opt/decentralized-claims-registry/.git && sudo test -f /opt/decentralized-claims-registry/infrastructure/gcp/.env.gcp && sudo test -d /opt/decentralized-claims-registry/infrastructure/gcp/.env.gcp-secrets'
+
+      - name: Copy the reviewed release controller
+        env:
+          REMOTE_SCRIPT: /tmp/claims-release-${{ github.run_id }}-${{ github.run_attempt }}.sh
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          gcloud compute scp \
+            infrastructure/gcp/scripts/release-vm.sh \
+            "${GCP_VM_NAME}:${REMOTE_SCRIPT}" \
+            --project "${GCP_PROJECT_ID}" \
+            --zone "${GCP_ZONE}" \
+            --tunnel-through-iap \
+            --quiet
+
+      - name: Deploy, verify, and roll back on failure
+        env:
+          REMOTE_SCRIPT: /tmp/claims-release-${{ github.run_id }}-${{ github.run_attempt }}.sh
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          gcloud compute ssh "${GCP_VM_NAME}" \
+            --project "${GCP_PROJECT_ID}" \
+            --zone "${GCP_ZONE}" \
+            --tunnel-through-iap \
+            --quiet \
+            --command="sudo bash '${REMOTE_SCRIPT}' '${RELEASE_SHA}'; release_status=\$?; sudo rm -f '${REMOTE_SCRIPT}'; exit \${release_status}"
+
+      - name: Record deployment summary
+        if: success()
+        env:
+          CI_RUN_ID: ${{ needs.prepare.outputs.ci_run_id }}
+        shell: bash
+        run: |
+          {
+            echo "### Google Cloud release completed"
+            echo
+            echo "- Commit: [\`${RELEASE_SHA}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${RELEASE_SHA})"
+            echo "- Verified CI run: [${CI_RUN_ID}](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID})"
+            echo "- VM: \`${GCP_VM_NAME}\` in \`${GCP_ZONE}\`"
+            echo "- Secrets: retained only on the VM"
+          } >>"${GITHUB_STEP_SUMMARY}"

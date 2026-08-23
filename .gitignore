@@ -16,6 +16,11 @@ coverage-html/
 !infrastructure/gcp/.env.gcp.example
 infrastructure/gcp/.env.gcp-secrets/
 
+# google-github-actions/auth creates a short-lived credentials file for gcloud.
+# The action removes it after each job, and this rule prevents an interrupted
+# local/action run from ever turning that file into source code.
+gha-creds-*.json
+
 # Terraform state can contain infrastructure details and is specific to one
 # Google Cloud project. Keep only the human-readable example variables in Git.
 **/.terraform/
