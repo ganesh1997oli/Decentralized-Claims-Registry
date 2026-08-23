@@ -127,6 +127,25 @@ def test_release_preserves_private_material_and_has_recovery_controls() -> None:
     assert "git_in_repository clean" not in text
 
 
+def test_release_restores_git_permissions_after_private_backup_umask() -> None:
+    text = RELEASE_SCRIPT.read_text(encoding="utf-8")
+
+    # Backups remain private, but Git checkout must not leak that restrictive
+    # umask into files copied into an image that runs as UID 10001.
+    assert "umask 077" in text
+    assert "git_in_repository() (" in text
+    assert "umask 022" in text
+    assert "git_in_repository ls-files --stage -z" in text
+    assert 'chmod 0644 -- "${absolute_path}"' in text
+    assert 'chmod 0755 -- "${absolute_path}"' in text
+
+    checkout_count = text.count(
+        'git_in_repository checkout --detach --force "${release_sha}"'
+    ) + text.count('git_in_repository checkout --detach --force "${current_sha}"')
+    assert checkout_count == 2
+    assert text.count("normalize_tracked_permissions") == 3
+
+
 def test_oidc_trust_uses_immutable_ids_and_exact_workflow_context() -> None:
     text = CD_TERRAFORM.read_text(encoding="utf-8")
 
