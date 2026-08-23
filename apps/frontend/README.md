@@ -88,6 +88,13 @@ labels the pages clearly, but FastAPI remains the authorization authority. The
 matching server setting permits anonymous reads only; human-outcome writes stay
 keyed. Keep it `false` in production and rebuild the frontend whenever it changes.
 
+`VITE_PUBLIC_PROTOTYPE_ASSESSOR=true` displays the writable assessor prototype
+without a credential form. It grants nothing by itself: FastAPI independently
+requires `PUBLIC_PROTOTYPE_ASSESSOR=true` before accepting a missing key. The
+page states that entries are fictional, share one non-attributable prototype
+identity, and are unsuitable for production. Keep both matching flags `false`
+outside a supervised dissertation presentation.
+
 ## Install and run
 
 Start PostgreSQL, Kafka, migrations, and FastAPI first. The complete order is in

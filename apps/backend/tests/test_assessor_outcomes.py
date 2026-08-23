@@ -209,3 +209,42 @@ def test_public_demo_can_read_assessor_data_but_cannot_record_an_outcome():
     assert latest.json()["outcome"] == "ConfirmedFraud"
     assert write.status_code == 401
     assert outcomes.recorded == []
+
+
+def test_public_prototype_records_anonymous_outcome_with_fixed_audit_identity():
+    outcomes = OutcomeRepository()
+    app.dependency_overrides[get_public_demo_access] = lambda: PublicDemoAccess(
+        public_read_only=True,
+        public_prototype_assessor=True,
+    )
+    app.dependency_overrides[get_assessor_outcome_boundary] = lambda: (
+        AssessorOutcomeBoundary.from_settings(boundary_settings())
+    )
+    app.dependency_overrides[get_active_deployment] = lambda: SimpleNamespace(
+        chain_id=11_155_111,
+        address="0xcontract",
+    )
+    app.dependency_overrides[get_postgres_repositories] = lambda: repositories(
+        outcomes
+    )
+    client = TestClient(app)
+    try:
+        session = client.get("/assessor/session")
+        write = client.post(
+            "/assessor/claims/7/outcome",
+            json={
+                "outcome": "Legitimate",
+                "notes": "Fictional prototype review.",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert session.status_code == 200
+    assert session.json() == {
+        "assessor_reference": "public-prototype-assessor"
+    }
+    assert write.status_code == 201
+    assert outcomes.recorded[0]["assessor_reference"] == (
+        "public-prototype-assessor"
+    )

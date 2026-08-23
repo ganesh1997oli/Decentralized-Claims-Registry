@@ -106,6 +106,27 @@ describe('human assessor API', () => {
     })
   })
 
+  it('omits the assessor header for an explicitly anonymous prototype write', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(outcome), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await recordAssessorOutcome(
+      4,
+      { outcome: 'ConfirmedFraud', notes: 'Fictional prototype review.' },
+      '',
+    )
+
+    const [, request] = fetchMock.mock.calls[0]
+    expect(request.headers).toEqual({
+      'Content-Type': 'application/json',
+    })
+  })
+
   it('rejects a business disposition presented as a fraud outcome', async () => {
     vi.stubGlobal(
       'fetch',
