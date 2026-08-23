@@ -184,6 +184,10 @@ services:
       - -m
       - packages.model.train_xgboost
       - --download
+      # The container root is intentionally read-only. Download the pinned
+      # dataset into the writable, size-bounded tmpfs instead of /app.
+      - --dataset
+      - /tmp/african_motor_claims.csv
       - --output-dir
       - /opt/claims-model
     depends_on:

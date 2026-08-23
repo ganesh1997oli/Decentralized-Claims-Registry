@@ -15,23 +15,26 @@ DASHBOARD = PROJECT_ROOT / "infrastructure" / "gcp" / "monitoring" / "dashboard.
 DEPLOY_SCRIPT = PROJECT_ROOT / "infrastructure" / "gcp" / "scripts" / "deploy.sh"
 
 
-def _compose_model(**overrides: str) -> dict[str, object]:
+def _compose_model(
+    *, include_training: bool = False, **overrides: str
+) -> dict[str, object]:
     """Resolve Compose exactly as deployment would, with optional test values."""
 
     environment = os.environ.copy()
     environment.update(overrides)
+    command = [
+        "docker",
+        "compose",
+        "--env-file",
+        str(ENV_EXAMPLE),
+        "--file",
+        str(COMPOSE_FILE),
+    ]
+    if include_training:
+        command.extend(("--profile", "training"))
+    command.extend(("config", "--format", "json"))
     completed = subprocess.run(
-        (
-            "docker",
-            "compose",
-            "--env-file",
-            str(ENV_EXAMPLE),
-            "--file",
-            str(COMPOSE_FILE),
-            "config",
-            "--format",
-            "json",
-        ),
+        command,
         cwd=PROJECT_ROOT,
         env=environment,
         check=True,
@@ -214,6 +217,21 @@ def test_scoring_dead_letter_has_an_owned_persistent_volume() -> None:
         for volume in init_volumes
         if isinstance(volume, dict)
     )
+
+
+def test_model_trainer_downloads_dataset_into_writable_tmpfs() -> None:
+    """A read-only trainer must not download the dataset under /app."""
+
+    model = _compose_model(include_training=True)
+    services = model["services"]
+    assert isinstance(services, dict)
+    trainer = services["model-trainer"]
+    assert isinstance(trainer, dict)
+
+    assert trainer["read_only"] is True
+    assert "/tmp:size=256m,mode=1777" in trainer["tmpfs"]
+    command = _command_text(trainer)
+    assert "--dataset /tmp/african_motor_claims.csv" in command
 
 
 def test_gcp_verification_and_dashboard_do_not_select_legacy_identity() -> None:
