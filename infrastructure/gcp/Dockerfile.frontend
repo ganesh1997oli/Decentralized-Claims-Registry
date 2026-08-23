@@ -13,8 +13,10 @@ COPY apps/frontend/ ./
 # those requests to FastAPI, so port 8000 never needs to face the internet.
 ARG VITE_API_BASE_URL=/api
 ARG VITE_IPFS_GATEWAY=https://gateway.pinata.cloud/ipfs
+ARG VITE_PUBLIC_DEMO_READ_ONLY=false
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL} \
-    VITE_IPFS_GATEWAY=${VITE_IPFS_GATEWAY}
+    VITE_IPFS_GATEWAY=${VITE_IPFS_GATEWAY} \
+    VITE_PUBLIC_DEMO_READ_ONLY=${VITE_PUBLIC_DEMO_READ_ONLY}
 
 RUN npm run build
 

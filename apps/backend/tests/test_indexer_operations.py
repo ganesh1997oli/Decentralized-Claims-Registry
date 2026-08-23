@@ -18,8 +18,10 @@ from apps.backend.app.main import (
     app,
     get_indexer_operations_boundary,
     get_indexer_operations_service,
+    get_public_demo_access,
 )
 from apps.backend.app.models import IndexerOperationsResponse
+from apps.backend.app.public_demo_access import PublicDemoAccess
 from packages.integrations.ethereum import ClaimsDeployment
 from packages.integrations.postgres import (
     ClaimIndexEventPage,
@@ -234,6 +236,27 @@ def test_operations_route_requires_key_and_returns_authenticated_snapshot():
     assert valid.status_code == 200
     assert valid.json()["state"] == "healthy"
     assert valid.json()["last_reconciliation"]["consistent"] is True
+
+
+def test_public_demo_allows_anonymous_operations_reads_but_rejects_bad_keys():
+    app.dependency_overrides[get_public_demo_access] = lambda: PublicDemoAccess(True)
+    app.dependency_overrides[get_indexer_operations_boundary] = lambda: (
+        IndexerOperationsBoundary(OPERATIONS_DIGEST)
+    )
+    app.dependency_overrides[get_indexer_operations_service] = FakeOperationsService
+    client = TestClient(app)
+    try:
+        anonymous = client.get("/operations/indexer")
+        invalid = client.get(
+            "/operations/indexer",
+            headers={"X-Operations-API-Key": "wrong"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert anonymous.status_code == 200
+    assert anonymous.json()["state"] == "healthy"
+    assert invalid.status_code == 401
 
 
 def test_event_search_route_is_authenticated_filtered_and_validated():

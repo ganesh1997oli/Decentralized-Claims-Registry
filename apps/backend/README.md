@@ -179,6 +179,7 @@ Useful URLs:
 | `CLAIMANT_RATE_LIMIT_PER_MINUTE` | API | Per-claimant sponsored submission limit; default 5 |
 | `IP_RATE_LIMIT_PER_MINUTE` | API | Per-IP authentication-attempt limit; default 20 |
 | `ALLOW_RATE_LIMIT_BYPASS` | API | Master switch for explicitly exempt performance-test credentials; default `false` |
+| `PUBLIC_DEMO_READ_ONLY` | API | Explicit dissertation-demo switch; permits anonymous operations/assessor reads only, default `false`; assessor writes remain keyed |
 | `INDEXER_OPERATIONS_API_KEY_SHA256` | API | SHA-256 digest of the separate read-only operations credential |
 | `INDEXER_STALE_AFTER_SECONDS` | API | Marks a lagging checkpoint stalled after this age; default 120 seconds |
 | `ASSESSOR_OUTCOME_CREDENTIALS_JSON` | API | Human assessor references and SHA-256 API-key digests for the private outcome console |

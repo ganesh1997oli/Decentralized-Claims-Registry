@@ -76,6 +76,11 @@ from apps.backend.app.models import (
     ReadinessResponse,
 )
 from apps.backend.app.policy_eligibility import PolicyEligibilityConfigurationError
+from apps.backend.app.public_demo_access import (
+    PUBLIC_DEMO_ASSESSOR_REFERENCE,
+    PublicDemoAccess,
+    PublicDemoConfigurationError,
+)
 from apps.backend.app.service import (
     ClaimQueryService,
     ClaimQueryServiceError,
@@ -106,6 +111,31 @@ assessor_outcome_api_key_header = APIKeyHeader(
     auto_error=False,
 )
 claimant_bearer = HTTPBearer(auto_error=False)
+
+
+@lru_cache
+def load_public_demo_access() -> PublicDemoAccess:
+    """Load the secure-by-default public demonstration mode once."""
+
+    return PublicDemoAccess.from_env()
+
+
+def get_public_demo_access() -> PublicDemoAccess:
+    """Expose deployment-mode validation through one read-access seam."""
+
+    try:
+        return load_public_demo_access()
+    except PublicDemoConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Public demo configuration is unavailable: {exc}",
+        ) from exc
+
+
+PublicDemoAccessDependency = Annotated[
+    PublicDemoAccess,
+    Depends(get_public_demo_access),
+]
 
 
 @lru_cache
@@ -179,6 +209,31 @@ AssessorPrincipalDependency = Annotated[
 ]
 
 
+def get_assessor_read_principal(
+    access: PublicDemoAccessDependency,
+    boundary: AssessorOutcomeBoundaryDependency,
+    api_key: Annotated[str | None, Security(assessor_outcome_api_key_header)],
+) -> AssessorPrincipal:
+    """Authorize a private reader or the explicit anonymous demo identity."""
+
+    if access.allows_anonymous_read(api_key):
+        return AssessorPrincipal(PUBLIC_DEMO_ASSESSOR_REFERENCE)
+    try:
+        return boundary.authenticate(api_key)
+    except AssessorOutcomeAuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "ApiKey"},
+        ) from exc
+
+
+AssessorReadPrincipalDependency = Annotated[
+    AssessorPrincipal,
+    Depends(get_assessor_read_principal),
+]
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Validate critical local configuration before the API accepts traffic.
@@ -190,6 +245,7 @@ async def lifespan(_app: FastAPI):
     """
 
     configure_logging("claims-api")
+    demo_access = load_public_demo_access()
     # Artifact selection is local and fast. Refuse to start with a missing,
     # legacy, or incompatible contract instead of discovering it on first use.
     deployment = load_active_deployment()
@@ -210,6 +266,7 @@ async def lifespan(_app: FastAPI):
         "api.public_intake_configured",
         authentication_type=type(claimant_sessions).__name__,
         eligibility_type=type(gasless.eligibility).__name__,
+        public_demo_read_only=demo_access.public_read_only,
     )
     yield
 
@@ -433,6 +490,7 @@ IndexerOperationsBoundaryDependency = Annotated[
 
 
 def require_indexer_operations_access(
+    access: PublicDemoAccessDependency,
     boundary: IndexerOperationsBoundaryDependency,
     api_key: Annotated[
         str | None,
@@ -441,6 +499,8 @@ def require_indexer_operations_access(
 ) -> None:
     """Reject unauthenticated telemetry reads before constructing adapters."""
 
+    if access.allows_anonymous_read(api_key):
+        return
     try:
         boundary.authenticate(api_key)
     except IndexerOperationsAuthenticationError as exc:
@@ -818,7 +878,7 @@ def _assessor_outcome_response(record) -> AssessorOutcomeResponse:
     responses={401: {"description": "Missing or invalid human-assessor API key"}},
 )
 def get_assessor_session(
-    principal: AssessorPrincipalDependency,
+    principal: AssessorReadPrincipalDependency,
 ) -> AssessorSessionResponse:
     """Validate a browser-held key without disclosing claim or outcome data."""
 
@@ -838,7 +898,7 @@ def get_assessor_session(
 )
 def get_assessor_outcome(
     claim_id: Annotated[int, Path(ge=0)],
-    _principal: AssessorPrincipalDependency,
+    _principal: AssessorReadPrincipalDependency,
     repositories: PostgresRepositoriesDependency,
     deployment: ActiveDeploymentDependency,
 ) -> AssessorOutcomeResponse:

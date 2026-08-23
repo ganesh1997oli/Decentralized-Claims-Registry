@@ -568,8 +568,13 @@ class ClaimScoringHandler:
                     block_number=record.block_number,
                 )
             else:
-                raise ValueError(
-                    f"Claim {event.claim_id} already has a different assessment"
+                # An assessment already anchored on-chain cannot be changed by
+                # retrying this Kafka event. Classify the conflict as permanent
+                # so the outer handler records it before committing the offset,
+                # rather than restart-looping this partition forever.
+                raise PermanentClaimProcessingError(
+                    "assessment_conflict",
+                    f"Claim {event.claim_id} already has a different assessment",
                 )
         except Exception as exc:
             self.repository.mark_failed(event.event_id, str(exc))

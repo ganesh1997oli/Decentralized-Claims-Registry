@@ -11,6 +11,7 @@ import {
   type IndexerState,
 } from '../api.ts'
 import { shorten } from '../claim-display.ts'
+import { PUBLIC_DEMO_READ_ONLY } from '../public-demo-access.ts'
 
 const OPERATIONS_KEY_SESSION_STORAGE =
   'claims-registry:indexer-operations-key:v1'
@@ -554,6 +555,7 @@ export function IndexerOperationsView({
   onEventSearch,
   onOlderEvents,
   onNewerEvents,
+  publicDemoReadOnly = false,
 }: {
   snapshot: IndexerOperations
   isRefreshing: boolean
@@ -567,6 +569,7 @@ export function IndexerOperationsView({
   onEventSearch: (filters: IndexerEventSearch) => void
   onOlderEvents: () => void
   onNewerEvents: () => void
+  publicDemoReadOnly?: boolean
 }) {
   const state = statePresentation(snapshot.state)
   const statusRows = [
@@ -579,6 +582,13 @@ export function IndexerOperationsView({
 
   return (
     <div className="space-y-8">
+      {publicDemoReadOnly ? (
+        <section className="rounded-2xl border border-teal/25 bg-mint px-5 py-4 text-sm leading-6 text-ink">
+          <strong className="font-black text-teal">Public read-only demo.</strong>{' '}
+          Production requires an operations API key. This page exposes telemetry
+          and audit events only; it provides no reset, replay, or repair action.
+        </section>
+      ) : null}
       <section className="overflow-hidden rounded-3xl border border-ink/8 bg-white shadow-[0_24px_80px_-48px_rgba(20,40,51,0.38)]">
         <div className="flex flex-col gap-5 border-b border-ink/8 px-6 py-6 sm:flex-row sm:items-start sm:justify-between sm:px-8">
           <div>
@@ -609,13 +619,15 @@ export function IndexerOperationsView({
             >
               {isRefreshing ? 'Refreshing…' : 'Refresh now'}
             </button>
-            <button
-              type="button"
-              onClick={onDisconnect}
-              className="rounded-full border border-ink/10 bg-white px-4 py-2 text-xs font-bold text-ink transition hover:border-coral hover:text-coral-dark"
-            >
-              Lock
-            </button>
+            {!publicDemoReadOnly ? (
+              <button
+                type="button"
+                onClick={onDisconnect}
+                className="rounded-full border border-ink/10 bg-white px-4 py-2 text-xs font-bold text-ink transition hover:border-coral hover:text-coral-dark"
+              >
+                Lock
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -838,9 +850,15 @@ export function IndexerOperationsView({
  * client. Telemetry polling and event searches use independent abort controllers
  * because a slow RPC sample must not block PostgreSQL-only audit exploration.
  */
-export function IndexerOperationsDashboard() {
+export function IndexerOperationsDashboard({
+  publicDemoReadOnly = PUBLIC_DEMO_READ_ONLY,
+}: {
+  publicDemoReadOnly?: boolean
+} = {}) {
   const [draftKey, setDraftKey] = useState('')
-  const [activeKey, setActiveKey] = useState(readSessionKey)
+  const [activeKey, setActiveKey] = useState(() =>
+    publicDemoReadOnly ? '' : readSessionKey(),
+  )
   const [snapshot, setSnapshot] = useState<IndexerOperations | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -853,6 +871,7 @@ export function IndexerOperationsDashboard() {
   const [isSearchingEvents, setIsSearchingEvents] = useState(false)
   const request = useRef<AbortController | null>(null)
   const eventRequest = useRef<AbortController | null>(null)
+  const hasReadAccess = publicDemoReadOnly || Boolean(activeKey)
 
   const load = useCallback(async (apiKey: string, persistOnSuccess = false) => {
     // A slow RPC sample must not create overlapping browser requests every time
@@ -879,7 +898,10 @@ export function IndexerOperationsDashboard() {
           ? loadingError.message
           : 'Indexer operations could not be loaded.'
       setError(message)
-      if (message.toLowerCase().includes('operations api key')) {
+      if (
+        !publicDemoReadOnly &&
+        message.toLowerCase().includes('operations api key')
+      ) {
         clearSessionKey()
         setActiveKey('')
         setSnapshot(null)
@@ -888,7 +910,7 @@ export function IndexerOperationsDashboard() {
       if (request.current === controller) request.current = null
       if (!controller.signal.aborted) setIsRefreshing(false)
     }
-  }, [])
+  }, [publicDemoReadOnly])
 
   const loadEvents = useCallback(
     async (
@@ -918,7 +940,10 @@ export function IndexerOperationsDashboard() {
             ? loadingError.message
             : 'Indexer events could not be searched.'
         setEventError(message)
-        if (message.toLowerCase().includes('operations api key')) {
+        if (
+          !publicDemoReadOnly &&
+          message.toLowerCase().includes('operations api key')
+        ) {
           clearSessionKey()
           setActiveKey('')
           setSnapshot(null)
@@ -929,14 +954,14 @@ export function IndexerOperationsDashboard() {
         if (!controller.signal.aborted) setIsSearchingEvents(false)
       }
     },
-    [],
+    [publicDemoReadOnly],
   )
 
   useEffect(() => {
     // Poll only while authenticated and visible. The currently rendered snapshot
     // remains available if a later refresh fails, and cleanup aborts work when the
     // credential changes or the component unmounts.
-    if (!activeKey) return
+    if (!hasReadAccess) return
     // A successful unlock already supplied the first snapshot. A restored
     // session key does not, so only that path needs an immediate request.
     if (snapshot === null) void load(activeKey)
@@ -948,12 +973,12 @@ export function IndexerOperationsDashboard() {
       request.current?.abort()
       request.current = null
     }
-  }, [activeKey, load, snapshot])
+  }, [activeKey, hasReadAccess, load, snapshot])
 
   useEffect(() => {
     // A newly authenticated key begins one independent event-query lifecycle at
     // the newest unfiltered page. Disconnect/unmount aborts any in-flight search.
-    if (!activeKey) return
+    if (!hasReadAccess) return
     setEventFilters(DEFAULT_EVENT_SEARCH)
     setEventCursors([null])
     setEventPageNumber(1)
@@ -963,7 +988,7 @@ export function IndexerOperationsDashboard() {
       eventRequest.current?.abort()
       eventRequest.current = null
     }
-  }, [activeKey, loadEvents])
+  }, [activeKey, hasReadAccess, loadEvents])
 
   function connect(event: FormEvent<HTMLFormElement>) {
     // Do not activate or persist a candidate until a real protected request has
@@ -1035,6 +1060,26 @@ export function IndexerOperationsDashboard() {
   }
 
   if (!activeKey && !snapshot) {
+    if (publicDemoReadOnly) {
+      return (
+        <section className="mx-auto max-w-xl rounded-3xl border border-teal/20 bg-white p-6 shadow-[0_24px_80px_-48px_rgba(20,40,51,0.38)] sm:p-8">
+          <p className="text-xs font-bold tracking-[0.16em] text-teal uppercase">
+            Public read-only demo
+          </p>
+          <h1 className="mt-2 text-3xl font-black tracking-[-0.03em] text-ink">
+            Blockchain indexer operations
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-slate">
+            This dissertation demonstration exposes telemetry for viewing only.
+            Production requires an operations API key, and no reset, replay, or
+            repair operation is exposed through this page.
+          </p>
+          <p className="mt-5 text-sm font-semibold text-teal" role="status">
+            {isRefreshing ? 'Loading public telemetry…' : error ?? 'Preparing public telemetry…'}
+          </p>
+        </section>
+      )
+    }
     return (
       <section className="mx-auto max-w-xl rounded-3xl border border-ink/8 bg-white p-6 shadow-[0_24px_80px_-48px_rgba(20,40,51,0.38)] sm:p-8">
         <span className="grid size-12 place-items-center rounded-2xl bg-mint text-xl text-teal">
@@ -1087,7 +1132,9 @@ export function IndexerOperationsDashboard() {
   if (!snapshot) {
     return (
       <div className="py-20 text-center text-sm font-semibold text-slate">
-        Loading authenticated indexer telemetry…
+        {publicDemoReadOnly
+          ? 'Loading public indexer telemetry…'
+          : 'Loading authenticated indexer telemetry…'}
       </div>
     )
   }
@@ -1106,6 +1153,7 @@ export function IndexerOperationsDashboard() {
       onEventSearch={searchEvents}
       onOlderEvents={showOlderEvents}
       onNewerEvents={showNewerEvents}
+      publicDemoReadOnly={publicDemoReadOnly}
     />
   )
 }

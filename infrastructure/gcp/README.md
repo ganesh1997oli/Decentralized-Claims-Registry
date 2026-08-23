@@ -228,6 +228,20 @@ Generate the separate human-review credential in the same digest-only form:
 python apps/backend/scripts/generate_assessor_outcome_credential.py
 ```
 
+For a supervised dissertation demonstration, you may set:
+
+```dotenv
+PUBLIC_DEMO_READ_ONLY="true"
+```
+
+This makes only `GET /operations/*`, `GET /assessor/session`, and the assessor
+outcome read endpoint available without a key. The interface labels both pages
+as a public read-only demo and removes the assessor recording form. The assessor
+`POST` endpoint still requires a valid assessor API key. Set the flag back to
+`false` and rebuild the frontend for production; operations and assessor reads
+then require their separate keys again. The flag is not a secret and must never
+be used as an authorization credential.
+
 Keep the non-secret Kafka identity scoped to the selected contract deployment.
 The checked-in gasless deployment uses:
 

@@ -43,8 +43,8 @@ values can be changed by the user.
 | Route | Audience | Responsibility |
 | --- | --- | --- |
 | `/` | Claimant or authorized representative | Submit fictional data, sign wallet proof and EIP-712 request, follow receipt and browse indexed claims |
-| `/assessor` | Authenticated human reviewer | Read model context and append a private fraud-outcome revision |
-| `/operations` | Authenticated operator | Inspect listener lag, counts, reconciliation and immutable index events |
+| `/assessor` | Authenticated human reviewer, or anonymous demo viewer when explicitly enabled | Read model context; only a keyed assessor can append a private fraud-outcome revision |
+| `/operations` | Authenticated operator, or anonymous demo viewer when explicitly enabled | Inspect listener lag, counts, reconciliation and immutable index events |
 
 The UI may say “invalid” before a request is sent, but only server-side and
 on-chain checks make an authorization decision.
@@ -73,7 +73,7 @@ on-chain checks make an authorization decision.
 flowchart TD
     Memory["React memory"] --> A["Form fields + short-lived claimant session"]
     Storage["localStorage"] --> B["Latest public receipt only"]
-    Bundle["Vite bundle"] --> C["VITE_API_BASE_URL + VITE_IPFS_GATEWAY"]
+    Bundle["Vite bundle"] --> C["VITE_API_BASE_URL + VITE_IPFS_GATEWAY + public demo flag"]
     Never["Never in browser"] --> D["Relayer key, Pinata JWT, HMAC keys, database credentials"]
     Session["assessor tab sessionStorage"] --> E["Raw human-assessor key only"]
 ```
@@ -81,6 +81,12 @@ flowchart TD
 The bearer session exists only inside the active submission function and is not
 written to local storage, URLs, analytics, or logs. Browser storage failures are
 treated as a lost convenience, not as an application failure.
+
+`VITE_PUBLIC_DEMO_READ_ONLY=true` is a non-secret presentation switch for a
+supervised dissertation demo. It removes the two read credential forms and
+labels the pages clearly, but FastAPI remains the authorization authority. The
+matching server setting permits anonymous reads only; human-outcome writes stay
+keyed. Keep it `false` in production and rebuild the frontend whenever it changes.
 
 ## Install and run
 

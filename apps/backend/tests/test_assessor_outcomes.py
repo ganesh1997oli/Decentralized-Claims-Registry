@@ -16,9 +16,13 @@ from apps.backend.app.assessor_outcomes import (
 from apps.backend.app.main import (
     app,
     get_active_deployment,
+    get_assessor_outcome_boundary,
     get_assessor_principal,
+    get_assessor_read_principal,
     get_postgres_repositories,
+    get_public_demo_access,
 )
+from apps.backend.app.public_demo_access import PublicDemoAccess
 from packages.integrations.postgres import AssessorOutcomeRecord
 
 ASSESSOR_KEY = "test-human-assessor-key-with-enough-entropy"
@@ -102,9 +106,9 @@ def repositories(outcomes):
 
 
 def install_overrides(outcomes):
-    app.dependency_overrides[get_assessor_principal] = lambda: AssessorPrincipal(
-        "research-assessor-1"
-    )
+    principal = lambda: AssessorPrincipal("research-assessor-1")
+    app.dependency_overrides[get_assessor_principal] = principal
+    app.dependency_overrides[get_assessor_read_principal] = principal
     app.dependency_overrides[get_active_deployment] = lambda: SimpleNamespace(
         chain_id=11_155_111,
         address="0xcontract",
@@ -173,3 +177,35 @@ def test_request_rejects_business_disposition_as_fraud_outcome():
         app.dependency_overrides.clear()
 
     assert response.status_code == 422
+
+
+def test_public_demo_can_read_assessor_data_but_cannot_record_an_outcome():
+    outcomes = OutcomeRepository(outcome_record())
+    app.dependency_overrides[get_public_demo_access] = lambda: PublicDemoAccess(True)
+    app.dependency_overrides[get_assessor_outcome_boundary] = lambda: (
+        AssessorOutcomeBoundary.from_settings(boundary_settings())
+    )
+    app.dependency_overrides[get_active_deployment] = lambda: SimpleNamespace(
+        chain_id=11_155_111,
+        address="0xcontract",
+    )
+    app.dependency_overrides[get_postgres_repositories] = lambda: repositories(
+        outcomes
+    )
+    client = TestClient(app)
+    try:
+        session = client.get("/assessor/session")
+        latest = client.get("/assessor/claims/7/outcome")
+        write = client.post(
+            "/assessor/claims/7/outcome",
+            json={"outcome": "Legitimate", "notes": "Public demo must not write"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert session.status_code == 200
+    assert session.json() == {"assessor_reference": "public-demo-read-only"}
+    assert latest.status_code == 200
+    assert latest.json()["outcome"] == "ConfirmedFraud"
+    assert write.status_code == 401
+    assert outcomes.recorded == []

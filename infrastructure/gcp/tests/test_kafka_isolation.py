@@ -128,6 +128,32 @@ def test_public_intake_configuration_reaches_the_api() -> None:
     )
 
 
+def test_public_demo_switch_defaults_secure_and_reaches_api_and_frontend() -> None:
+    """One explicit switch must keep the browser and server mode aligned."""
+
+    for configured, expected in ((None, "false"), ("true", "true")):
+        model = (
+            _compose_model()
+            if configured is None
+            else _compose_model(PUBLIC_DEMO_READ_ONLY=configured)
+        )
+        services = model["services"]
+        assert isinstance(services, dict)
+        backend = services["backend"]
+        frontend = services["frontend"]
+        assert isinstance(backend, dict)
+        assert isinstance(frontend, dict)
+        backend_environment = backend["environment"]
+        frontend_build = frontend["build"]
+        assert isinstance(backend_environment, dict)
+        assert isinstance(frontend_build, dict)
+        frontend_args = frontend_build["args"]
+        assert isinstance(frontend_args, dict)
+
+        assert backend_environment["PUBLIC_DEMO_READ_ONLY"] == expected
+        assert frontend_args["VITE_PUBLIC_DEMO_READ_ONLY"] == expected
+
+
 def test_public_writers_receive_only_mounted_private_keys() -> None:
     model = _compose_model()
     services = model["services"]

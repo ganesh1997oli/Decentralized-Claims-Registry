@@ -88,6 +88,7 @@ required_values=(
   CLAIM_PERMIT_ISSUERS_JSON
   CLAIM_AUTHORIZATION_KEY
   GASLESS_REQUEST_FINGERPRINT_KEY
+  PUBLIC_DEMO_READ_ONLY
   INDEXER_OPERATIONS_API_KEY_SHA256
   ASSESSOR_OUTCOME_CREDENTIALS_JSON
   POSTGRES_PASSWORD
@@ -123,6 +124,13 @@ fi
 
 if [[ "$(read_env_value ALLOW_RATE_LIMIT_BYPASS)" != "false" ]]; then
   echo "ALLOW_RATE_LIMIT_BYPASS must be false for a public deployment." >&2
+  exit 1
+fi
+
+public_demo_read_only="$(read_env_value PUBLIC_DEMO_READ_ONLY)"
+if [[ "${public_demo_read_only}" != "true" ]] \
+  && [[ "${public_demo_read_only}" != "false" ]]; then
+  echo "PUBLIC_DEMO_READ_ONLY must be exactly true or false." >&2
   exit 1
 fi
 

@@ -3,6 +3,7 @@ import {
   authorizeGaslessClaim,
   createClaimantChallenge,
   createClaimantSession,
+  getAssessorSession,
   getGaslessNetwork,
   getGaslessSubmission,
   getClaimAssessment,
@@ -498,6 +499,23 @@ describe('getIndexerOperations', () => {
     )
   })
 
+  it('omits the operations header for an explicit public demo read', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(operations), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getIndexerOperations('')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/operations/indexer',
+      { headers: {}, signal: undefined },
+    )
+  })
+
   it('rejects incomplete operations telemetry', async () => {
     vi.stubGlobal(
       'fetch',
@@ -511,6 +529,29 @@ describe('getIndexerOperations', () => {
 
     await expect(getIndexerOperations('operator-secret')).rejects.toThrow(
       'unexpected operations response',
+    )
+  })
+})
+
+describe('getAssessorSession', () => {
+  it('omits the assessor header for an explicit public demo read', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ assessor_reference: 'public-demo-read-only' }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getAssessorSession('')).resolves.toEqual({
+      assessor_reference: 'public-demo-read-only',
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/assessor/session',
+      { headers: {}, signal: undefined },
     )
   })
 })

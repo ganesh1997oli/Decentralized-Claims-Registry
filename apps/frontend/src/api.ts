@@ -264,6 +264,17 @@ const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
 ).replace(/\/$/, '')
 
+function optionalApiKeyHeader(
+  name: 'X-Assessor-API-Key' | 'X-Operations-API-Key',
+  apiKey: string,
+): Record<string, string> {
+  // Demo reads deliberately omit the credential header. Supplying an empty
+  // header would blur the distinction between anonymous demo access and a bad
+  // credential, while supplied non-empty keys must still be validated.
+  const candidate = apiKey.trim()
+  return candidate ? { [name]: candidate } : {}
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   // JSON values must be narrowed to a non-null object before property access;
   // arrays are rejected later by shape-specific validators where relevant.
@@ -926,7 +937,7 @@ export async function getAssessorSession(
   let response: Response
   try {
     response = await fetch(`${API_BASE_URL}/assessor/session`, {
-      headers: { 'X-Assessor-API-Key': assessorApiKey },
+      headers: optionalApiKeyHeader('X-Assessor-API-Key', assessorApiKey),
       signal,
     })
   } catch (error) {
@@ -950,7 +961,7 @@ export async function getAssessorOutcome(
   let response: Response
   try {
     response = await fetch(`${API_BASE_URL}/assessor/claims/${claimId}/outcome`, {
-      headers: { 'X-Assessor-API-Key': assessorApiKey },
+      headers: optionalApiKeyHeader('X-Assessor-API-Key', assessorApiKey),
       signal,
     })
   } catch (error) {
@@ -1047,7 +1058,7 @@ export async function getIndexerOperations(
   let response: Response
   try {
     response = await fetch(`${API_BASE_URL}/operations/indexer`, {
-      headers: { 'X-Operations-API-Key': operationsApiKey },
+      headers: optionalApiKeyHeader('X-Operations-API-Key', operationsApiKey),
       signal,
     })
   } catch (error) {
@@ -1110,7 +1121,10 @@ export async function searchIndexerEvents(
     response = await fetch(
       `${API_BASE_URL}/operations/indexer/events?${parameters}`,
       {
-        headers: { 'X-Operations-API-Key': operationsApiKey },
+        headers: optionalApiKeyHeader(
+          'X-Operations-API-Key',
+          operationsApiKey,
+        ),
         signal,
       },
     )

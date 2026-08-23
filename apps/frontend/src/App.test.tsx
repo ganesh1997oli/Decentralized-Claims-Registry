@@ -5,6 +5,8 @@ import App, {
   IndexerOperationsView,
   ReceiptCard,
 } from './App.tsx'
+import { AssessorOutcomeDashboard } from './components/AssessorOutcomeDashboard.tsx'
+import { IndexerOperationsDashboard } from './components/IndexerOperationsDashboard.tsx'
 import type {
   ClaimReceipt,
   ClaimSummary,
@@ -242,5 +244,27 @@ describe('Indexer operations dashboard', () => {
     expect(page).toContain('Search events')
     expect(page).toContain('Claim assessed')
     expect(page).toContain('11,424,283')
+  })
+})
+
+describe('Public read-only demonstration', () => {
+  it('opens the assessor surface without rendering a credential form', () => {
+    const page = renderToStaticMarkup(
+      <AssessorOutcomeDashboard publicDemoReadOnly />,
+    )
+
+    expect(page).toContain('Public read-only demo')
+    expect(page).toContain('Production requires an assessor API key')
+    expect(page).not.toContain('Assessor API key')
+  })
+
+  it('opens operations without rendering a credential form', () => {
+    const page = renderToStaticMarkup(
+      <IndexerOperationsDashboard publicDemoReadOnly />,
+    )
+
+    expect(page).toContain('Public read-only demo')
+    expect(page).toContain('Production requires an operations API key')
+    expect(page).not.toContain('Operations API key')
   })
 })

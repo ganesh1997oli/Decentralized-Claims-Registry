@@ -253,6 +253,7 @@ services:
       GASLESS_REQUEST_FINGERPRINT_KEY: ${GASLESS_REQUEST_FINGERPRINT_KEY:?Set GASLESS_REQUEST_FINGERPRINT_KEY in .env.gcp}
       GASLESS_FORWARD_GAS: ${GASLESS_FORWARD_GAS:-250000}
       GASLESS_SIGNATURE_TTL_SECONDS: ${GASLESS_SIGNATURE_TTL_SECONDS:-600}
+      PUBLIC_DEMO_READ_ONLY: ${PUBLIC_DEMO_READ_ONLY:-false}
       INDEXER_OPERATIONS_API_KEY_SHA256: ${INDEXER_OPERATIONS_API_KEY_SHA256:?Set INDEXER_OPERATIONS_API_KEY_SHA256 in .env.gcp}
       INDEXER_STALE_AFTER_SECONDS: ${INDEXER_STALE_AFTER_SECONDS:-120}
       # Human reviewers use a separate digest-only identity. This value grants no
@@ -393,6 +394,7 @@ services:
       args:
         VITE_API_BASE_URL: /api
         VITE_IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
+        VITE_PUBLIC_DEMO_READ_ONLY: ${PUBLIC_DEMO_READ_ONLY:-false}
     restart: unless-stopped
     depends_on:
       backend:

@@ -13,6 +13,7 @@ import {
   type HumanFraudOutcome,
 } from '../api.ts'
 import { ipfsUrl, shorten } from '../claim-display.ts'
+import { PUBLIC_DEMO_READ_ONLY } from '../public-demo-access.ts'
 
 const ASSESSOR_KEY_SESSION_STORAGE = 'claims-registry:assessor-outcome-key:v1'
 
@@ -87,9 +88,19 @@ function formatDate(value: string): string {
  * this module never turns the probability into a conclusion, updates Sepolia, or
  * starts model training.
  */
-export function AssessorOutcomeDashboard() {
-  const [apiKey, setApiKey] = useState(() => readSessionKey())
-  const [apiKeyDraft, setApiKeyDraft] = useState(() => readSessionKey())
+export function AssessorOutcomeDashboard({
+  publicDemoReadOnly = PUBLIC_DEMO_READ_ONLY,
+}: {
+  publicDemoReadOnly?: boolean
+} = {}) {
+  // Public demo mode never restores a previously cached authority. Even if this
+  // tab once held a production key, the demonstration surface remains read-only.
+  const [apiKey, setApiKey] = useState(() =>
+    publicDemoReadOnly ? '' : readSessionKey(),
+  )
+  const [apiKeyDraft, setApiKeyDraft] = useState(() =>
+    publicDemoReadOnly ? '' : readSessionKey(),
+  )
   const [session, setSession] = useState<AssessorSession | null>(null)
   const [claims, setClaims] = useState<ClaimSummary[]>([])
   const [selectedClaim, setSelectedClaim] = useState<ClaimSummary | null>(null)
@@ -100,12 +111,13 @@ export function AssessorOutcomeDashboard() {
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const hasReadAccess = publicDemoReadOnly || Boolean(apiKey)
 
   useEffect(() => {
     // A remembered tab credential must still be verified by FastAPI after reload.
     // Failure locks the console; no outcome or assessor identity is trusted from
     // browser storage alone.
-    if (!apiKey || session) return
+    if (!hasReadAccess || session) return
     const controller = new AbortController()
     setIsLoading(true)
     getAssessorSession(apiKey, controller.signal)
@@ -117,8 +129,10 @@ export function AssessorOutcomeDashboard() {
         if (loadingError instanceof DOMException && loadingError.name === 'AbortError') {
           return
         }
-        clearSessionKey()
-        setApiKey('')
+        if (!publicDemoReadOnly) {
+          clearSessionKey()
+          setApiKey('')
+        }
         setError(
           loadingError instanceof Error
             ? loadingError.message
@@ -127,7 +141,7 @@ export function AssessorOutcomeDashboard() {
       })
       .finally(() => setIsLoading(false))
     return () => controller.abort()
-  }, [apiKey, session])
+  }, [apiKey, hasReadAccess, publicDemoReadOnly, session])
 
   useEffect(() => {
     // The queue uses the public confirmed index, while all human outcomes remain
@@ -157,7 +171,7 @@ export function AssessorOutcomeDashboard() {
   }, [session])
 
   useEffect(() => {
-    if (!selectedClaim || !apiKey || !session) return
+    if (!selectedClaim || !hasReadAccess || !session) return
     const controller = new AbortController()
     setIsLoading(true)
     setAssessment(null)
@@ -189,7 +203,7 @@ export function AssessorOutcomeDashboard() {
       })
       .finally(() => setIsLoading(false))
     return () => controller.abort()
-  }, [apiKey, selectedClaim, session])
+  }, [apiKey, hasReadAccess, selectedClaim, session])
 
   async function unlock(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -256,6 +270,26 @@ export function AssessorOutcomeDashboard() {
   }
 
   if (!session) {
+    if (publicDemoReadOnly) {
+      return (
+        <section className="mx-auto max-w-xl rounded-3xl border border-teal/20 bg-white p-6 shadow-[0_24px_80px_-48px_rgba(20,40,51,0.38)] sm:p-8">
+          <p className="text-xs font-bold tracking-[0.16em] text-teal uppercase">
+            Public read-only demo
+          </p>
+          <h1 className="mt-2 text-3xl font-black tracking-tight text-ink">
+            Assessor outcome console
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-slate">
+            This dissertation demonstration exposes outcomes for viewing only.
+            Production requires an assessor API key, and recording or correcting
+            an outcome always remains protected.
+          </p>
+          <p className="mt-5 text-sm font-semibold text-teal" role="status">
+            {isLoading ? 'Loading public review data…' : error ?? 'Preparing public review data…'}
+          </p>
+        </section>
+      )
+    }
     return (
       <section className="mx-auto max-w-xl rounded-3xl border border-ink/8 bg-white p-6 shadow-[0_24px_80px_-48px_rgba(20,40,51,0.38)] sm:p-8">
         <p className="text-xs font-bold tracking-[0.16em] text-teal uppercase">
@@ -295,23 +329,34 @@ export function AssessorOutcomeDashboard() {
 
   return (
     <div className="space-y-6">
+      {publicDemoReadOnly ? (
+        <section className="rounded-2xl border border-teal/25 bg-mint px-5 py-4 text-sm leading-6 text-ink">
+          <strong className="font-black text-teal">Public read-only demo.</strong>{' '}
+          Production requires an assessor API key. You can inspect claims and
+          existing human outcomes here, but you cannot record or correct one.
+        </section>
+      ) : null}
       <section className="flex flex-col gap-3 rounded-3xl bg-ink px-6 py-5 text-white sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-xs font-bold tracking-[0.16em] text-coral uppercase">
             Human assessor
           </p>
-          <h1 className="mt-1 text-2xl font-black">{session.assessor_reference}</h1>
+          <h1 className="mt-1 text-2xl font-black">
+            {publicDemoReadOnly ? 'Public demo viewer' : session.assessor_reference}
+          </h1>
           <p className="mt-1 text-sm text-white/60">
             Outcomes stay in PostgreSQL and do not change Sepolia status.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={lock}
-          className="self-start rounded-full border border-white/15 px-4 py-2 text-xs font-bold text-white/75 hover:bg-white/10 hover:text-white"
-        >
-          Lock console
-        </button>
+        {!publicDemoReadOnly ? (
+          <button
+            type="button"
+            onClick={lock}
+            className="self-start rounded-full border border-white/15 px-4 py-2 text-xs font-bold text-white/75 hover:bg-white/10 hover:text-white"
+          >
+            Lock console
+          </button>
+        ) : null}
       </section>
 
       {error ? (
@@ -416,6 +461,14 @@ export function AssessorOutcomeDashboard() {
                     </div>
                   ) : null}
 
+                  {publicDemoReadOnly ? (
+                    <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm leading-6 text-amber-950">
+                      <strong>Recording is disabled in the public demo.</strong>{' '}
+                      In production, an authorised assessor signs in with the
+                      separate assessor API key before adding an append-only
+                      outcome revision.
+                    </div>
+                  ) : (
                   <form onSubmit={submitOutcome} className="mt-6 border-t border-ink/8 pt-6">
                     <fieldset>
                       <legend className="font-bold text-ink">
@@ -466,6 +519,7 @@ export function AssessorOutcomeDashboard() {
                       </button>
                     </div>
                   </form>
+                  )}
                 </>
               ) : null}
             </div>

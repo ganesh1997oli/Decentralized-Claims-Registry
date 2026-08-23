@@ -354,6 +354,43 @@ def test_worker_recovers_when_chain_write_finished_before_database_update():
     assert repository.record.processing_status == "completed"
 
 
+def test_worker_quarantines_a_conflicting_existing_chain_assessment():
+    """A historical assessment conflict must not restart-loop one partition."""
+
+    payload = claim_payload()
+    event = claim_event(payload)
+    repository = FakeRepository()
+    dead_letter = FakeDeadLetter()
+    handler = QuarantiningClaimHandler(
+        ClaimScoringHandler(
+            ipfs=FakeIPFS(payload),
+            scorer=FakeScorer(),
+            duplicate_detector=FakeDuplicateDetector(),
+            feature_processor=FakeFeatureProcessor(),
+            repository=repository,
+            registry=FakeRegistry(status=1, fraud_score=1200),
+            authorization=AUTHORIZATION,
+        ),
+        dead_letter=dead_letter,
+    )
+    message = FakeKafkaMessage(event.to_json_bytes())
+    fake_kafka = QueueKafkaConsumer([message])
+    consumer = KafkaClaimEventConsumer(KafkaSettings(), consumer=fake_kafka)
+
+    assert consumer.process_next(handler)
+
+    assert repository.failed == (
+        event.event_id,
+        f"Claim {event.claim_id} already has a different assessment",
+    )
+    assert len(dead_letter.entries) == 1
+    rejected_event, error = dead_letter.entries[0]
+    assert rejected_event == event
+    assert isinstance(error, PermanentClaimProcessingError)
+    assert error.reason_code == "assessment_conflict"
+    assert fake_kafka.commits == [(message, False)]
+
+
 def test_worker_rejects_changed_ipfs_bytes_before_scoring():
     payload = claim_payload()
     scorer = FakeScorer()
