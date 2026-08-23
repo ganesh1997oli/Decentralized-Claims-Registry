@@ -38,7 +38,7 @@ if [[ "${EUID}" -ne 0 ]]; then
   fail "run this script through sudo on the deployment VM"
 fi
 
-for command_name in flock git runuser stat; do
+for command_name in chmod dirname flock git runuser stat; do
   command -v "${command_name}" >/dev/null 2>&1 \
     || fail "required host command is unavailable: ${command_name}"
 done
@@ -61,13 +61,58 @@ fi
 repository_owner="$(stat -c '%U' "${repository_root}/.git")"
 [[ -n "${repository_owner}" ]] || fail "could not determine repository owner"
 
-git_in_repository() {
+git_in_repository() (
+  # The root process keeps umask 077 for private patches and state. Git-created
+  # source must instead remain readable by the non-root UID used in the images.
+  umask 022
+
   if [[ "${repository_owner}" == "root" ]]; then
     git -c safe.directory="${repository_root}" -C "${repository_root}" "$@"
   else
     runuser -u "${repository_owner}" -- \
       git -C "${repository_root}" "$@"
   fi
+)
+
+normalize_tracked_permissions() {
+  local absolute_path
+  local directory_path
+  local index_entry
+  local index_metadata
+  local index_mode
+  local tracked_path
+
+  # A previous release may already have produced 0600 files or 0700 source
+  # directories. Restore every indexed regular file to its Git executable bit
+  # and make only its tracked parent directories traversable. Ignored secrets,
+  # Terraform state, model artifacts, and .git are never enumerated or changed.
+  while IFS= read -r -d '' index_entry; do
+    index_metadata="${index_entry%%$'\t'*}"
+    tracked_path="${index_entry#*$'\t'}"
+    index_mode="${index_metadata%% *}"
+    absolute_path="${repository_root}/${tracked_path}"
+
+    directory_path="$(dirname -- "${absolute_path}")"
+    while [[ "${directory_path}" != "${repository_root}" ]]; do
+      chmod 0755 -- "${directory_path}"
+      directory_path="$(dirname -- "${directory_path}")"
+    done
+
+    case "${index_mode}" in
+      100644)
+        chmod 0644 -- "${absolute_path}"
+        ;;
+      100755)
+        chmod 0755 -- "${absolute_path}"
+        ;;
+      120000)
+        # chmod would follow a symlink, so leave Git-managed links untouched.
+        ;;
+      *)
+        fail "unsupported tracked Git mode ${index_mode} for ${tracked_path}"
+        ;;
+    esac
+  done < <(git_in_repository ls-files --stage -z)
 }
 
 current_sha="$(git_in_repository rev-parse HEAD)"
@@ -126,6 +171,7 @@ printf 'Checking out immutable release %s...\n' "${release_sha}"
 # --force is intentional and bounded to tracked repository files. Any dirty
 # tracked state was backed up above; ignored secrets and model files are kept.
 git_in_repository checkout --detach --force "${release_sha}"
+normalize_tracked_permissions
 
 if deploy_and_verify; then
   record_success "${release_sha}"
@@ -143,6 +189,7 @@ printf 'Release %s failed; attempting code rollback to %s...\n' \
 # backward-compatible with the previous release.
 if [[ "${current_sha}" != "${release_sha}" ]]; then
   git_in_repository checkout --detach --force "${current_sha}"
+  normalize_tracked_permissions
   if deploy_and_verify; then
     printf 'Rollback to %s succeeded. The requested release remains failed.\n' \
       "${current_sha}" >&2
