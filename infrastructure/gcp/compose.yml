@@ -330,6 +330,19 @@ services:
       - claims-listener-state:/var/lib/claims-listener
     ports:
       - "127.0.0.1:9101:9101"
+    # The process can be running before its metrics server is ready to accept a
+    # complete request. CD waits for this local endpoint instead of racing the
+    # first post-deployment verification request.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9101/metrics', timeout=5)"
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
     stop_grace_period: 30s
 
   scoring-worker:
@@ -366,6 +379,19 @@ services:
       - "${SEPOLIA_ASSESSOR_PRIVATE_KEY_HOST_FILE:?Set SEPOLIA_ASSESSOR_PRIVATE_KEY_HOST_FILE in .env.gcp}:/run/secrets/assessor.key:ro"
     ports:
       - "127.0.0.1:9102:9102"
+    # Model and integration initialization can outlive container creation. A
+    # local-only health probe gives Compose a real readiness boundary while the
+    # public firewall continues to expose no metrics port.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9102/metrics', timeout=5)"
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
     stop_grace_period: 240s
 
   # kafka-exporter translates broker offsets and consumer-group lag into a small

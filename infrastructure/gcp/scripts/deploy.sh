@@ -191,7 +191,11 @@ echo "Building the application and frontend images..."
 "${compose[@]}" build
 
 echo "Starting Kafka, PostgreSQL and the application processes..."
-"${compose[@]}" up --detach --remove-orphans
+# Readiness is part of deployment success. In particular, the listener and
+# scoring worker can be running while their local metrics servers are still
+# starting. Waiting here prevents the verifier from turning that normal startup
+# interval into a failed release and unnecessary rollback.
+"${compose[@]}" up --detach --remove-orphans --wait --wait-timeout 240
 
 echo
 echo "Deployment started. Verify it with:"
