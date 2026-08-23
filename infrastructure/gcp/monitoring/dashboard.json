@@ -95,8 +95,6 @@
             "thresholds": [
               {
                 "value": 0.5,
-                "color": "YELLOW",
-                "direction": "ABOVE",
                 "label": "500 ms research target"
               }
             ],
@@ -144,7 +142,7 @@
                 "timeSeriesQuery": {
                   "prometheusQuery": "increase(claims_listener_poll_errors_total[10m])"
                 },
-                "plotType": "BAR",
+                "plotType": "STACKED_BAR",
                 "targetAxis": "Y1"
               }
             ],

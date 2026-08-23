@@ -294,6 +294,31 @@ def test_gcp_verification_and_dashboard_do_not_select_legacy_identity() -> None:
     assert legacy_group not in DASHBOARD.read_text(encoding="utf-8")
 
 
+def test_gcp_dashboard_uses_supported_xy_chart_schema() -> None:
+    """Reject XY-chart values that the Cloud Monitoring API cannot parse."""
+
+    dashboard = json.loads(DASHBOARD.read_text(encoding="utf-8"))
+    supported_plot_types = {
+        "PLOT_TYPE_UNSPECIFIED",
+        "LINE",
+        "STACKED_AREA",
+        "STACKED_BAR",
+        "HEATMAP",
+    }
+
+    for tile in dashboard["mosaicLayout"]["tiles"]:
+        xy_chart = tile.get("widget", {}).get("xyChart", {})
+        data_sets = xy_chart.get("dataSets", [])
+        for data_set in data_sets:
+            assert data_set["plotType"] in supported_plot_types
+
+        # Cloud Monitoring shares the Threshold message between several widget
+        # types, but XY charts reject the color and direction fields even though
+        # those fields are valid for other threshold consumers.
+        for threshold in xy_chart.get("thresholds", []):
+            assert {"color", "direction"}.isdisjoint(threshold)
+
+
 def test_deployment_waits_for_consumer_health_before_verification() -> None:
     """A release must not verify workers while they are still starting."""
 
