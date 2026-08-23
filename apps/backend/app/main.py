@@ -77,7 +77,7 @@ from apps.backend.app.models import (
 )
 from apps.backend.app.policy_eligibility import PolicyEligibilityConfigurationError
 from apps.backend.app.public_demo_access import (
-    PUBLIC_DEMO_ASSESSOR_REFERENCE,
+    PUBLIC_PROTOTYPE_ASSESSOR_REFERENCE,
     PublicDemoAccess,
     PublicDemoConfigurationError,
 )
@@ -188,10 +188,20 @@ AssessorOutcomeBoundaryDependency = Annotated[
 
 
 def get_assessor_principal(
+    access: PublicDemoAccessDependency,
     boundary: AssessorOutcomeBoundaryDependency,
     api_key: Annotated[str | None, Security(assessor_outcome_api_key_header)],
 ) -> AssessorPrincipal:
-    """Authenticate a human reviewer before reading or writing private outcomes."""
+    """Authenticate a reviewer or select the explicit prototype identity.
+
+    Production and the read-only public demo always continue through the
+    digest-backed boundary. Only the dedicated prototype switch can authorize a
+    missing key, and its fixed reference prevents anonymous activity from being
+    mistaken for an attributable human review.
+    """
+
+    if access.allows_anonymous_assessor_write(api_key):
+        return AssessorPrincipal(PUBLIC_PROTOTYPE_ASSESSOR_REFERENCE)
 
     try:
         return boundary.authenticate(api_key)
@@ -216,8 +226,9 @@ def get_assessor_read_principal(
 ) -> AssessorPrincipal:
     """Authorize a private reader or the explicit anonymous demo identity."""
 
-    if access.allows_anonymous_read(api_key):
-        return AssessorPrincipal(PUBLIC_DEMO_ASSESSOR_REFERENCE)
+    anonymous_reference = access.anonymous_assessor_reference(api_key)
+    if anonymous_reference is not None:
+        return AssessorPrincipal(anonymous_reference)
     try:
         return boundary.authenticate(api_key)
     except AssessorOutcomeAuthenticationError as exc:

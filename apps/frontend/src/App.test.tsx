@@ -267,4 +267,18 @@ describe('Public read-only demonstration', () => {
     expect(page).toContain('Production requires an operations API key')
     expect(page).not.toContain('Operations API key')
   })
+
+  it('labels the writable assessor prototype without requesting a key', () => {
+    const page = renderToStaticMarkup(
+      <AssessorOutcomeDashboard
+        publicDemoReadOnly
+        publicPrototypeAssessor
+      />,
+    )
+
+    expect(page).toContain('Public research prototype')
+    expect(page).toContain('Production requires an assessor API key')
+    expect(page).not.toContain('Assessor API key')
+    expect(page).not.toContain('Recording is disabled')
+  })
 })

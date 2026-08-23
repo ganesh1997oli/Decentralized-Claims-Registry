@@ -89,6 +89,7 @@ required_values=(
   CLAIM_AUTHORIZATION_KEY
   GASLESS_REQUEST_FINGERPRINT_KEY
   PUBLIC_DEMO_READ_ONLY
+  PUBLIC_PROTOTYPE_ASSESSOR
   INDEXER_OPERATIONS_API_KEY_SHA256
   ASSESSOR_OUTCOME_CREDENTIALS_JSON
   POSTGRES_PASSWORD
@@ -131,6 +132,13 @@ public_demo_read_only="$(read_env_value PUBLIC_DEMO_READ_ONLY)"
 if [[ "${public_demo_read_only}" != "true" ]] \
   && [[ "${public_demo_read_only}" != "false" ]]; then
   echo "PUBLIC_DEMO_READ_ONLY must be exactly true or false." >&2
+  exit 1
+fi
+
+public_prototype_assessor="$(read_env_value PUBLIC_PROTOTYPE_ASSESSOR)"
+if [[ "${public_prototype_assessor}" != "true" ]] \
+  && [[ "${public_prototype_assessor}" != "false" ]]; then
+  echo "PUBLIC_PROTOTYPE_ASSESSOR must be exactly true or false." >&2
   exit 1
 fi
 

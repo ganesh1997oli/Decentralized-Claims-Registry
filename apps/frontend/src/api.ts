@@ -990,7 +990,11 @@ export async function recordAssessorOutcome(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Assessor-API-Key': assessorApiKey,
+        // Omitting the header is materially different from sending an empty
+        // credential: FastAPI may authorize the former only when the explicit,
+        // server-side prototype switch is enabled. Normal deployments still
+        // reject the same request with 401.
+        ...optionalApiKeyHeader('X-Assessor-API-Key', assessorApiKey),
       },
       body: JSON.stringify(input),
       signal,

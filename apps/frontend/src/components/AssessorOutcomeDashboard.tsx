@@ -13,7 +13,10 @@ import {
   type HumanFraudOutcome,
 } from '../api.ts'
 import { ipfsUrl, shorten } from '../claim-display.ts'
-import { PUBLIC_DEMO_READ_ONLY } from '../public-demo-access.ts'
+import {
+  PUBLIC_DEMO_READ_ONLY,
+  PUBLIC_PROTOTYPE_ASSESSOR,
+} from '../public-demo-access.ts'
 
 const ASSESSOR_KEY_SESSION_STORAGE = 'claims-registry:assessor-outcome-key:v1'
 
@@ -90,16 +93,22 @@ function formatDate(value: string): string {
  */
 export function AssessorOutcomeDashboard({
   publicDemoReadOnly = PUBLIC_DEMO_READ_ONLY,
+  publicPrototypeAssessor = PUBLIC_PROTOTYPE_ASSESSOR,
 }: {
   publicDemoReadOnly?: boolean
+  publicPrototypeAssessor?: boolean
 } = {}) {
-  // Public demo mode never restores a previously cached authority. Even if this
-  // tab once held a production key, the demonstration surface remains read-only.
+  // Neither anonymous presentation mode restores a cached production key. This
+  // prevents a browser tab used for a demonstration from accidentally attaching
+  // an identifiable assessor credential to shared prototype activity.
+  const anonymousAssessorAccess =
+    publicDemoReadOnly || publicPrototypeAssessor
+  const readOnlyDemo = publicDemoReadOnly && !publicPrototypeAssessor
   const [apiKey, setApiKey] = useState(() =>
-    publicDemoReadOnly ? '' : readSessionKey(),
+    anonymousAssessorAccess ? '' : readSessionKey(),
   )
   const [apiKeyDraft, setApiKeyDraft] = useState(() =>
-    publicDemoReadOnly ? '' : readSessionKey(),
+    anonymousAssessorAccess ? '' : readSessionKey(),
   )
   const [session, setSession] = useState<AssessorSession | null>(null)
   const [claims, setClaims] = useState<ClaimSummary[]>([])
@@ -111,7 +120,7 @@ export function AssessorOutcomeDashboard({
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
-  const hasReadAccess = publicDemoReadOnly || Boolean(apiKey)
+  const hasReadAccess = anonymousAssessorAccess || Boolean(apiKey)
 
   useEffect(() => {
     // A remembered tab credential must still be verified by FastAPI after reload.
@@ -129,7 +138,7 @@ export function AssessorOutcomeDashboard({
         if (loadingError instanceof DOMException && loadingError.name === 'AbortError') {
           return
         }
-        if (!publicDemoReadOnly) {
+        if (!anonymousAssessorAccess) {
           clearSessionKey()
           setApiKey('')
         }
@@ -141,7 +150,7 @@ export function AssessorOutcomeDashboard({
       })
       .finally(() => setIsLoading(false))
     return () => controller.abort()
-  }, [apiKey, hasReadAccess, publicDemoReadOnly, session])
+  }, [anonymousAssessorAccess, apiKey, hasReadAccess, session])
 
   useEffect(() => {
     // The queue uses the public confirmed index, while all human outcomes remain
@@ -243,7 +252,12 @@ export function AssessorOutcomeDashboard({
 
   async function submitOutcome(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selectedClaim || !assessment || !outcomeDraft || !apiKey) return
+    if (
+      !selectedClaim ||
+      !assessment ||
+      !outcomeDraft ||
+      (!publicPrototypeAssessor && !apiKey)
+    ) return
     setIsSaving(true)
     setError(null)
     try {
@@ -270,19 +284,31 @@ export function AssessorOutcomeDashboard({
   }
 
   if (!session) {
-    if (publicDemoReadOnly) {
+    if (anonymousAssessorAccess) {
       return (
         <section className="mx-auto max-w-xl rounded-3xl border border-teal/20 bg-white p-6 shadow-[0_24px_80px_-48px_rgba(20,40,51,0.38)] sm:p-8">
           <p className="text-xs font-bold tracking-[0.16em] text-teal uppercase">
-            Public read-only demo
+            {publicPrototypeAssessor
+              ? 'Public research prototype'
+              : 'Public read-only demo'}
           </p>
           <h1 className="mt-2 text-3xl font-black tracking-tight text-ink">
             Assessor outcome console
           </h1>
           <p className="mt-3 text-sm leading-6 text-slate">
-            This dissertation demonstration exposes outcomes for viewing only.
-            Production requires an assessor API key, and recording or correcting
-            an outcome always remains protected.
+            {publicPrototypeAssessor ? (
+              <>
+                This supervised dissertation prototype accepts fictional human
+                outcomes without an API key. Production requires an assessor API
+                key. Do not enter real personal or confidential information.
+              </>
+            ) : (
+              <>
+                This dissertation demonstration exposes outcomes for viewing only.
+                Production requires an assessor API key, and recording or correcting
+                an outcome always remains protected.
+              </>
+            )}
           </p>
           <p className="mt-5 text-sm font-semibold text-teal" role="status">
             {isLoading ? 'Loading public review data…' : error ?? 'Preparing public review data…'}
@@ -329,7 +355,15 @@ export function AssessorOutcomeDashboard({
 
   return (
     <div className="space-y-6">
-      {publicDemoReadOnly ? (
+      {publicPrototypeAssessor ? (
+        <section className="rounded-2xl border border-amber-300 bg-amber-50 px-5 py-4 text-sm leading-6 text-amber-950">
+          <strong className="font-black">Public research prototype.</strong>{' '}
+          Visitors may record fictional off-chain outcomes without an API key.
+          Entries use one shared prototype identity and are not attributable to
+          an individual reviewer. Production requires an assessor API key. Do not
+          enter real personal or confidential information.
+        </section>
+      ) : readOnlyDemo ? (
         <section className="rounded-2xl border border-teal/25 bg-mint px-5 py-4 text-sm leading-6 text-ink">
           <strong className="font-black text-teal">Public read-only demo.</strong>{' '}
           Production requires an assessor API key. You can inspect claims and
@@ -342,13 +376,17 @@ export function AssessorOutcomeDashboard({
             Human assessor
           </p>
           <h1 className="mt-1 text-2xl font-black">
-            {publicDemoReadOnly ? 'Public demo viewer' : session.assessor_reference}
+            {publicPrototypeAssessor
+              ? 'Prototype assessor console'
+              : readOnlyDemo
+                ? 'Public demo viewer'
+                : session.assessor_reference}
           </h1>
           <p className="mt-1 text-sm text-white/60">
             Outcomes stay in PostgreSQL and do not change Sepolia status.
           </p>
         </div>
-        {!publicDemoReadOnly ? (
+        {!anonymousAssessorAccess ? (
           <button
             type="button"
             onClick={lock}
@@ -461,7 +499,7 @@ export function AssessorOutcomeDashboard({
                     </div>
                   ) : null}
 
-                  {publicDemoReadOnly ? (
+                  {readOnlyDemo ? (
                     <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm leading-6 text-amber-950">
                       <strong>Recording is disabled in the public demo.</strong>{' '}
                       In production, an authorised assessor signs in with the

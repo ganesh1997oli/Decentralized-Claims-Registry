@@ -254,6 +254,9 @@ services:
       GASLESS_FORWARD_GAS: ${GASLESS_FORWARD_GAS:-250000}
       GASLESS_SIGNATURE_TTL_SECONDS: ${GASLESS_SIGNATURE_TTL_SECONDS:-600}
       PUBLIC_DEMO_READ_ONLY: ${PUBLIC_DEMO_READ_ONLY:-false}
+      # This explicit prototype-only switch permits anonymous off-chain assessor
+      # revisions. It grants no wallet or chain authority and defaults false.
+      PUBLIC_PROTOTYPE_ASSESSOR: ${PUBLIC_PROTOTYPE_ASSESSOR:-false}
       INDEXER_OPERATIONS_API_KEY_SHA256: ${INDEXER_OPERATIONS_API_KEY_SHA256:?Set INDEXER_OPERATIONS_API_KEY_SHA256 in .env.gcp}
       INDEXER_STALE_AFTER_SECONDS: ${INDEXER_STALE_AFTER_SECONDS:-120}
       # Human reviewers use a separate digest-only identity. This value grants no
@@ -421,6 +424,9 @@ services:
         VITE_API_BASE_URL: /api
         VITE_IPFS_GATEWAY: ${IPFS_GATEWAY:-https://gateway.pinata.cloud/ipfs}
         VITE_PUBLIC_DEMO_READ_ONLY: ${PUBLIC_DEMO_READ_ONLY:-false}
+        # The browser flag controls presentation only. FastAPI independently
+        # enforces the matching server flag for every anonymous write.
+        VITE_PUBLIC_PROTOTYPE_ASSESSOR: ${PUBLIC_PROTOTYPE_ASSESSOR:-false}
     restart: unless-stopped
     depends_on:
       backend:

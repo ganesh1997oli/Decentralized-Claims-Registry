@@ -250,6 +250,25 @@ as a public read-only demo and removes the assessor recording form. The assessor
 then require their separate keys again. The flag is not a secret and must never
 be used as an authorization credential.
 
+If a supervisor needs to interact with the complete assessor form, enable the
+separate, explicitly writable prototype switch as well:
+
+```dotenv
+PUBLIC_PROTOTYPE_ASSESSOR="true"
+```
+
+This is intentionally narrower than removing authentication generally. It
+permits only credential-free assessor reads and append-only off-chain outcome
+revisions. Each anonymous revision is labelled `public-prototype-assessor`; it
+does not change Sepolia status, grant a signer key, approve or reject a claim, or
+retrain the model. The page displays a prominent research-prototype warning and
+asks visitors not to enter real or confidential information.
+
+Because anyone who can reach the page can grow the assessor audit table, use
+this setting only for a supervised presentation. Set it back to `false` and run
+another reviewed deployment immediately afterwards. Production must keep it
+`false` and use separate assessor API keys.
+
 Keep the non-secret Kafka identity scoped to the selected contract deployment.
 The checked-in gasless deployment uses:
 
