@@ -268,6 +268,30 @@ def test_gcp_verification_and_dashboard_do_not_select_legacy_identity() -> None:
     assert legacy_group not in DASHBOARD.read_text(encoding="utf-8")
 
 
+def test_deployment_waits_for_consumer_health_before_verification() -> None:
+    """A release must not verify workers while they are still starting."""
+
+    deploy_script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "--wait" in deploy_script
+    assert "--wait-timeout 240" in deploy_script
+
+    model = _compose_model()
+    services = model["services"]
+    assert isinstance(services, dict)
+
+    for service_name, metrics_port in (
+        ("listener", 9101),
+        ("scoring-worker", 9102),
+    ):
+        service = services[service_name]
+        assert isinstance(service, dict)
+        healthcheck = service.get("healthcheck")
+        assert isinstance(healthcheck, dict)
+        command = healthcheck.get("test")
+        assert isinstance(command, list)
+        assert f"http://127.0.0.1:{metrics_port}/metrics" in " ".join(command)
+
+
 def _run_deploy_validation(
     env_file: Path, *, topic: str, consumer_group: str
 ) -> subprocess.CompletedProcess[str]:
