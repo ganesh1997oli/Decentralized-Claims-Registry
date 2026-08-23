@@ -7,11 +7,22 @@ provider "google" {
 }
 
 locals {
-  required_services = toset([
+  base_required_services = toset([
     "compute.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
+    "oslogin.googleapis.com",
   ])
+  github_cd_required_services = toset([
+    "cloudresourcemanager.googleapis.com",
+    "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
+    "sts.googleapis.com",
+  ])
+  required_services = setunion(
+    local.base_required_services,
+    var.enable_github_cd ? local.github_cd_required_services : toset([]),
+  )
   public_host = var.public_host != "" ? var.public_host : "${replace(google_compute_address.public.address, ".", "-")}.sslip.io"
 }
 

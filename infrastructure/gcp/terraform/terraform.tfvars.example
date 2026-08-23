@@ -11,3 +11,13 @@ machine_type = "e2-standard-2"
 # Leave empty to use the generated <reserved-ip>.sslip.io hostname. To use your
 # own domain, point its A record at the external_ip output and set it here.
 public_host = ""
+
+# CD is deliberately opt-in. Review and merge the deployment workflow first,
+# configure the protected GitHub Environment, then change this to true and apply
+# Terraform. The numeric IDs are immutable public repository metadata.
+enable_github_cd           = false
+github_repository          = "ganesh1997oli/Decentralized-Claims-Registry"
+github_repository_id       = "1265286953"
+github_repository_owner_id = "42571338"
+github_deploy_branch       = "main"
+github_deploy_environment  = "gcp-research"

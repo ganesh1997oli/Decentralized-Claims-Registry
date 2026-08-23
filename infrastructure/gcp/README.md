@@ -94,6 +94,7 @@ not a substitute for removing unused resources.
 | `monitoring/dashboard.json` | Initial research dashboard |
 | `scripts/train-model.sh` | Builds the model in the serving image |
 | `scripts/deploy.sh` | Validates configuration and starts Compose |
+| `scripts/release-vm.sh` | Installs one reviewed GitHub SHA under a lock, verifies it and attempts code rollback on failure |
 | `scripts/verify-deployment.sh` | Safe post-deploy checks |
 | `scripts/collect-evidence.sh` | Redactable logs, metrics and container state |
 | `scripts/stop.sh` | Stops containers while preserving volumes |
@@ -112,6 +113,13 @@ flowchart LR
     Observe --> Evidence["collect-evidence.sh"]
     Evidence --> Destroy["terraform destroy"]
 ```
+
+After the first manual deployment is healthy, the optional keyless GitHub
+release path can replace repeated `scp` commands. It is disabled by default and
+never deploys on push. Follow [the complete CD runbook](CD_RUNBOOK.md) to review
+the trust boundary, enable it with Terraform, configure the protected GitHub
+Environment, perform the first release, and roll back to an earlier reviewed
+commit.
 
 ### 1. Prepare Google Cloud
 
