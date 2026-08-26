@@ -1,0 +1,13 @@
+{
+  "assessment_writes": 100,
+  "backlog": 100,
+  "committed_before_crash": 50,
+  "crash_event_id": "31337:0x000000000000000000000000000000000000000000000000000000000000002a:0",
+  "delivered_after_restart": 50,
+  "duplicate_assessment_writes": 0,
+  "lost_claims": 0,
+  "recovery_time_ms": 2328.567458,
+  "redelivered_crash_event": true,
+  "run_id": "recovery-20260825T171917Z-845e355d",
+  "unique_completed": 100
+}

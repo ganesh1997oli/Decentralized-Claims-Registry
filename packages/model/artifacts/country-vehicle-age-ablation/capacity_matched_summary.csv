@@ -1,0 +1,13 @@
+model,ablation,dropped_features,threshold,prevalence,selection_rate,precision,recall,f1,roc_auc,pr_auc,pr_auc_lift,brier_score
+logistic_regression,full,,0.54,0.111748,0.262902,0.173218,0.407518,0.243104,0.627901,0.171142,0.059394,0.239227
+logistic_regression,without_country,country,0.539821,0.111748,0.267702,0.171856,0.411695,0.242488,0.623877,0.171546,0.059798,0.240142
+logistic_regression,without_vehicle_age,vehicle_age,0.53905,0.111748,0.261835,0.172142,0.403341,0.241299,0.627314,0.170321,0.058573,0.239319
+logistic_regression,without_country_and_vehicle_age,"country, vehicle_age",0.538823,0.111748,0.261168,0.170283,0.397971,0.238512,0.620941,0.170469,0.05872,0.240471
+logistic_regression,without_country_and_market_frequency,"country, claim_frequency_per_1000_policies",0.531265,0.111748,0.240765,0.142066,0.306086,0.194061,0.545825,0.133185,0.021436,0.247256
+logistic_regression,strict_claim_features,"country, claim_frequency_per_1000_policies, vehicle_age",0.536504,0.111748,0.241099,0.139657,0.301313,0.190854,0.541585,0.132072,0.020323,0.247361
+xgboost,full,,0.47,0.111748,0.465662,0.147766,0.615752,0.238337,0.614826,0.164694,0.052946,0.221282
+xgboost,without_country,country,0.476709,0.111748,0.475797,0.1456,0.619928,0.235815,0.612623,0.165719,0.053971,0.224616
+xgboost,without_vehicle_age,vehicle_age,0.470895,0.111748,0.467529,0.147034,0.615155,0.237339,0.608698,0.163496,0.051748,0.221649
+xgboost,without_country_and_vehicle_age,"country, vehicle_age",0.479577,0.111748,0.468863,0.142207,0.596659,0.229674,0.604026,0.158232,0.046484,0.226102
+xgboost,without_country_and_market_frequency,"country, claim_frequency_per_1000_policies",0.481319,0.111748,0.459528,0.125798,0.517303,0.202381,0.545202,0.133997,0.022249,0.238477
+xgboost,strict_claim_features,"country, claim_frequency_per_1000_policies, vehicle_age",0.482261,0.111748,0.455127,0.124524,0.50716,0.199953,0.536397,0.129043,0.017295,0.239303

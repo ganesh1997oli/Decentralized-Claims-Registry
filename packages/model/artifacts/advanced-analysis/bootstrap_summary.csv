@@ -1,0 +1,7 @@
+estimate,point,interval_low,interval_high
+logistic_regression,0.171142,0.15946,0.184635
+deployed_xgboost,0.164694,0.153453,0.177296
+tuned_xgboost,0.172016,0.159969,0.185605
+logistic_minus_deployed,0.006448,0.000422,0.012595
+logistic_minus_tuned,-0.000874,-0.004983,0.002992
+tuned_minus_deployed,0.007322,0.003135,0.011767
