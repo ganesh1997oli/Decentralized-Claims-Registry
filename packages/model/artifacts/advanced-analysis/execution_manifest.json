@@ -1,0 +1,35 @@
+{
+  "analysis_script_sha256": "630da7f1c233703d8f41a3237bded961c577cd3c0e41e280ea044cf31e706cca",
+  "archive_schema": 1,
+  "command": [
+    "python",
+    "-m",
+    "packages.model.advanced_analysis",
+    "--data",
+    "packages/model/data/african_motor_claims.csv",
+    "--output-dir",
+    "packages/model/artifacts/advanced-analysis",
+    "--trials",
+    "24",
+    "--bootstrap-samples",
+    "2000",
+    "--permutations",
+    "100",
+    "--seed",
+    "20260724"
+  ],
+  "dataset_sha256": "c82a531db73cf72de8791978b29799f53e828ad5891f9a170868f3111c45b457",
+  "elapsed_seconds": 36.067088,
+  "generated_at": "2026-08-26T18:02:05.107554+00:00",
+  "provenance_note": "Replacement implementation created after the original cited script and JSON were found absent; this is not the recovered historical file.",
+  "python_executable": "/Users/ganesh/Documents/dissertation/Decentralized-Claims-Registry/.venv/bin/python",
+  "python_version": "3.14.6",
+  "software_versions": {
+    "matplotlib": "3.11.1",
+    "numpy": "2.5.2",
+    "pandas": "2.3.3",
+    "scikit-learn": "1.9.0",
+    "xgboost": "3.4.1"
+  },
+  "working_directory": "repository root"
+}

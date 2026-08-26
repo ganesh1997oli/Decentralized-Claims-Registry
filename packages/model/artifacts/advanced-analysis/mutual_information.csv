@@ -1,0 +1,11 @@
+feature,mutual_information,treated_as_discrete
+claim_frequency_per_1000_policies,0.003391027,False
+vehicle_age,0.003257031,False
+country,0.002897337,True
+claim_type,0.001469392,True
+total_loss_flag,0.000305994,True
+region_type,0.00014393,True
+third_party_injury_flag,3.23e-05,True
+vehicle_type,1.6824e-05,True
+claim_amount_usd,0.0,False
+policy_premium_usd,0.0,False

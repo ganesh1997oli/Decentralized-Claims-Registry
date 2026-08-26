@@ -197,3 +197,62 @@ status.
 
 These figures describe synthetic data only. They demonstrate the evaluation
 method and must not be used as evidence of real-world predictive performance.
+
+## Country and vehicle-age ablation
+
+The standalone ablation runner tests whether the research result depends on
+country, vehicle age, or the country-linked market-frequency feature. It uses
+the same pinned data, chronological split, model settings and validation-only
+threshold selection as the main experiment. It does not replace or modify the
+deployed `model.joblib` artifact.
+
+Run the archived dissertation experiment from the repository root:
+
+```bash
+MPLCONFIGDIR=/tmp/dcr-matplotlib \
+  apps/backend/.venv/bin/python -m packages.model.ablation_study \
+  --data packages/model/data/african_motor_claims.csv \
+  --output-dir packages/model/artifacts/country-vehicle-age-ablation \
+  --xgboost-estimators 250 \
+  --bootstrap-samples 2000
+```
+
+The runner records two threshold views. The first selects the fraud-F1
+threshold independently on validation data, matching the original experiment.
+The second matches each ablated model to the full model's validation selection
+rate. The capacity-matched view prevents a model that flags nearly every claim
+from appearing fair merely because its subgroup selection rates are uniformly
+high.
+
+Archived outputs include the complete JSON result, compact model and country
+CSVs, paired-bootstrap PR-AUC intervals, precision-recall curves and a
+capacity-matched country-error figure. See the
+[ablation evidence guide](artifacts/country-vehicle-age-ablation/README.md).
+
+## Advanced-analysis reproducibility archive
+
+The dissertation's original tuning, bootstrap, label-permutation and
+calibration script was not retained. The repository therefore contains a new,
+explicit replacement runner rather than pretending that the historical file
+was recovered. It reruns the extensions from the pinned dataset and records the
+complete seeded candidate set, validation results, paired samples, permutation
+scores, calibration bins, environment versions and SHA-256 checksums. It does
+not replace the deployed model artifact.
+
+Run the archive from the repository root:
+
+```bash
+MPLCONFIGDIR=/tmp/dcr-matplotlib \
+  .venv/bin/python -m packages.model.advanced_analysis \
+  --data packages/model/data/african_motor_claims.csv \
+  --output-dir packages/model/artifacts/advanced-analysis \
+  --trials 24 \
+  --bootstrap-samples 2000 \
+  --permutations 100 \
+  --seed 20260724
+```
+
+The machine-readable evidence and exact rerun command are documented in the
+[advanced-analysis archive](artifacts/advanced-analysis/README.md). The archive
+supports reproduction of the current dissertation values; it does not recover
+the provenance of the earlier unarchived execution.

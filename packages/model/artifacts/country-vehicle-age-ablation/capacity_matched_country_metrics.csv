@@ -1,0 +1,145 @@
+model,ablation,country,n,positives,prevalence,selection_rate,false_positive_rate,false_negative_rate,precision,brier_score
+logistic_regression,full,Cote d'Ivoire,1300,173,0.133077,0.292308,0.275067,0.595376,0.184211,0.247942
+logistic_regression,full,Ethiopia,1029,98,0.095238,0.027211,0.026853,0.969388,0.107143,0.186723
+logistic_regression,full,Ghana,1380,158,0.114493,0.163043,0.151391,0.746835,0.177778,0.230448
+logistic_regression,full,Kenya,1568,194,0.123724,0.402423,0.377729,0.42268,0.177496,0.258782
+logistic_regression,full,Mozambique,993,99,0.099698,0.160121,0.149888,0.747475,0.157233,0.235051
+logistic_regression,full,Nigeria,1487,230,0.154674,0.752522,0.73747,0.165217,0.171582,0.331368
+logistic_regression,full,Rwanda,926,52,0.056156,0.00108,0.0,0.980769,1.0,0.142586
+logistic_regression,full,Senegal,1220,118,0.096721,0.166393,0.15608,0.737288,0.152709,0.226541
+logistic_regression,full,South Africa,1659,211,0.127185,0.422544,0.392956,0.374408,0.188302,0.259077
+logistic_regression,full,Tanzania,1200,103,0.085833,0.131667,0.122151,0.76699,0.151899,0.221326
+logistic_regression,full,Uganda,1128,126,0.111702,0.147163,0.136727,0.769841,0.174699,0.233189
+logistic_regression,full,Zambia,1108,114,0.102888,0.155235,0.148893,0.789474,0.139535,0.231655
+logistic_regression,without_country,Cote d'Ivoire,1300,173,0.133077,0.292308,0.275954,0.601156,0.181579,0.246287
+logistic_regression,without_country,Ethiopia,1029,98,0.095238,0.103984,0.103115,0.887755,0.102804,0.213513
+logistic_regression,without_country,Ghana,1380,158,0.114493,0.256522,0.242226,0.632911,0.163842,0.244364
+logistic_regression,without_country,Kenya,1568,194,0.123724,0.477041,0.453421,0.35567,0.167112,0.271895
+logistic_regression,without_country,Mozambique,993,99,0.099698,0.09567,0.088367,0.838384,0.168421,0.206446
+logistic_regression,without_country,Nigeria,1487,230,0.154674,0.420309,0.393795,0.434783,0.208,0.263869
+logistic_regression,without_country,Rwanda,926,52,0.056156,0.044276,0.04119,0.903846,0.121951,0.183619
+logistic_regression,without_country,Senegal,1220,118,0.096721,0.22623,0.215971,0.677966,0.137681,0.239029
+logistic_regression,without_country,South Africa,1659,211,0.127185,0.536468,0.505525,0.251185,0.177528,0.282152
+logistic_regression,without_country,Tanzania,1200,103,0.085833,0.169167,0.158614,0.718447,0.142857,0.228118
+logistic_regression,without_country,Uganda,1128,126,0.111702,0.136525,0.12475,0.769841,0.188312,0.22405
+logistic_regression,without_country,Zambia,1108,114,0.102888,0.128159,0.120724,0.807018,0.15493,0.220793
+logistic_regression,without_vehicle_age,Cote d'Ivoire,1300,173,0.133077,0.286154,0.268855,0.601156,0.185484,0.248483
+logistic_regression,without_vehicle_age,Ethiopia,1029,98,0.095238,0.026239,0.026853,0.979592,0.074074,0.186505
+logistic_regression,without_vehicle_age,Ghana,1380,158,0.114493,0.165942,0.156301,0.759494,0.165939,0.23011
+logistic_regression,without_vehicle_age,Kenya,1568,194,0.123724,0.404974,0.379913,0.417526,0.177953,0.258185
+logistic_regression,without_vehicle_age,Mozambique,993,99,0.099698,0.154079,0.144295,0.757576,0.156863,0.235556
+logistic_regression,without_vehicle_age,Nigeria,1487,230,0.154674,0.745124,0.727924,0.16087,0.174188,0.331864
+logistic_regression,without_vehicle_age,Rwanda,926,52,0.056156,0.00108,0.0,0.980769,1.0,0.142618
+logistic_regression,without_vehicle_age,Senegal,1220,118,0.096721,0.166393,0.15608,0.737288,0.152709,0.226075
+logistic_regression,without_vehicle_age,South Africa,1659,211,0.127185,0.423749,0.395718,0.383886,0.184922,0.259244
+logistic_regression,without_vehicle_age,Tanzania,1200,103,0.085833,0.135833,0.126709,0.76699,0.147239,0.221454
+logistic_regression,without_vehicle_age,Uganda,1128,126,0.111702,0.148936,0.140719,0.785714,0.160714,0.234387
+logistic_regression,without_vehicle_age,Zambia,1108,114,0.102888,0.148917,0.141851,0.789474,0.145455,0.231497
+logistic_regression,without_country_and_vehicle_age,Cote d'Ivoire,1300,173,0.133077,0.281538,0.264419,0.606936,0.185792,0.248779
+logistic_regression,without_country_and_vehicle_age,Ethiopia,1029,98,0.095238,0.103013,0.098818,0.857143,0.132075,0.211013
+logistic_regression,without_country_and_vehicle_age,Ghana,1380,158,0.114493,0.231884,0.220131,0.677215,0.159375,0.243183
+logistic_regression,without_country_and_vehicle_age,Kenya,1568,194,0.123724,0.501913,0.475983,0.314433,0.168996,0.271757
+logistic_regression,without_country_and_vehicle_age,Mozambique,993,99,0.099698,0.083585,0.077181,0.858586,0.168675,0.204972
+logistic_regression,without_country_and_vehicle_age,Nigeria,1487,230,0.154674,0.38534,0.361973,0.486957,0.205934,0.259387
+logistic_regression,without_country_and_vehicle_age,Rwanda,926,52,0.056156,0.044276,0.04119,0.903846,0.121951,0.191749
+logistic_regression,without_country_and_vehicle_age,Senegal,1220,118,0.096721,0.197541,0.18784,0.711864,0.141079,0.238277
+logistic_regression,without_country_and_vehicle_age,South Africa,1659,211,0.127185,0.578662,0.549724,0.222749,0.170833,0.289628
+logistic_regression,without_country_and_vehicle_age,Tanzania,1200,103,0.085833,0.1475,0.139471,0.76699,0.135593,0.228385
+logistic_regression,without_country_and_vehicle_age,Uganda,1128,126,0.111702,0.112589,0.106786,0.84127,0.15748,0.219226
+logistic_regression,without_country_and_vehicle_age,Zambia,1108,114,0.102888,0.122744,0.114688,0.807018,0.161765,0.221107
+logistic_regression,without_country_and_market_frequency,Cote d'Ivoire,1300,173,0.133077,0.229231,0.212955,0.66474,0.194631,0.24616
+logistic_regression,without_country_and_market_frequency,Ethiopia,1029,98,0.095238,0.266278,0.26101,0.683673,0.113139,0.247436
+logistic_regression,without_country_and_market_frequency,Ghana,1380,158,0.114493,0.22971,0.224223,0.727848,0.135647,0.249867
+logistic_regression,without_country_and_market_frequency,Kenya,1568,194,0.123724,0.241709,0.227802,0.659794,0.174142,0.243405
+logistic_regression,without_country_and_market_frequency,Mozambique,993,99,0.099698,0.231621,0.224832,0.707071,0.126087,0.24622
+logistic_regression,without_country_and_market_frequency,Nigeria,1487,230,0.154674,0.250841,0.245823,0.721739,0.171582,0.25272
+logistic_regression,without_country_and_market_frequency,Rwanda,926,52,0.056156,0.209503,0.208238,0.769231,0.061856,0.23651
+logistic_regression,without_country_and_market_frequency,Senegal,1220,118,0.096721,0.255738,0.247731,0.669492,0.125,0.249644
+logistic_regression,without_country_and_market_frequency,South Africa,1659,211,0.127185,0.271248,0.255525,0.620853,0.177778,0.251221
+logistic_regression,without_country_and_market_frequency,Tanzania,1200,103,0.085833,0.219167,0.211486,0.699029,0.117871,0.244807
+logistic_regression,without_country_and_market_frequency,Uganda,1128,126,0.111702,0.227837,0.228543,0.777778,0.108949,0.247328
+logistic_regression,without_country_and_market_frequency,Zambia,1108,114,0.102888,0.238267,0.2334,0.719298,0.121212,0.247161
+logistic_regression,strict_claim_features,Cote d'Ivoire,1300,173,0.133077,0.234615,0.221828,0.682081,0.180328,0.248041
+logistic_regression,strict_claim_features,Ethiopia,1029,98,0.095238,0.260447,0.257787,0.714286,0.104478,0.244476
+logistic_regression,strict_claim_features,Ghana,1380,158,0.114493,0.231159,0.225859,0.727848,0.134796,0.248984
+logistic_regression,strict_claim_features,Kenya,1568,194,0.123724,0.239796,0.224163,0.649485,0.180851,0.244285
+logistic_regression,strict_claim_features,Mozambique,993,99,0.099698,0.220544,0.212528,0.707071,0.13242,0.243801
+logistic_regression,strict_claim_features,Nigeria,1487,230,0.154674,0.244116,0.241846,0.743478,0.162534,0.250145
+logistic_regression,strict_claim_features,Rwanda,926,52,0.056156,0.227862,0.2254,0.730769,0.066351,0.241762
+logistic_regression,strict_claim_features,Senegal,1220,118,0.096721,0.262295,0.254083,0.661017,0.125,0.248942
+logistic_regression,strict_claim_features,South Africa,1659,211,0.127185,0.283303,0.268646,0.616114,0.17234,0.257138
+logistic_regression,strict_claim_features,Tanzania,1200,103,0.085833,0.218333,0.210574,0.699029,0.118321,0.244596
+logistic_regression,strict_claim_features,Uganda,1128,126,0.111702,0.214539,0.215569,0.793651,0.107438,0.243039
+logistic_regression,strict_claim_features,Zambia,1108,114,0.102888,0.23556,0.231388,0.72807,0.118774,0.246726
+xgboost,full,Cote d'Ivoire,1300,173,0.133077,0.525385,0.505768,0.346821,0.165447,0.223434
+xgboost,full,Ethiopia,1029,98,0.095238,0.180758,0.177229,0.785714,0.112903,0.170169
+xgboost,full,Ghana,1380,158,0.114493,0.407971,0.396072,0.5,0.14032,0.21794
+xgboost,full,Kenya,1568,194,0.123724,0.578444,0.554585,0.252577,0.159868,0.240349
+xgboost,full,Mozambique,993,99,0.099698,0.39577,0.38255,0.484848,0.129771,0.202935
+xgboost,full,Nigeria,1487,230,0.154674,0.897108,0.893397,0.082609,0.158171,0.308411
+xgboost,full,Rwanda,926,52,0.056156,0.063715,0.065217,0.961538,0.033898,0.133034
+xgboost,full,Senegal,1220,118,0.096721,0.416393,0.401996,0.449153,0.127953,0.21426
+xgboost,full,South Africa,1659,211,0.127185,0.598553,0.569751,0.203791,0.169184,0.246183
+xgboost,full,Tanzania,1200,103,0.085833,0.366667,0.350046,0.456311,0.127273,0.204314
+xgboost,full,Uganda,1128,126,0.111702,0.411348,0.404192,0.531746,0.127155,0.21548
+xgboost,full,Zambia,1108,114,0.102888,0.409747,0.394366,0.45614,0.136564,0.2114
+xgboost,without_country,Cote d'Ivoire,1300,173,0.133077,0.534615,0.512866,0.323699,0.168345,0.238641
+xgboost,without_country,Ethiopia,1029,98,0.095238,0.293489,0.277121,0.55102,0.145695,0.188834
+xgboost,without_country,Ghana,1380,158,0.114493,0.515217,0.501637,0.379747,0.137834,0.233521
+xgboost,without_country,Kenya,1568,194,0.123724,0.648597,0.627365,0.201031,0.152409,0.258108
+xgboost,without_country,Mozambique,993,99,0.099698,0.255791,0.240492,0.606061,0.153543,0.182295
+xgboost,without_country,Nigeria,1487,230,0.154674,0.631473,0.614956,0.278261,0.176784,0.25428
+xgboost,without_country,Rwanda,926,52,0.056156,0.163067,0.163616,0.846154,0.05298,0.159661
+xgboost,without_country,Senegal,1220,118,0.096721,0.494262,0.482759,0.398305,0.117745,0.228273
+xgboost,without_country,South Africa,1659,211,0.127185,0.687161,0.662293,0.14218,0.158772,0.261689
+xgboost,without_country,Tanzania,1200,103,0.085833,0.426667,0.414768,0.446602,0.111328,0.215893
+xgboost,without_country,Uganda,1128,126,0.111702,0.369681,0.363273,0.579365,0.127098,0.208174
+xgboost,without_country,Zambia,1108,114,0.102888,0.356498,0.347082,0.561404,0.126582,0.201954
+xgboost,without_vehicle_age,Cote d'Ivoire,1300,173,0.133077,0.536154,0.513753,0.317919,0.169297,0.223465
+xgboost,without_vehicle_age,Ethiopia,1029,98,0.095238,0.159378,0.156821,0.816327,0.109756,0.17025
+xgboost,without_vehicle_age,Ghana,1380,158,0.114493,0.405797,0.391162,0.481013,0.146429,0.219192
+xgboost,without_vehicle_age,Kenya,1568,194,0.123724,0.583546,0.560408,0.252577,0.15847,0.240028
+xgboost,without_vehicle_age,Mozambique,993,99,0.099698,0.399799,0.383669,0.454545,0.13602,0.201568
+xgboost,without_vehicle_age,Nigeria,1487,230,0.154674,0.871553,0.870326,0.121739,0.155864,0.30698
+xgboost,without_vehicle_age,Rwanda,926,52,0.056156,0.057235,0.058352,0.961538,0.037736,0.13284
+xgboost,without_vehicle_age,Senegal,1220,118,0.096721,0.434426,0.424682,0.474576,0.116981,0.215331
+xgboost,without_vehicle_age,South Africa,1659,211,0.127185,0.599156,0.569061,0.194313,0.171026,0.24651
+xgboost,without_vehicle_age,Tanzania,1200,103,0.085833,0.375,0.362808,0.495146,0.115556,0.206766
+xgboost,without_vehicle_age,Uganda,1128,126,0.111702,0.434397,0.421158,0.460317,0.138776,0.215796
+xgboost,without_vehicle_age,Zambia,1108,114,0.102888,0.420578,0.410463,0.491228,0.124464,0.213813
+xgboost,without_country_and_vehicle_age,Cote d'Ivoire,1300,173,0.133077,0.553846,0.539485,0.352601,0.155556,0.24225
+xgboost,without_country_and_vehicle_age,Ethiopia,1029,98,0.095238,0.253644,0.251343,0.72449,0.103448,0.189164
+xgboost,without_country_and_vehicle_age,Ghana,1380,158,0.114493,0.504348,0.493453,0.411392,0.133621,0.233821
+xgboost,without_country_and_vehicle_age,Kenya,1568,194,0.123724,0.663903,0.643377,0.190722,0.150817,0.258421
+xgboost,without_country_and_vehicle_age,Mozambique,993,99,0.099698,0.227593,0.221477,0.717172,0.123894,0.182407
+xgboost,without_country_and_vehicle_age,Nigeria,1487,230,0.154674,0.619368,0.602228,0.286957,0.178067,0.252168
+xgboost,without_country_and_vehicle_age,Rwanda,926,52,0.056156,0.177106,0.175057,0.788462,0.067073,0.165344
+xgboost,without_country_and_vehicle_age,Senegal,1220,118,0.096721,0.47623,0.460073,0.372881,0.127367,0.228133
+xgboost,without_country_and_vehicle_age,South Africa,1659,211,0.127185,0.736588,0.718232,0.137441,0.148936,0.270861
+xgboost,without_country_and_vehicle_age,Tanzania,1200,103,0.085833,0.400833,0.390155,0.485437,0.110187,0.216928
+xgboost,without_country_and_vehicle_age,Uganda,1128,126,0.111702,0.327128,0.316367,0.587302,0.140921,0.204329
+xgboost,without_country_and_vehicle_age,Zambia,1108,114,0.102888,0.315884,0.304829,0.587719,0.134286,0.203917
+xgboost,without_country_and_market_frequency,Cote d'Ivoire,1300,173,0.133077,0.443846,0.438332,0.520231,0.143847,0.238624
+xgboost,without_country_and_market_frequency,Ethiopia,1029,98,0.095238,0.436346,0.43609,0.561224,0.095768,0.236946
+xgboost,without_country_and_market_frequency,Ghana,1380,158,0.114493,0.463043,0.459902,0.512658,0.120501,0.24008
+xgboost,without_country_and_market_frequency,Kenya,1568,194,0.123724,0.46301,0.453421,0.469072,0.141873,0.237348
+xgboost,without_country_and_market_frequency,Mozambique,993,99,0.099698,0.443102,0.436242,0.494949,0.113636,0.237764
+xgboost,without_country_and_market_frequency,Nigeria,1487,230,0.154674,0.524546,0.520286,0.452174,0.161538,0.246157
+xgboost,without_country_and_market_frequency,Rwanda,926,52,0.056156,0.384449,0.378719,0.519231,0.070225,0.227773
+xgboost,without_country_and_market_frequency,Senegal,1220,118,0.096721,0.47459,0.469147,0.474576,0.107081,0.238836
+xgboost,without_country_and_market_frequency,South Africa,1659,211,0.127185,0.516576,0.502762,0.388626,0.150525,0.243097
+xgboost,without_country_and_market_frequency,Tanzania,1200,103,0.085833,0.428333,0.42206,0.504854,0.099222,0.235377
+xgboost,without_country_and_market_frequency,Uganda,1128,126,0.111702,0.443262,0.438124,0.515873,0.122,0.236332
+xgboost,without_country_and_market_frequency,Zambia,1108,114,0.102888,0.4287,0.420523,0.5,0.12,0.236828
+xgboost,strict_claim_features,Cote d'Ivoire,1300,173,0.133077,0.463077,0.456078,0.491329,0.146179,0.240215
+xgboost,strict_claim_features,Ethiopia,1029,98,0.095238,0.417881,0.413534,0.540816,0.104651,0.233947
+xgboost,strict_claim_features,Ghana,1380,158,0.114493,0.452899,0.448445,0.512658,0.1232,0.239775
+xgboost,strict_claim_features,Kenya,1568,194,0.123724,0.469388,0.454876,0.427835,0.150815,0.23875
+xgboost,strict_claim_features,Mozambique,993,99,0.099698,0.407855,0.401566,0.535354,0.11358,0.235274
+xgboost,strict_claim_features,Nigeria,1487,230,0.154674,0.486214,0.483691,0.5,0.159059,0.244465
+xgboost,strict_claim_features,Rwanda,926,52,0.056156,0.411447,0.409611,0.557692,0.060367,0.234035
+xgboost,strict_claim_features,Senegal,1220,118,0.096721,0.459836,0.451906,0.466102,0.112299,0.239402
+xgboost,strict_claim_features,South Africa,1659,211,0.127185,0.561181,0.549724,0.36019,0.145005,0.249049
+xgboost,strict_claim_features,Tanzania,1200,103,0.085833,0.428333,0.424795,0.533981,0.093385,0.237047
+xgboost,strict_claim_features,Uganda,1128,126,0.111702,0.404255,0.4002,0.563492,0.120614,0.233999
+xgboost,strict_claim_features,Zambia,1108,114,0.102888,0.416968,0.420523,0.614035,0.095238,0.237625

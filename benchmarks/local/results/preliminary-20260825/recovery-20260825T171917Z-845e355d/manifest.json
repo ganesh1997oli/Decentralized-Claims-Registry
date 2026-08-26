@@ -1,0 +1,38 @@
+{
+  "benchmark": "recovery",
+  "boundaries": {
+    "deterministic": [
+      "Pinata/IPFS transport",
+      "Ethereum RPC and block production",
+      "assessment transaction submission"
+    ],
+    "real": [
+      "FastAPI routing and validation",
+      "canonical claim authorization and hashing",
+      "PostgreSQL transactions",
+      "Kafka delivery and synchronous offset commits",
+      "duplicate and feature processing",
+      "XGBoost and local SHAP"
+    ]
+  },
+  "created_at": "2026-08-25T17:19:18.015182+00:00",
+  "docker": "Docker version 28.3.2, build 578ccf6",
+  "git_commit": "b2d65b30f9b27b1d13628116596001697c844e98",
+  "git_dirty": true,
+  "git_status": [
+    "?? apps/contracts/scripts/benchmark-gas.ts",
+    "?? benchmarks/"
+  ],
+  "machine": "arm64",
+  "model_sha256": "76b020cda978fbe32ec5790261bc6914c1023a32467cdcb90e05aa7fab3e60eb",
+  "parameters": {
+    "backlog": 100,
+    "consumers": 1,
+    "crash_after": 50,
+    "kafka_partitions": 3
+  },
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "python": "3.13.5",
+  "run_id": "recovery-20260825T171917Z-845e355d",
+  "schema_version": 1
+}

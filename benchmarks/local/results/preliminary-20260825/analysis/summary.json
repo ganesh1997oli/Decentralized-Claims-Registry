@@ -1,0 +1,592 @@
+{
+  "gas": {
+    "assessment": {
+      "maximum": 37747.0,
+      "mean": 37728.0,
+      "minimum": 37709.0,
+      "n": 100,
+      "p50": 37728.0,
+      "p95": 37747.0,
+      "p99": null,
+      "standard_deviation": 19.09571848992503
+    },
+    "forwarded_public_submission": {
+      "maximum": 272083.0,
+      "mean": 271193.8,
+      "minimum": 270403.0,
+      "n": 100,
+      "p50": 271261.0,
+      "p95": 271273.0,
+      "p99": null,
+      "standard_deviation": 259.79152481102295
+    }
+  },
+  "http": {
+    "1": {
+      "attempted": 300,
+      "authorize_ms": {
+        "maximum": 32.469167,
+        "mean": 22.65027210666667,
+        "minimum": 20.193458,
+        "n": 300,
+        "p50": 22.458375,
+        "p95": 24.746859800000003,
+        "p99": null,
+        "standard_deviation": 1.302474993109606
+      },
+      "end_to_end_ms": {
+        "maximum": 79.172917,
+        "mean": 46.35787900333333,
+        "minimum": 41.858541,
+        "n": 300,
+        "p50": 46.003103499999995,
+        "p95": 49.71311905,
+        "p99": null,
+        "standard_deviation": 2.7309062743681447
+      },
+      "error_rate": 0.0,
+      "errors": 0,
+      "prepare_ms": {
+        "maximum": 49.408333,
+        "mean": 19.475973163333336,
+        "minimum": 17.261541,
+        "n": 300,
+        "p50": 19.1431665,
+        "p95": 21.7613744,
+        "p99": null,
+        "standard_deviation": 2.15791022771857
+      },
+      "successful": 300,
+      "throughput_claims_per_second": {
+        "maximum": 21.853769289185454,
+        "mean": 21.569306342274874,
+        "minimum": 21.126157652589715,
+        "n": 3,
+        "p50": 21.727992085049454,
+        "p95": 21.841191568771855,
+        "p99": null,
+        "standard_deviation": 0.38889657641501885
+      }
+    },
+    "10": {
+      "attempted": 300,
+      "authorize_ms": {
+        "maximum": 93.023,
+        "mean": 65.05210722666666,
+        "minimum": 20.200709,
+        "n": 300,
+        "p50": 67.15002050000001,
+        "p95": 78.80154935,
+        "p99": null,
+        "standard_deviation": 10.961701518724958
+      },
+      "end_to_end_ms": {
+        "maximum": 172.813542,
+        "mean": 126.78430475666666,
+        "minimum": 86.194875,
+        "n": 300,
+        "p50": 126.408896,
+        "p95": 149.75367085000002,
+        "p99": null,
+        "standard_deviation": 13.542740513344379
+      },
+      "error_rate": 0.0,
+      "errors": 0,
+      "prepare_ms": {
+        "maximum": 84.675459,
+        "mean": 57.74065774666667,
+        "minimum": 37.678417,
+        "n": 300,
+        "p50": 56.1084795,
+        "p95": 76.50862289999999,
+        "p99": null,
+        "standard_deviation": 10.59304972100952
+      },
+      "successful": 300,
+      "throughput_claims_per_second": {
+        "maximum": 78.89530011822058,
+        "mean": 77.43922297303537,
+        "minimum": 76.31966238125338,
+        "n": 3,
+        "p50": 77.10270641963214,
+        "p95": 78.71604074836173,
+        "p99": null,
+        "standard_deviation": 1.3203825131597897
+      }
+    },
+    "20": {
+      "attempted": 300,
+      "authorize_ms": {
+        "maximum": 391.822584,
+        "mean": 126.83533711999999,
+        "minimum": 24.381708,
+        "n": 300,
+        "p50": 115.4611045,
+        "p95": 202.1793253,
+        "p99": null,
+        "standard_deviation": 45.11576007846263
+      },
+      "end_to_end_ms": {
+        "maximum": 483.129167,
+        "mean": 245.31803027333333,
+        "minimum": 149.902583,
+        "n": 300,
+        "p50": 236.407125,
+        "p95": 341.71380205,
+        "p99": null,
+        "standard_deviation": 52.04345804411587
+      },
+      "error_rate": 0.0,
+      "errors": 0,
+      "prepare_ms": {
+        "maximum": 216.923583,
+        "mean": 114.40160915,
+        "minimum": 59.55425,
+        "n": 300,
+        "p50": 108.641938,
+        "p95": 166.93302325000002,
+        "p99": null,
+        "standard_deviation": 27.014168679133864
+      },
+      "successful": 300,
+      "throughput_claims_per_second": {
+        "maximum": 78.60566387030876,
+        "mean": 77.78052235762094,
+        "minimum": 77.05948952828305,
+        "n": 3,
+        "p50": 77.67641367427098,
+        "p95": 78.51273885070498,
+        "p99": null,
+        "standard_deviation": 0.7783268834148692
+      }
+    },
+    "5": {
+      "attempted": 300,
+      "authorize_ms": {
+        "maximum": 51.868167,
+        "mean": 38.282006376666665,
+        "minimum": 24.7725,
+        "n": 300,
+        "p50": 38.128792000000004,
+        "p95": 47.04544405000001,
+        "p99": null,
+        "standard_deviation": 5.2514536247329335
+      },
+      "end_to_end_ms": {
+        "maximum": 101.746,
+        "mean": 75.31873469666667,
+        "minimum": 55.594,
+        "n": 300,
+        "p50": 74.21727100000001,
+        "p95": 89.5433229,
+        "p99": null,
+        "standard_deviation": 7.494397069358423
+      },
+      "error_rate": 0.0,
+      "errors": 0,
+      "prepare_ms": {
+        "maximum": 56.690958,
+        "mean": 33.04429835333333,
+        "minimum": 21.650875,
+        "n": 300,
+        "p50": 31.8088335,
+        "p95": 44.212635399999996,
+        "p99": null,
+        "standard_deviation": 5.960513499702006
+      },
+      "successful": 300,
+      "throughput_claims_per_second": {
+        "maximum": 67.0213323873826,
+        "mean": 65.95795567801757,
+        "minimum": 64.91747609291185,
+        "n": 3,
+        "p50": 65.93505855375825,
+        "p95": 66.91270500402017,
+        "p99": null,
+        "standard_deviation": 1.0521150296762012
+      }
+    }
+  },
+  "pipeline": {
+    "0": {
+      "attempted": 90,
+      "end_to_end_ms": {
+        "maximum": 1189.880209,
+        "mean": 584.6920782666666,
+        "minimum": 38.786917,
+        "n": 90,
+        "p50": 585.9883540000001,
+        "p95": 1091.31333505,
+        "p99": null,
+        "standard_deviation": 332.2790990740305
+      },
+      "error_rate": 0.0,
+      "errors": 0,
+      "inference_ms": {
+        "maximum": 5.470041,
+        "mean": 4.695478711111111,
+        "minimum": 4.065541,
+        "n": 90,
+        "p50": 4.6573125,
+        "p95": 5.19743955,
+        "p99": null,
+        "standard_deviation": 0.3192001537590885
+      },
+      "processing_ms": {
+        "maximum": 45.943458,
+        "mean": 37.294595888888885,
+        "minimum": 32.661125,
+        "n": 90,
+        "p50": 37.092438,
+        "p95": 41.30400885,
+        "p99": null,
+        "standard_deviation": 2.4002433661971785
+      },
+      "publish_ack_ms": {
+        "maximum": 1.684833,
+        "mean": 0.7132448555555555,
+        "minimum": 0.418875,
+        "n": 90,
+        "p50": 0.6486875000000001,
+        "p95": 1.1668124999999994,
+        "p99": null,
+        "standard_deviation": 0.2338189268690462
+      },
+      "queue_delay_ms": {
+        "maximum": 1151.563542,
+        "mean": 547.3974823777778,
+        "minimum": 1.361917,
+        "n": 90,
+        "p50": 546.089396,
+        "p95": 1054.1559100499999,
+        "p99": null,
+        "standard_deviation": 332.1355334190941
+      },
+      "successful": 90,
+      "throughput_events_per_second": {
+        "maximum": 26.70912230043853,
+        "mean": 25.98705586223801,
+        "minimum": 24.624645158986205,
+        "n": 3,
+        "p50": 26.6274001272893,
+        "p95": 26.700950083123608,
+        "p99": null,
+        "standard_deviation": 1.180589607631445
+      }
+    },
+    "10": {
+      "attempted": 90,
+      "end_to_end_ms": {
+        "maximum": 66.813042,
+        "mean": 54.60103234444444,
+        "minimum": 36.848167,
+        "n": 90,
+        "p50": 54.5556665,
+        "p95": 61.908902600000005,
+        "p99": null,
+        "standard_deviation": 5.169948233258923
+      },
+      "error_rate": 0.0,
+      "errors": 0,
+      "inference_ms": {
+        "maximum": 10.287917,
+        "mean": 6.885567155555556,
+        "minimum": 4.38625,
+        "n": 90,
+        "p50": 6.659625500000001,
+        "p95": 9.53094375,
+        "p99": null,
+        "standard_deviation": 1.4162001250510958
+      },
+      "processing_ms": {
+        "maximum": 64.810375,
+        "mean": 52.625500466666665,
+        "minimum": 35.538458,
+        "n": 90,
+        "p50": 52.587979000000004,
+        "p95": 59.819651900000004,
+        "p99": null,
+        "standard_deviation": 5.017342503352543
+      },
+      "publish_ack_ms": {
+        "maximum": 3.025209,
+        "mean": 1.6552448333333334,
+        "minimum": 0.820791,
+        "n": 90,
+        "p50": 1.5286665,
+        "p95": 2.6128663,
+        "p99": null,
+        "standard_deviation": 0.40907441891864077
+      },
+      "queue_delay_ms": {
+        "maximum": 3.730125,
+        "mean": 1.9755318777777777,
+        "minimum": 1.06325,
+        "n": 90,
+        "p50": 1.863979,
+        "p95": 2.968528649999999,
+        "p99": null,
+        "standard_deviation": 0.44072271188794127
+      },
+      "successful": 90,
+      "throughput_events_per_second": {
+        "maximum": 10.144707060380734,
+        "mean": 10.135200860135386,
+        "minimum": 10.129953516755938,
+        "n": 3,
+        "p50": 10.130942003269487,
+        "p95": 10.143330554669609,
+        "p99": null,
+        "standard_deviation": 0.008247433462923464
+      }
+    },
+    "20": {
+      "attempted": 90,
+      "end_to_end_ms": {
+        "maximum": 49.05125,
+        "mean": 41.25894628888889,
+        "minimum": 37.353459,
+        "n": 90,
+        "p50": 41.153542,
+        "p95": 44.0813413,
+        "p99": null,
+        "standard_deviation": 1.9721706679597295
+      },
+      "error_rate": 0.0,
+      "errors": 0,
+      "inference_ms": {
+        "maximum": 7.769959,
+        "mean": 5.320572655555556,
+        "minimum": 4.151792,
+        "n": 90,
+        "p50": 5.1662085,
+        "p95": 6.476506249999999,
+        "p99": null,
+        "standard_deviation": 0.6431953429559722
+      },
+      "processing_ms": {
+        "maximum": 47.967167,
+        "mean": 39.991381499999996,
+        "minimum": 36.22575,
+        "n": 90,
+        "p50": 39.748979000000006,
+        "p95": 42.5083125,
+        "p99": null,
+        "standard_deviation": 1.9229550528892967
+      },
+      "publish_ack_ms": {
+        "maximum": 2.425708,
+        "mean": 1.0024189888888888,
+        "minimum": 0.671875,
+        "n": 90,
+        "p50": 0.97175,
+        "p95": 1.32399155,
+        "p99": null,
+        "standard_deviation": 0.2218877800415931
+      },
+      "queue_delay_ms": {
+        "maximum": 2.578875,
+        "mean": 1.267564788888889,
+        "minimum": 0.910666,
+        "n": 90,
+        "p50": 1.2050625,
+        "p95": 1.69608385,
+        "p99": null,
+        "standard_deviation": 0.24455131395678217
+      },
+      "successful": 90,
+      "throughput_events_per_second": {
+        "maximum": 20.098994246327802,
+        "mean": 20.07341914433214,
+        "minimum": 20.03918997586181,
+        "n": 3,
+        "p50": 20.082073210806808,
+        "p95": 20.097302142775703,
+        "p99": null,
+        "standard_deviation": 0.030827055347589963
+      }
+    },
+    "5": {
+      "attempted": 90,
+      "end_to_end_ms": {
+        "maximum": 81.186459,
+        "mean": 64.72589494444445,
+        "minimum": 37.72175,
+        "n": 90,
+        "p50": 64.66006250000001,
+        "p95": 78.40703764999999,
+        "p99": null,
+        "standard_deviation": 9.70102362599121
+      },
+      "error_rate": 0.0,
+      "errors": 0,
+      "inference_ms": {
+        "maximum": 13.133958,
+        "mean": 7.4588412,
+        "minimum": 4.485334,
+        "n": 90,
+        "p50": 7.1144585,
+        "p95": 10.4261436,
+        "p99": null,
+        "standard_deviation": 1.789119034419443
+      },
+      "processing_ms": {
+        "maximum": 75.746,
+        "mean": 60.439820366666666,
+        "minimum": 36.404625,
+        "n": 90,
+        "p50": 60.4390625,
+        "p95": 72.98654185,
+        "p99": null,
+        "standard_deviation": 8.581154459774858
+      },
+      "publish_ack_ms": {
+        "maximum": 7.9935,
+        "mean": 3.621119911111111,
+        "minimum": 0.950459,
+        "n": 90,
+        "p50": 3.8621045,
+        "p95": 6.30593285,
+        "p99": null,
+        "standard_deviation": 1.594863137048567
+      },
+      "queue_delay_ms": {
+        "maximum": 8.696709,
+        "mean": 4.286074577777778,
+        "minimum": 1.158042,
+        "n": 90,
+        "p50": 4.586208,
+        "p95": 7.249985049999999,
+        "p99": null,
+        "standard_deviation": 1.861229663832193
+      },
+      "successful": 90,
+      "throughput_events_per_second": {
+        "maximum": 5.11106395208106,
+        "mean": 5.107250869168229,
+        "minimum": 5.104061065327002,
+        "n": 3,
+        "p50": 5.106627590096624,
+        "p95": 5.110620315882616,
+        "p99": null,
+        "standard_deviation": 0.0035428044432856774
+      }
+    }
+  },
+  "recovery": [
+    {
+      "assessment_writes": 100,
+      "backlog": 100,
+      "committed_before_crash": 50,
+      "crash_event_id": "31337:0x000000000000000000000000000000000000000000000000000000000000002a:0",
+      "delivered_after_restart": 50,
+      "duplicate_assessment_writes": 0,
+      "lost_claims": 0,
+      "recovery_time_ms": 2328.567458,
+      "redelivered_crash_event": true,
+      "run_id": "recovery-20260825T171917Z-845e355d",
+      "unique_completed": 100
+    }
+  ],
+  "resources": {
+    "host_load_1m": {
+      "maximum": 6.28369140625,
+      "mean": 5.288661411830357,
+      "minimum": 4.36474609375,
+      "n": 56,
+      "p50": 5.270263671875,
+      "p95": 6.134765625,
+      "p99": null,
+      "standard_deviation": 0.5226143448707057
+    },
+    "samples": 56,
+    "sources": {
+      "claims-benchmark-kafka-1": {
+        "cpu_percent": {
+          "maximum": 132.11,
+          "mean": 29.849285714285713,
+          "minimum": 0.86,
+          "n": 28,
+          "p50": 4.79,
+          "p95": 120.10449999999997,
+          "p99": null,
+          "standard_deviation": 44.84713954531354
+        },
+        "memory_bytes": {
+          "maximum": 586049126.0,
+          "mean": 474368292.5,
+          "minimum": 448685670.0,
+          "n": 28,
+          "p50": 465305600.0,
+          "p95": 523800412.34999996,
+          "p99": null,
+          "standard_deviation": 27550341.64732592
+        },
+        "memory_percent": {
+          "maximum": 7.13,
+          "mean": 5.773214285714286,
+          "minimum": 5.46,
+          "n": 28,
+          "p50": 5.66,
+          "p95": 6.374499999999999,
+          "p99": null,
+          "standard_deviation": 0.3351953943313547
+        },
+        "process_count": {
+          "maximum": 152.0,
+          "mean": 123.96428571428571,
+          "minimum": 121.0,
+          "n": 28,
+          "p50": 121.0,
+          "p95": 147.2,
+          "p99": null,
+          "standard_deviation": 8.608704220716865
+        },
+        "samples": 28
+      },
+      "claims-benchmark-postgres-1": {
+        "cpu_percent": {
+          "maximum": 137.26,
+          "mean": 29.35928571428571,
+          "minimum": 0.01,
+          "n": 28,
+          "p50": 18.575,
+          "p95": 100.71599999999997,
+          "p99": null,
+          "standard_deviation": 35.34232767372327
+        },
+        "memory_bytes": {
+          "maximum": 90408223.0,
+          "mean": 74385232.46428572,
+          "minimum": 67381494.0,
+          "n": 28,
+          "p50": 73552363.5,
+          "p95": 82102976.44999999,
+          "p99": null,
+          "standard_deviation": 4696238.408080706
+        },
+        "memory_percent": {
+          "maximum": 1.1,
+          "mean": 0.905,
+          "minimum": 0.82,
+          "n": 28,
+          "p50": 0.9,
+          "p95": 1.0019999999999998,
+          "p99": null,
+          "standard_deviation": 0.05725188012439225
+        },
+        "process_count": {
+          "maximum": 17.0,
+          "mean": 6.892857142857143,
+          "minimum": 6.0,
+          "n": 28,
+          "p50": 6.0,
+          "p95": 10.949999999999996,
+          "p99": null,
+          "standard_deviation": 2.346617513915243
+        },
+        "samples": 28
+      }
+    }
+  }
+}

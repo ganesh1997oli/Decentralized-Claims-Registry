@@ -1,0 +1,73 @@
+name: claims-benchmark
+
+# Isolated infrastructure for deterministic, single-host dissertation runs.
+# It deliberately does not start Pinata, Sepolia-facing services, or the public
+# frontend. The Python workload runners create a fresh PostgreSQL schema and
+# Kafka topic for every scenario.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: claims_benchmark
+      POSTGRES_USER: claims
+      POSTGRES_PASSWORD: claims-benchmark
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - benchmark-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claims -d claims_benchmark"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:4.2.0
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_LISTENERS: "CONTROLLER://:29093,PLAINTEXT://:9092,PLAINTEXT_HOST://:19092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,PLAINTEXT_HOST://127.0.0.1:19092"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: "1"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx1g"
+      CLUSTER_ID: "4L6g3nShT-eMCtK--X86sw"
+    ports:
+      - "127.0.0.1:19092:19092"
+    volumes:
+      - benchmark-kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.9.0
+    profiles: ["monitoring"]
+    command:
+      - --kafka.server=kafka:9092
+      - --topic.filter=claims.benchmark.*
+      - --group.filter=claims-benchmark-*
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:19308:9308"
+
+volumes:
+  benchmark-postgres-data:
+  benchmark-kafka-data:
