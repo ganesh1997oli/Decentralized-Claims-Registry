@@ -701,3 +701,14 @@ Stop local infrastructure without deleting its volumes:
 ```bash
 docker compose -f packages/integrations/kafka/compose.yml down
 ```
+
+## Licence
+
+The original source code in this repository is licensed under the MIT
+Licence. See `LICENSE`.
+
+The dissertation manuscript and original figures in `docs/` are
+Copyright © 2026 Ganesh Oli. All rights reserved.
+
+Third-party libraries, datasets and other external materials remain
+subject to their respective licences.
