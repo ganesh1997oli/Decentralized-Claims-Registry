@@ -108,6 +108,16 @@ describe('App refresh recovery', () => {
     expect(page).toContain('Research test data only')
     expect(page).not.toContain('Synthetic data only')
   })
+
+  it('shows the wallet and claimant prerequisites before submission', () => {
+    const page = renderToStaticMarkup(<App />)
+
+    expect(page).toContain('Wallet access required')
+    expect(page).toContain(
+      'You need a MetaMask wallet and an authorised claimant account',
+    )
+    expect(page).toContain('MetaMask · Sepolia')
+  })
 })
 
 const historicalClaim: ClaimSummary = {

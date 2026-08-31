@@ -153,6 +153,29 @@ function RegistryApp() {
           </ol>
         </section>
 
+        <section
+          aria-labelledby="wallet-access-heading"
+          className="mt-8 flex flex-col gap-4 rounded-2xl border border-amber-300 bg-amber-50 px-5 py-4 text-amber-950 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div>
+            <p
+              id="wallet-access-heading"
+              className="text-xs font-black tracking-[0.16em] uppercase"
+            >
+              Wallet access required
+            </p>
+            <p className="mt-1 text-sm leading-6">
+              You need a MetaMask wallet and an authorised claimant account to
+              use the claim-submission application. The connected address must
+              match the claimant or an authorised representative configured for
+              the synthetic policy.
+            </p>
+          </div>
+          <span className="shrink-0 self-start rounded-full border border-amber-400/70 bg-white/70 px-3 py-1.5 text-xs font-bold sm:self-auto">
+            MetaMask · Sepolia
+          </span>
+        </section>
+
         <div className="mt-10 grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <ClaimForm onSubmitted={workspace.acceptSubmittedReceipt} />
           <DataBoundaryAside />

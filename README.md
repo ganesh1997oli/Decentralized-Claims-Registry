@@ -357,6 +357,40 @@ You also need all of the following for a real end-to-end test:
 
 Use dedicated test wallets that never hold real assets.
 
+#### Configure MetaMask for claim submission
+
+The public claim form requires MetaMask and a wallet address configured as the
+fictional policy's claimant or authorised representative. The application
+verifies control of that address before it prepares a claim.
+
+1. Install the MetaMask browser extension from the
+   [official MetaMask installation page](https://support.metamask.io/start/getting-started-with-metamask/).
+   Do not install an extension from an advertisement or an unofficial download.
+2. Create a dedicated test wallet or test account. Never import a wallet that
+   holds real assets, and never give this application, its operator, or another
+   tester your Secret Recovery Phrase or private key.
+3. In MetaMask, open **Networks** and enable **Show test networks**. Select
+   **Sepolia**. Sepolia is included with MetaMask; its chain ID is `11155111`.
+   MetaMask's current test-network instructions are available in its
+   [official network guide](https://support.metamask.io/configure/networks/).
+4. Copy only the test account's public `0x...` address and add it to that
+   policy's `authorizedSubmitterAddresses` in
+   `POLICY_ELIGIBILITY_RECORDS_JSON`. Restart FastAPI after changing the policy
+   configuration. For a hosted demonstration, send only the public address to
+   the application operator so they can authorise it.
+5. Open the claims application in the same browser profile where MetaMask is
+   enabled. When submitting, approve the Sepolia network switch, the readable
+   one-time ownership signature, and then the EIP-712 claim authorization.
+
+The claimant wallet does **not** need Sepolia ETH for this application. The
+restricted relayer pays the testnet network fee. The wallet signatures prove
+ownership and authorize only the prepared claim; they do not expose the wallet
+key or directly send a transaction.
+
+If the page reports `The policy could not be verified for this claimant`, check
+that MetaMask is connected to the exact public address listed for the selected
+fictional policy. Do not solve this by sharing a private key or recovery phrase.
+
 ### 2. Create and understand `.env.local`
 
 ```bash
